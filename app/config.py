@@ -20,11 +20,21 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
 def get_settings() -> Settings:
-    live_value = os.getenv("DEMO_PREDICTION_LIVE", "0")
-    live = live_value == "1"
     return Settings(
-        live=live,
+        live=_bool_env("DEMO_PREDICTION_LIVE", False),
         poll_seconds=max(15, min(30, _int_env("DEMO_PREDICTION_POLL_SECONDS", 30))),
         limit=max(1, _int_env("DEMO_PREDICTION_LIMIT", 50)),
         db_path=os.getenv("DEMO_PREDICTION_DB", "data/demo_prediction.sqlite3"),

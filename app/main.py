@@ -11,7 +11,7 @@ import sqlite3
 
 from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
-from app.realtime import ensure_markets, refresh_markets
+from app.realtime import ensure_markets, refresh_markets_with_result, source_status
 from app.safety import DISCLAIMER
 from app.storage import (
     DEMO_USER_ID,
@@ -125,8 +125,21 @@ async def api_snapshots(market_id: str, conn: sqlite3.Connection = Depends(get_c
 
 @app.post("/api/refresh")
 async def api_refresh(conn: sqlite3.Connection = Depends(get_conn)):
-    markets = refresh_markets(conn, settings)
-    return {"markets": markets, "count": len(markets)}
+    result = refresh_markets_with_result(conn, settings)
+    return {
+        "status": result["status"],
+        "error": result["error"],
+        "raw_count": result["raw_count"],
+        "normalized_count": result["normalized_count"],
+        "fallback_used": result["fallback_used"],
+        "markets": result["markets"],
+        "count": len(result["markets"]),
+    }
+
+
+@app.get("/api/debug/source-status")
+async def api_debug_source_status(conn: sqlite3.Connection = Depends(get_conn)):
+    return source_status(conn, settings)
 
 
 @app.get("/api/demo/balance")

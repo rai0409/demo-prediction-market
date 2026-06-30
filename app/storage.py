@@ -103,9 +103,20 @@ def store_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> No
     conn.commit()
 
 
+def replace_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> None:
+    conn.execute("delete from markets")
+    conn.commit()
+    store_markets(conn, markets)
+
+
 def list_markets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("select payload from markets order by json_extract(payload, '$.volume_24hr') desc").fetchall()
     return [json.loads(row["payload"]) for row in rows]
+
+
+def get_last_fetch_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    row = conn.execute("select * from fetch_runs order by id desc limit 1").fetchone()
+    return dict(row) if row else None
 
 
 def get_market(conn: sqlite3.Connection, market_id: str) -> dict[str, Any] | None:

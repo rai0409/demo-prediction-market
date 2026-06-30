@@ -22,6 +22,32 @@ def test_post_demo_predict(client, sample_markets):
     assert response.json()["balance"] == INITIAL_DEMO_POINTS - 50
 
 
+def test_debug_source_status_returns_expected_keys(client):
+    response = client.get("/api/debug/source-status")
+    assert response.status_code == 200
+    payload = response.json()
+    expected = {
+        "live_enabled",
+        "configured_limit",
+        "configured_poll_seconds",
+        "database_path",
+        "last_fetch_status",
+        "last_fetch_error",
+        "last_fetch_at",
+        "last_fetch_url",
+        "last_http_status",
+        "raw_count",
+        "normalized_count",
+        "fallback_used",
+        "market_count",
+        "sample_market_count",
+        "runtime_status_file_exists",
+        "runtime_response_file_exists",
+        "runtime_error_file_exists",
+    }
+    assert expected.issubset(payload.keys())
+
+
 def test_ui_text_uses_required_words(client):
     dashboard = client.get("/").text
     detail = client.get("/markets/sample-market-tokyo-rain").text
