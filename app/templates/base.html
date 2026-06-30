@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}予想マーケット・デモビューア{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  </head>
+  <body data-poll-seconds="{{ poll_seconds }}">
+    <header class="topbar">
+      <a class="brand" href="/">予想マーケット・デモビューア</a>
+      <nav>
+        <a href="/">マーケット</a>
+        <a href="/demo-positions">デモポジション</a>
+      </nav>
+    </header>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+    <script src="{{ url_for('static', path='/app.js') }}"></script>
+  </body>
+</html>

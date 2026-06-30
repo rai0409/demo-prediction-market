@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ market.title }}{% endblock %}
+{% block content %}
+<section class="disclaimer" aria-label="重要な注意事項">
+  {% for line in disclaimer.split('\n') %}
+  <p>{{ line }}</p>
+  {% endfor %}
+</section>
+
+<section class="detail-layout">
+  <article class="market-detail">
+    <p class="card-meta">{{ market.data_source_status }} · {{ market.fetched_at }}</p>
+    <h1>{{ market.title }}</h1>
+    <h2>{{ market.question }}</h2>
+    <p>{{ market.description }}</p>
+    <div class="outcome-stack">
+      {% for outcome in market.outcomes %}
+      <div>
+        <span>{{ outcome }}</span>
+        <strong>{{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</strong>
+        <meter min="0" max="1" value="{{ market.probabilities[outcome] }}"></meter>
+      </div>
+      {% endfor %}
+    </div>
+    <dl class="metrics">
+      <div><dt>Volume</dt><dd>{{ "%.2f"|format(market.volume) }}</dd></div>
+      <div><dt>24h Volume</dt><dd>{{ "%.2f"|format(market.volume_24hr) }}</dd></div>
+      <div><dt>Liquidity</dt><dd>{{ "%.2f"|format(market.liquidity) }}</dd></div>
+      <div><dt>End date</dt><dd>{{ market.end_date }}</dd></div>
+    </dl>
+    <h3>Snapshot trend</h3>
+    <div class="trend" aria-label="probability trend">
+      {% for snapshot in snapshots|reverse %}
+      {% set first = snapshot.market.outcomes[0] %}
+      <span title="{{ snapshot.fetched_at }}" style="height: {{ 20 + (snapshot.market.probabilities[first] * 80) }}%"></span>
+      {% endfor %}
+    </div>
+  </article>
+
+  <aside class="participation-panel">
+    <h2>予想する</h2>
+    <section class="disclaimer compact" aria-label="デモ参加の注意事項">
+      {% for line in disclaimer.split('\n') %}
+      <p>{{ line }}</p>
+      {% endfor %}
+    </section>
+    <form id="prediction-form" data-market-id="{{ market.market_id }}">
+      <label for="outcome">参加内容を確認</label>
+      <select id="outcome" name="outcome">
+        {% for outcome in market.outcomes %}
+        <option value="{{ outcome }}" data-probability="{{ market.probabilities[outcome] }}">{{ outcome }} · {{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</option>
+        {% endfor %}
+      </select>
+      <label for="stake">デモポイント</label>
+      <input id="stake" name="stake" type="number" min="1" step="1" value="100">
+      <div class="simulation-summary">
+        <p>現在の推定確率: <strong id="selected-probability"></strong></p>
+        <p>estimated simulation return: <strong id="estimated-return"></strong> デモポイント</p>
+        <p>maximum demo point loss: <strong id="max-loss">100</strong> デモポイント</p>
+        <p>デモポイントに金銭価値はなく、換金や清算はできません。</p>
+      </div>
+      <button type="submit">デモ参加する</button>
+      <p id="prediction-result" role="status"></p>
+    </form>
+  </aside>
+</section>
+{% endblock %}

@@ -1,0 +1,228 @@
+:root {
+  color: #1f2933;
+  background: #f6f7f9;
+  font-family: Arial, "Hiragino Sans", "Yu Gothic", sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.topbar {
+  align-items: center;
+  background: #ffffff;
+  border-bottom: 1px solid #d8dee8;
+  display: flex;
+  justify-content: space-between;
+  padding: 14px 28px;
+}
+
+.brand {
+  color: #102a43;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+nav a {
+  color: #334e68;
+  margin-left: 18px;
+  text-decoration: none;
+}
+
+.page {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 28px;
+}
+
+.hero {
+  align-items: center;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+}
+
+h1, h2, h3 {
+  color: #102a43;
+  letter-spacing: 0;
+}
+
+.subtitle {
+  color: #52606d;
+}
+
+.balance-box, .status-panel, .notice {
+  background: #ffffff;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.balance-box {
+  display: grid;
+  min-width: 180px;
+}
+
+.balance-box strong {
+  font-size: 28px;
+}
+
+.disclaimer {
+  background: #fff8e6;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  margin: 22px 0;
+  padding: 16px;
+}
+
+.disclaimer p {
+  margin: 4px 0;
+}
+
+.compact p {
+  font-size: 13px;
+}
+
+.status-panel {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+
+.market-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.market-card, .market-detail, .participation-panel {
+  background: #ffffff;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.card-meta, .end-date {
+  color: #627d98;
+  font-size: 13px;
+}
+
+.outcome-row, .outcome-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.outcome-row span {
+  background: #e6f6ff;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.outcome-stack div {
+  display: grid;
+  gap: 6px;
+}
+
+meter {
+  height: 14px;
+  width: 100%;
+}
+
+.metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.metrics div {
+  background: #f6f7f9;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.metrics dt {
+  color: #627d98;
+  font-size: 12px;
+}
+
+.metrics dd {
+  margin: 4px 0 0;
+}
+
+.action-link, button {
+  background: #0b7285;
+  border: 0;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  display: inline-block;
+  font-weight: 700;
+  margin-top: 10px;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
+.detail-layout {
+  align-items: start;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.participation-panel form {
+  display: grid;
+  gap: 10px;
+}
+
+input, select {
+  border: 1px solid #bcccdc;
+  border-radius: 6px;
+  font-size: 16px;
+  padding: 10px;
+}
+
+.simulation-summary {
+  background: #f6f7f9;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.trend {
+  align-items: end;
+  background: #f6f7f9;
+  border-radius: 8px;
+  display: flex;
+  gap: 6px;
+  height: 120px;
+  padding: 12px;
+}
+
+.trend span {
+  background: #2f9e44;
+  border-radius: 4px 4px 0 0;
+  flex: 1;
+  min-height: 8px;
+}
+
+table {
+  background: #ffffff;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th, td {
+  border: 1px solid #d8dee8;
+  padding: 10px;
+  text-align: left;
+}
+
+@media (max-width: 820px) {
+  .hero, .status-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .detail-layout {
+    grid-template-columns: 1fr;
+  }
+}

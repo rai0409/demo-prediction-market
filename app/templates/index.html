@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}予想マーケット・デモビューア{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <h1>Demo Prediction Market Viewer</h1>
+    <p class="subtitle">公開予想マーケットを閲覧し、デモポイントでローカルシミュレーションできます。</p>
+  </div>
+  <div class="balance-box">
+    <span>デモ残高</span>
+    <strong id="demo-balance">{{ "%.2f"|format(demo_balance) }}</strong>
+    <span>デモポイント</span>
+  </div>
+</section>
+
+<section class="disclaimer" aria-label="重要な注意事項">
+  {% for line in disclaimer.split('\n') %}
+  <p>{{ line }}</p>
+  {% endfor %}
+</section>
+
+<section class="status-panel">
+  <div>データ状態: <strong id="data-status">{{ markets[0].data_source_status if markets else "sample fallback" }}</strong></div>
+  <div>鮮度: <strong id="freshness">{{ markets[0].fetched_at if markets else "" }}</strong></div>
+</section>
+
+<section>
+  <h2>マーケット</h2>
+  <div id="market-list" class="market-grid">
+    {% for market in markets %}
+    <article class="market-card" data-market-id="{{ market.market_id }}">
+      <div class="card-meta">{{ market.data_source_status }} · {{ market.fetched_at }}</div>
+      <h3>{{ market.title }}</h3>
+      <p>{{ market.question }}</p>
+      <div class="outcome-row">
+        {% for outcome in market.outcomes %}
+        <span>{{ outcome }} {{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</span>
+        {% endfor %}
+      </div>
+      <dl class="metrics">
+        <div><dt>Volume</dt><dd>{{ "%.2f"|format(market.volume) }}</dd></div>
+        <div><dt>24h</dt><dd>{{ "%.2f"|format(market.volume_24hr) }}</dd></div>
+        <div><dt>Liquidity</dt><dd>{{ "%.2f"|format(market.liquidity) }}</dd></div>
+      </dl>
+      <p class="end-date">終了: {{ market.end_date }}</p>
+      <a class="action-link" href="/markets/{{ market.market_id }}">予想する</a>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

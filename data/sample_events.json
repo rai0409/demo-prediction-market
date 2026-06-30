@@ -1,0 +1,79 @@
+{
+  "events": [
+    {
+      "id": "sample-event-1",
+      "slug": "sample-weather-tokyo-rain",
+      "title": "Tokyo weekend rain forecast",
+      "description": "Sample offline market about whether measurable rain will be recorded in Tokyo this weekend.",
+      "active": true,
+      "closed": false,
+      "end_date": "2026-08-01T12:00:00Z",
+      "markets": [
+        {
+          "id": "sample-market-tokyo-rain",
+          "slug": "will-it-rain-in-tokyo-this-weekend",
+          "question": "Will measurable rain be recorded in Tokyo this weekend?",
+          "outcomes": ["YES", "NO"],
+          "outcomePrices": [0.62, 0.38],
+          "volume": 15420.5,
+          "volume_24hr": 2100.25,
+          "liquidity": 8700.0,
+          "active": true,
+          "closed": false,
+          "end_date": "2026-08-01T12:00:00Z",
+          "description": "Resolves using a public weather observation sample rule."
+        }
+      ]
+    },
+    {
+      "id": "sample-event-2",
+      "slug": "sample-tech-release",
+      "title": "Sample technology release window",
+      "description": "Sample offline market about a public software release milestone.",
+      "active": true,
+      "closed": false,
+      "end_date": "2026-09-15T23:59:00Z",
+      "markets": [
+        {
+          "id": "sample-market-tech-release",
+          "slug": "will-sample-release-ship-by-september",
+          "question": "Will the sample release ship by September 15, 2026?",
+          "outcomes": ["YES", "NO"],
+          "outcomePrices": [0.47, 0.53],
+          "volume": 22300.0,
+          "volume_24hr": 3650.0,
+          "liquidity": 9400.0,
+          "active": true,
+          "closed": false,
+          "end_date": "2026-09-15T23:59:00Z",
+          "description": "Resolves from a public announcement sample rule."
+        }
+      ]
+    },
+    {
+      "id": "sample-event-3",
+      "slug": "sample-sports-final",
+      "title": "Sample championship outcome",
+      "description": "Sample offline market about a fictional championship result.",
+      "active": true,
+      "closed": false,
+      "end_date": "2026-10-20T18:00:00Z",
+      "markets": [
+        {
+          "id": "sample-market-championship",
+          "slug": "will-team-blue-win-sample-final",
+          "question": "Will Team Blue win the sample final?",
+          "outcomes": ["YES", "NO"],
+          "outcomePrices": [0.55, 0.45],
+          "volume": 18400.75,
+          "volume_24hr": 1890.5,
+          "liquidity": 7600.0,
+          "active": true,
+          "closed": false,
+          "end_date": "2026-10-20T18:00:00Z",
+          "description": "Resolves from the fictional sample final result."
+        }
+      ]
+    }
+  ]
+}

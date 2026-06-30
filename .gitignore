@@ -1,0 +1,42 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+secrets/
+credentials/
+*.pem
+*.key
+*.token
+.git-credentials
+
+# Runtime DB / logs
+*.sqlite3
+*.db
+runtime/
+logs/
+tmp/
+temp/
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# Local tools
+.codex/
+.claude/
+.uv-cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

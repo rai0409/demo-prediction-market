@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}デモポジション{% endblock %}
+{% block content %}
+<section class="disclaimer" aria-label="重要な注意事項">
+  {% for line in disclaimer.split('\n') %}
+  <p>{{ line }}</p>
+  {% endfor %}
+</section>
+
+<section class="hero compact-hero">
+  <div>
+    <h1>デモポジション</h1>
+    <p class="subtitle">予想履歴、デモポジション、デモポイント台帳を確認できます。</p>
+  </div>
+  <div class="balance-box">
+    <span>デモ残高</span>
+    <strong>{{ "%.2f"|format(demo_balance) }}</strong>
+    <span>デモポイント</span>
+  </div>
+</section>
+
+<section class="notice">デモポイントに金銭価値はなく、換金や清算はできません。</section>
+
+<section>
+  <h2>デモポジション</h2>
+  <table>
+    <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Estimated simulation return</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for position in positions %}
+      <tr><td>{{ position.market_id }}</td><td>{{ position.outcome }}</td><td>{{ position.stake }}</td><td>{{ position.estimated_return }}</td><td>{{ position.created_at }}</td></tr>
+      {% else %}
+      <tr><td colspan="5">デモ参加はまだありません。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>予想履歴</h2>
+  <table>
+    <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Probability</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for order in orders %}
+      <tr><td>{{ order.market_id }}</td><td>{{ order.outcome }}</td><td>{{ order.stake }}</td><td>{{ order.probability }}</td><td>{{ order.created_at }}</td></tr>
+      {% else %}
+      <tr><td colspan="5">予想履歴はまだありません。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>デモポイント ledger</h2>
+  <table>
+    <thead><tr><th>Type</th><th>Amount</th><th>Balance</th><th>Note</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for entry in ledger %}
+      <tr><td>{{ entry.entry_type }}</td><td>{{ entry.amount }}</td><td>{{ entry.balance_after }}</td><td>{{ entry.note }}</td><td>{{ entry.created_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
