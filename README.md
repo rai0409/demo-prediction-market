@@ -1,29 +1,68 @@
-# Demo Prediction Market Viewer
+# Demo Prediction Market Viewer / 予想マーケット・デモビューア
 
-日本語表示名: 予想マーケット・デモビューア
+FastAPIベースのローカル技術MVPです。Polymarketの公開マーケットデータを取得し、アクティブで表示可能な市場だけをダッシュボードに出し、ローカルのデモポイントで `予想する` / `デモ参加する` 体験をシミュレーションできます。
 
-このアプリはデモ用の予想マーケットビューアです。
-表示される市場データは参考情報であり、投資・賭博・取引の推奨ではありません。
-アプリ内のデモポイントは無償のシミュレーション専用ポイントです。
-デモポイントは購入・換金・出金・譲渡・外部ポイント交換・暗号資産交換・景品交換ができません。
-このアプリはPolymarketへの注文、ウォレット接続、入金、出金、売買を行いません。
+## 重要な安全メモ
 
-## Overview
+このリポジトリは技術検証用のローカルシミュレーションです。
 
-Demo Prediction Market Viewer is a local FastAPI MVP. It shows public Polymarket-style market data when live mode is enabled, otherwise it uses bundled sample fallback data. Users can press `予想する` and `デモ参加する` to record local simulated positions with free `デモポイント`.
+- Polymarketへ注文を送信しません。
+- ウォレット接続を実装していません。
+- 入金、出金、換金、外部ポイント交換をサポートしません。
+- 秘密鍵、シードフレーズ、APIキー、APIシークレットなどの private credentials を使いません。
+- 投資助言、賭博助言、法的助言ではありません。
 
-## Safety Boundary
+アプリ内の `デモポイント` は無償のシミュレーション専用ポイントであり、購入、換金、出金、譲渡、外部ポイント交換、暗号資産交換、景品交換はできません。
 
-Intentionally not implemented:
+## このプロジェクトで示していること
 
-- real orders or real trading
-- wallet connection
-- deposit, withdrawal, or cashout functionality
-- conversion to money, crypto, gifts, or external points
-- paid point purchase
-- private keys, seed phrases, API keys, API secrets, or passphrases
-- authenticated user WebSocket channels
-- automated trading
+- FastAPI web app
+- Polymarket public Gamma API integration
+- defensive API normalization
+- sample fallback design
+- SQLite storage
+- market snapshot persistence
+- active market filtering
+- server-side eligibility guard
+- local demo point ledger
+- dashboard/detail/positions UI
+- diagnostics endpoints
+- automated tests
+
+## 現在の確認済みステータス
+
+- sample fallback works
+- live Polymarket fetch works
+- latest live check: 100 raw events fetched
+- latest live check: 50 normalized markets
+- latest live check: 21 displayable markets after filtering
+- `/api/markets?include_all=true` returns all fetched normalized markets
+- tests pass: `44 passed`
+
+Live API results depend on the public Gamma API response at runtime, so counts may change.
+
+## アーキテクチャ概要
+
+- `app/main.py`: FastAPI routes, Jinja rendering, API endpoints, formatting helpers.
+- `app/polymarket_gamma.py`: public Gamma API fetch, response diagnostics, sample fallback loader, defensive normalizer.
+- `app/market_display.py`: active/current market classification, filtering, hidden-count metadata, demo eligibility labels.
+- `app/demo_points.py`: local demo prediction validation, balance subtraction, simulated order/position creation.
+- `app/storage.py`: SQLite connection, table creation, market snapshots, demo users, ledger, simulated orders/positions.
+- `app/realtime.py`: refresh orchestration, live-first/sample-fallback behavior, debug source status.
+- `app/templates/` and `app/static/`: server-rendered dashboard, market detail, demo positions UI, polling JS, CSS.
+- `scripts/`: local live/sample fetch checks and raw Gamma response diagnostics.
+- `tests/`: offline pytest coverage for normalization, storage, routes, safety boundary, filtering, and demo points.
+
+## データフロー
+
+1. Gamma API fetch or sample fallback load.
+2. Normalize events/markets into one internal market shape.
+3. Store current markets and snapshots in SQLite.
+4. Classify markets for display and demo participation eligibility.
+5. Render dashboard cards and detail pages from filtered markets.
+6. Server-side guard checks eligibility on `POST /api/demo/predict`.
+7. Store local simulated orders, simulated positions, and demo point ledger entries.
+8. Expose diagnostics through runtime files and `/api/debug/source-status`.
 
 ## Setup
 
@@ -33,156 +72,122 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Run In Sample Mode
+## Run sample mode
 
 ```bash
 DEMO_PREDICTION_LIVE=0 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
 ```
 
-Open `http://127.0.0.1:8092`.
+or:
 
-## Run With Optional Public Fetch
+```bash
+scripts/run_sample.sh
+```
+
+## Run live mode
 
 ```bash
 DEMO_PREDICTION_LIVE=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
 ```
 
-Live mode uses only public market data and falls back to `data/sample_events.json` if the fetch fails. No secrets are required.
+or:
+
+```bash
+scripts/run_live.sh
+```
+
+Open `http://127.0.0.1:8092`.
+
+## Refresh
+
+```bash
+curl -s -X POST http://127.0.0.1:8092/api/refresh | python -m json.tool
+```
+
+## Check filtered markets
+
+```bash
+curl -s http://127.0.0.1:8092/api/markets | python -m json.tool
+```
+
+## Check all markets
+
+```bash
+curl -s 'http://127.0.0.1:8092/api/markets?include_all=true' | python -m json.tool
+```
+
+## Debug
+
+```bash
+curl -s http://127.0.0.1:8092/api/debug/source-status | python -m json.tool
+```
 
 ## Tests
 
 ```bash
 python -m pytest tests -q
-python -c "from app.main import app; print(app.title)"
 ```
 
-## Demo Points
+## Demo flow
 
-The app creates one local demo user, `local-demo-user`, with `10000` free demo points. Demo participation subtracts points locally and records simulated positions, simulated order history, and a demo point ledger.
+1. Open the dashboard.
+2. Refresh live data with `POST /api/refresh` or run with `DEMO_PREDICTION_LIVE=1`.
+3. Open a market detail page.
+4. Choose an outcome.
+5. Enter demo points.
+6. Click `デモ参加する`.
+7. View `デモポジション`.
 
-Demo points are simulation-only and have no monetary value.
+## API endpoints
 
-## v0.2 Live Fetch And Diagnostics
+HTML:
 
-Sample mode remains the default:
+- `GET /`: dashboard with filtered markets.
+- `GET /markets/{market_id}`: market detail and demo participation panel when eligible.
+- `GET /demo-positions`: local simulated positions, `予想履歴`, and ledger.
+- `GET /health`: app health.
 
-```bash
-DEMO_PREDICTION_LIVE=0 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
-```
+JSON:
 
-Live mode attempts the public Polymarket Gamma events endpoint first:
+- `POST /api/refresh`: fetches live/sample markets and stores snapshots.
+- `GET /api/markets`: filtered displayable markets and hidden-count metadata.
+- `GET /api/markets?include_all=true`: all stored normalized markets.
+- `GET /api/markets/{market_id}`: one enriched market.
+- `GET /api/markets/{market_id}/snapshots`: recent stored snapshots.
+- `GET /api/debug/source-status`: live/sample/fallback/filter diagnostics.
+- `GET /api/demo/balance`: local demo balance.
+- `GET /api/demo/positions`: local positions/orders/ledger.
+- `POST /api/demo/predict`: local-only demo participation. It never calls external trading APIs.
 
-```bash
-DEMO_PREDICTION_LIVE=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
-```
+See [docs/api.md](docs/api.md) for details.
 
-Accepted enabled values are `1`, `true`, `True`, `yes`, and `on`. Accepted disabled values are `0`, `false`, `False`, `no`, `off`, and an empty value.
+## Screenshots
 
-Refresh current markets and store snapshots:
+Recommended screenshot paths:
 
-```bash
-curl -X POST http://127.0.0.1:8092/api/refresh
-```
+- `docs/screenshots/dashboard-live.png`
+- `docs/screenshots/market-detail.png`
+- `docs/screenshots/demo-positions.png`
+- `docs/screenshots/debug-source-status.png`
 
-Inspect source status:
+Actual screenshots are not committed yet.
 
-```bash
-curl http://127.0.0.1:8092/api/debug/source-status
-```
+## Limitations
 
-Run the fallback/live helper:
+- Local demo only.
+- No authentication.
+- No production deployment setup.
+- No real order placement.
+- Public API format may change.
+- Legal/regulatory review is required before any real-money, external point, or production use.
+- Not production-ready.
 
-```bash
-DEMO_PREDICTION_LIVE=0 python scripts/check_live_fetch.py
-DEMO_PREDICTION_LIVE=1 python scripts/check_live_fetch.py
-```
+## Roadmap
 
-Dump one raw public Gamma response for diagnosis:
-
-```bash
-python scripts/dump_gamma_sample.py
-```
-
-Runtime diagnostics are written under `runtime/` and are intentionally ignored by git:
-
-- `runtime/gamma_last_response.json`
-- `runtime/gamma_last_error.txt`
-- `runtime/gamma_last_status.json`
-- `runtime/manual_gamma_response.json`
-
-Fetch statuses:
-
-- `live`: public Gamma fetch succeeded and displayable Polymarket markets were normalized.
-- `live_failed_sample_fallback`: live fetch or normalization failed, so bundled sample data was used.
-- `live_empty_sample_fallback`: live fetch succeeded but produced no displayable markets, so bundled sample data was used.
-- `sample_fallback`: sample mode is active or sample data was intentionally loaded.
-
-The safety boundary is unchanged: no real orders, no wallet, no deposit, no withdrawal, no cashout, no external point exchange, and no private credentials.
-
-## v0.3 Active Market Filtering
-
-Live Polymarket fetch remains supported with `DEMO_PREDICTION_LIVE=1`. The default dashboard now filters the normal market list to current displayable markets.
-
-Filtered out by default:
-
-- closed markets
-- inactive markets
-- expired markets
-- markets with no displayable outcomes or probabilities
-- markets with no liquidity
-- markets whose probabilities look resolved, such as 0% / 100%
-
-The market API returns count metadata for displayed and hidden markets:
-
-```bash
-curl http://127.0.0.1:8092/api/markets
-```
-
-To inspect every fetched market, including archived or hidden rows:
-
-```bash
-curl "http://127.0.0.1:8092/api/markets?include_all=true"
-```
-
-Additional filters are available:
-
-- `include_closed=true`
-- `include_expired=true`
-- `include_inactive=true`
-- `include_all=true`
-
-`POST /api/demo/predict` now enforces the same eligibility boundary server-side. Local demo participation is rejected for closed, inactive, expired, zero-liquidity, and resolved-looking markets even if a caller bypasses the UI.
-
-The safety boundary remains unchanged: the app still does not place real orders, connect wallets, support deposits, support withdrawals, support cashout, exchange external points, or use private credentials.
-
-## v0.4 UI Polish And Demo Flow
-
-This remains a local technical MVP, not a production service and not legal, investment, betting, or trading advice.
-
-Current status:
-
-- live Polymarket public data fetch works when `DEMO_PREDICTION_LIVE=1`
-- the dashboard filters active/current markets by default
-- ineligible markets are blocked server-side for demo participation
-- the UI includes status badges, probability bars, hidden-market summaries, detail metrics, snapshot history, and demo positions
-- demo participation is local-only and uses free simulation-only demo points
-
-Run sample mode:
-
-```bash
-DEMO_PREDICTION_LIVE=0 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
-```
-
-Run live public data mode:
-
-```bash
-DEMO_PREDICTION_LIVE=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
-```
-
-Run tests:
-
-```bash
-python -m pytest tests -q
-```
-
-The safety boundary remains unchanged: no real orders, no wallet, no deposit, no withdrawal, no cashout, no external point exchange, and no private credentials.
+- screenshots
+- optional charts
+- better search/filter UI
+- deploy as read-only demo
+- CI
+- Dockerfile
+- richer tests

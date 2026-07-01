@@ -1,14 +1,43 @@
 # Demo Participation Boundary
 
-Demo participation is local simulation only.
+This app is a technical MVP and local simulation only.
+
+## Local Demo User
 
 The app creates one local demo user:
 
 - `demo_user_id`: `local-demo-user`
 - initial demo points: `10000`
 
-Demo points are free local simulation points. They cannot be purchased, withdrawn, cashed out, transferred, converted to money, converted to crypto, exchanged for external points, or exchanged for gifts or prizes.
+## Demo Point Rules
 
-When a user presses `デモ参加する`, the app validates the market, outcome, stake, and available demo balance. It subtracts demo points locally, records a simulated order, records a simulated position, and writes a local ledger entry.
+Demo points are free simulation-only points.
 
-No external trading API is called. No wallet is connected. No private credentials are used.
+Demo points:
+
+- have no monetary value
+- cannot be purchased
+- cannot be withdrawn
+- cannot be cashed out
+- cannot be transferred
+- cannot be converted to money
+- cannot be converted to crypto
+- cannot be exchanged for external points
+- cannot be exchanged for gifts or prizes
+
+## Demo Participation Flow
+
+When a user presses `デモ参加する`, the app validates:
+
+- market exists
+- market is active/displayable and eligible for demo participation
+- outcome exists
+- stake is numeric
+- stake is greater than zero
+- local demo balance is sufficient
+
+If valid, the app subtracts demo points locally, records a simulated order, records a simulated position, and writes a local ledger entry.
+
+## Hard Boundary
+
+No Polymarket order is placed. No external trading API is called. No wallet is connected. No private credentials are used. No real betting or trading is implemented.

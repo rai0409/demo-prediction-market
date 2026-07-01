@@ -4,9 +4,9 @@ Demo Prediction Market Viewer uses REST polling first.
 
 The default mode is sample fallback mode. `data/sample_events.json` is loaded, normalized, and stored in SQLite so the app works offline and tests never require network access.
 
-When `DEMO_PREDICTION_LIVE=1`, the app attempts a public Gamma API-style fetch from Polymarket event data. If that public fetch fails, the app falls back to sample data and marks the data source status as `last fetch failed`.
+When `DEMO_PREDICTION_LIVE=1`, the app attempts a public Gamma API-style fetch from Polymarket event data. If that public fetch fails, the app falls back to sample data and marks the data source status with an explicit fallback value such as `live_failed_sample_fallback`.
 
-`POST /api/refresh` fetches current public/sample markets and stores a market snapshot. `GET /api/markets` returns normalized market cards. `GET /api/markets/{market_id}/snapshots` returns recent local snapshots.
+`POST /api/refresh` fetches current public/sample markets and stores market snapshots. `GET /api/markets` returns filtered displayable market cards by default. `GET /api/markets?include_all=true` returns all stored normalized markets. `GET /api/markets/{market_id}/snapshots` returns recent local snapshots.
 
 The dashboard JavaScript polls `/api/markets` every 15 to 30 seconds and updates visible freshness and data source status.
 

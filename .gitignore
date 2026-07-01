@@ -10,6 +10,7 @@ __pycache__/
 # Env / secrets
 .env
 .env.*
+!.env.example
 secrets/
 credentials/
 *.pem
