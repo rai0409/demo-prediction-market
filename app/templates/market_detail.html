@@ -9,7 +9,7 @@
 
 <section class="detail-layout">
   <article class="market-detail">
-    <p class="card-meta">{{ market.data_source_status }} · {{ market.fetched_at }}</p>
+    <p class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ market.data_source_status }}</span><span>{{ market.fetched_at|date }}</span></p>
     <h1>{{ market.title }}</h1>
     <h2>{{ market.question }}</h2>
     <p class="status-label">{{ market.display_status }}</p>
@@ -18,29 +18,49 @@
     {% else %}
     <p class="blocked-label">デモ参加対象外: {{ market.demo_participation_block_reason }}</p>
     {% endif %}
-    <p>{{ market.description }}</p>
-    <div class="outcome-stack">
+    <dl class="metrics detail-metrics">
+      <div><dt>Volume</dt><dd>{{ market.volume|number }}</dd></div>
+      <div><dt>24h Volume</dt><dd>{{ market.volume_24hr|number }}</dd></div>
+      <div><dt>Liquidity</dt><dd>{{ market.liquidity|number }}</dd></div>
+      <div><dt>End date</dt><dd>{{ market.end_date|date }}</dd></div>
+    </dl>
+    <div class="outcome-stack outcome-cards">
       {% for outcome in market.outcomes %}
       <div>
         <span>{{ outcome }}</span>
-        <strong>{{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</strong>
-        <meter min="0" max="1" value="{{ market.probabilities[outcome] }}"></meter>
+        <strong>{{ market.probabilities[outcome]|percent }}</strong>
+        <div class="probability-bar" aria-label="{{ outcome }} probability">
+          <span style="width: {{ market.probabilities[outcome] * 100 }}%"></span>
+        </div>
       </div>
       {% endfor %}
     </div>
-    <dl class="metrics">
-      <div><dt>Volume</dt><dd>{{ "%.2f"|format(market.volume) }}</dd></div>
-      <div><dt>24h Volume</dt><dd>{{ "%.2f"|format(market.volume_24hr) }}</dd></div>
-      <div><dt>Liquidity</dt><dd>{{ "%.2f"|format(market.liquidity) }}</dd></div>
-      <div><dt>End date</dt><dd>{{ market.end_date }}</dd></div>
-    </dl>
-    <h3>Snapshot trend</h3>
-    <div class="trend" aria-label="probability trend">
-      {% for snapshot in snapshots|reverse %}
-      {% set first = snapshot.market.outcomes[0] %}
-      <span title="{{ snapshot.fetched_at }}" style="height: {{ 20 + (snapshot.market.probabilities[first] * 80) }}%"></span>
-      {% endfor %}
-    </div>
+    <section class="description-block">
+      <h3>Description / resolution condition</h3>
+      <p>{{ market.description or "説明はありません。" }}</p>
+    </section>
+    <section>
+      <h3>Snapshot trend</h3>
+      {% if snapshots %}
+      <div class="trend" aria-label="probability trend">
+        {% for snapshot in snapshots|reverse %}
+        {% set first = snapshot.market.outcomes[0] %}
+        <span title="{{ snapshot.fetched_at|date }}" style="height: {{ 20 + (snapshot.market.probabilities[first] * 80) }}%"></span>
+        {% endfor %}
+      </div>
+      <table class="snapshot-table">
+        <thead><tr><th>Fetched</th><th>Status</th><th>First outcome</th></tr></thead>
+        <tbody>
+          {% for snapshot in snapshots %}
+          {% set first = snapshot.market.outcomes[0] %}
+          <tr><td>{{ snapshot.fetched_at|date }}</td><td>{{ snapshot.market.data_source_status }}</td><td>{{ first }} {{ snapshot.market.probabilities[first]|percent }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="notice">Snapshot history is not available yet.</p>
+      {% endif %}
+    </section>
   </article>
 
   <aside class="participation-panel">
@@ -52,6 +72,7 @@
     </section>
     {% if market.demo_participation_allowed %}
     <form id="prediction-form" data-market-id="{{ market.market_id }}">
+      <div class="balance-inline"><span>現在のデモ残高</span><strong>{{ demo_balance|number }}</strong><span>デモポイント</span></div>
       <label for="outcome">参加内容を確認</label>
       <select id="outcome" name="outcome">
         {% for outcome in market.outcomes %}
@@ -68,6 +89,7 @@
       </div>
       <button type="submit">デモ参加する</button>
       <p id="prediction-result" role="status"></p>
+      <a class="secondary-link" href="/demo-positions">デモポジションを見る</a>
     </form>
     {% else %}
     <div class="simulation-summary">

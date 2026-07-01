@@ -22,31 +22,56 @@
 <section class="notice">デモポイントに金銭価値はなく、換金や清算はできません。</section>
 
 <section>
-  <h2>デモポジション</h2>
+  <div class="section-heading">
+    <h2>デモポジション</h2>
+    <p>ローカルに記録されたシミュレーション専用の参加内容です。</p>
+  </div>
+  {% if positions %}
   <table>
-    <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Estimated simulation return</th><th>Created</th></tr></thead>
+    <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Probability</th><th>Estimated simulation return</th><th>Status</th><th>Created</th></tr></thead>
     <tbody>
       {% for position in positions %}
-      <tr><td>{{ position.market_id }}</td><td>{{ position.outcome }}</td><td>{{ position.stake }}</td><td>{{ position.estimated_return }}</td><td>{{ position.created_at }}</td></tr>
-      {% else %}
-      <tr><td colspan="5">デモ参加はまだありません。</td></tr>
+      <tr>
+        <td><strong>{{ position.market_title }}</strong><br><span class="muted">{{ position.market_question }}</span></td>
+        <td>{{ position.outcome }}</td>
+        <td>{{ position.stake|number }}</td>
+        <td>{{ position.probability|percent }}</td>
+        <td>{{ position.estimated_return|number }}</td>
+        <td>simulated</td>
+        <td>{{ position.created_at|date }}</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>
+  {% else %}
+  <div class="empty-state">
+    <h3>デモ参加はまだありません。</h3>
+    <p>マーケット一覧から対象マーケットを選んで、予想するパネルでデモ参加できます。</p>
+    <a class="action-link" href="/">マーケットへ</a>
+  </div>
+  {% endif %}
 </section>
 
 <section>
   <h2>予想履歴</h2>
+  {% if orders %}
   <table>
     <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Probability</th><th>Created</th></tr></thead>
     <tbody>
       {% for order in orders %}
-      <tr><td>{{ order.market_id }}</td><td>{{ order.outcome }}</td><td>{{ order.stake }}</td><td>{{ order.probability }}</td><td>{{ order.created_at }}</td></tr>
-      {% else %}
-      <tr><td colspan="5">予想履歴はまだありません。</td></tr>
+      <tr>
+        <td><strong>{{ order.market_title }}</strong><br><span class="muted">{{ order.market_question }}</span></td>
+        <td>{{ order.outcome }}</td>
+        <td>{{ order.stake|number }}</td>
+        <td>{{ order.probability|percent }}</td>
+        <td>{{ order.created_at|date }}</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>
+  {% else %}
+  <p class="notice">予想履歴はまだありません。</p>
+  {% endif %}
 </section>
 
 <section>
@@ -55,7 +80,7 @@
     <thead><tr><th>Type</th><th>Amount</th><th>Balance</th><th>Note</th><th>Created</th></tr></thead>
     <tbody>
       {% for entry in ledger %}
-      <tr><td>{{ entry.entry_type }}</td><td>{{ entry.amount }}</td><td>{{ entry.balance_after }}</td><td>{{ entry.note }}</td><td>{{ entry.created_at }}</td></tr>
+      <tr><td>{{ entry.entry_type }}</td><td>{{ entry.amount|number }}</td><td>{{ entry.balance_after|number }}</td><td>{{ entry.note }}</td><td>{{ entry.created_at|date }}</td></tr>
       {% endfor %}
     </tbody>
   </table>

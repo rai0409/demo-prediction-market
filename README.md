@@ -154,3 +154,35 @@ Additional filters are available:
 `POST /api/demo/predict` now enforces the same eligibility boundary server-side. Local demo participation is rejected for closed, inactive, expired, zero-liquidity, and resolved-looking markets even if a caller bypasses the UI.
 
 The safety boundary remains unchanged: the app still does not place real orders, connect wallets, support deposits, support withdrawals, support cashout, exchange external points, or use private credentials.
+
+## v0.4 UI Polish And Demo Flow
+
+This remains a local technical MVP, not a production service and not legal, investment, betting, or trading advice.
+
+Current status:
+
+- live Polymarket public data fetch works when `DEMO_PREDICTION_LIVE=1`
+- the dashboard filters active/current markets by default
+- ineligible markets are blocked server-side for demo participation
+- the UI includes status badges, probability bars, hidden-market summaries, detail metrics, snapshot history, and demo positions
+- demo participation is local-only and uses free simulation-only demo points
+
+Run sample mode:
+
+```bash
+DEMO_PREDICTION_LIVE=0 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
+```
+
+Run live public data mode:
+
+```bash
+DEMO_PREDICTION_LIVE=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092
+```
+
+Run tests:
+
+```bash
+python -m pytest tests -q
+```
+
+The safety boundary remains unchanged: no real orders, no wallet, no deposit, no withdrawal, no cashout, no external point exchange, and no private credentials.

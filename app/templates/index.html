@@ -3,13 +3,9 @@
 {% block content %}
 <section class="hero">
   <div>
-    <h1>Demo Prediction Market Viewer</h1>
-    <p class="subtitle">公開予想マーケットを閲覧し、デモポイントでローカルシミュレーションできます。</p>
-  </div>
-  <div class="balance-box">
-    <span>デモ残高</span>
-    <strong id="demo-balance">{{ "%.2f"|format(demo_balance) }}</strong>
-    <span>デモポイント</span>
+    <p class="eyebrow">Demo Prediction Market Viewer</p>
+    <h1>予想マーケット・デモビューア</h1>
+    <p class="subtitle">公開予想マーケットを閲覧し、デモポイントでローカルだけのデモ参加を記録できます。</p>
   </div>
 </section>
 
@@ -19,11 +15,32 @@
   {% endfor %}
 </section>
 
-<section class="status-panel">
-  <div>データ状態: <strong id="data-status">{{ data_status_badge }}</strong></div>
-  <div>鮮度: <strong id="freshness">{{ markets[0].fetched_at if markets else "" }}</strong></div>
-  <div>表示中: <strong id="displayed-count">{{ market_meta.count }}</strong></div>
-  <div>取得合計: <strong id="total-count">{{ market_meta.total_market_count }}</strong></div>
+<section class="summary-grid" aria-label="dashboard summary">
+  <div class="summary-card balance-box">
+    <span>デモ残高</span>
+    <strong id="demo-balance">{{ demo_balance|number }}</strong>
+    <span>デモポイント</span>
+  </div>
+  <div class="summary-card">
+    <span>データ状態</span>
+    <strong id="data-status" class="badge">{{ data_status_badge }}</strong>
+    <span>Near-real-time REST polling</span>
+  </div>
+  <div class="summary-card">
+    <span>表示中</span>
+    <strong id="displayed-count">{{ market_meta.count }}</strong>
+    <span>取得合計 <span id="total-count">{{ market_meta.total_market_count }}</span></span>
+  </div>
+  <div class="summary-card">
+    <span>非表示</span>
+    <strong id="hidden-count">{{ hidden_market_count }}</strong>
+    <span>終了済み・期限切れなど</span>
+  </div>
+  <div class="summary-card">
+    <span>最終取得</span>
+    <strong id="freshness">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
+    <span>{{ poll_seconds }}秒ごとに画面情報を確認</span>
+  </div>
 </section>
 
 <section class="hidden-summary">
@@ -36,33 +53,34 @@
 </section>
 
 <section>
-  <h2>マーケット</h2>
+  <div class="section-heading">
+    <h2>マーケット</h2>
+    <p>現在表示可能な市場のみを並べています。</p>
+  </div>
   <div id="market-list" class="market-grid">
     {% for market in markets %}
     <article class="market-card" data-market-id="{{ market.market_id }}">
-      <div class="card-meta">{{ market.data_source_status }} · {{ market.fetched_at }}</div>
+      <div class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ market.data_source_status }}</span></div>
       <h3>{{ market.title }}</h3>
       <p>{{ market.question }}</p>
       <p class="status-label">{{ market.display_status }}</p>
-      <div class="outcome-row">
-        {% for outcome in market.outcomes %}
-        <span>{{ outcome }} {{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</span>
-        {% endfor %}
-      </div>
       {% if market.outcomes|length >= 2 %}
       {% set first = market.outcomes[0] %}
       {% set second = market.outcomes[1] %}
-      <div class="probability-bar" aria-label="probability bar">
+      <div class="outcome-row two">
+        <span><strong>{{ first }}</strong>{{ market.probabilities[first]|percent }}</span>
+        <span><strong>{{ second }}</strong>{{ market.probabilities[second]|percent }}</span>
+      </div>
+      <div class="probability-bar split" aria-label="probability bar">
         <span style="width: {{ market.probabilities[first] * 100 }}%"></span>
       </div>
-      <p class="probability-caption">{{ first }} {{ "%.1f"|format(market.probabilities[first] * 100) }}% / {{ second }} {{ "%.1f"|format(market.probabilities[second] * 100) }}%</p>
       {% endif %}
       <dl class="metrics">
-        <div><dt>Volume</dt><dd>{{ "%.2f"|format(market.volume) }}</dd></div>
-        <div><dt>24h</dt><dd>{{ "%.2f"|format(market.volume_24hr) }}</dd></div>
-        <div><dt>Liquidity</dt><dd>{{ "%.2f"|format(market.liquidity) }}</dd></div>
+        <div><dt>Volume</dt><dd>{{ market.volume|number }}</dd></div>
+        <div><dt>24h</dt><dd>{{ market.volume_24hr|number }}</dd></div>
+        <div><dt>Liquidity</dt><dd>{{ market.liquidity|number }}</dd></div>
       </dl>
-      <p class="end-date">終了: {{ market.end_date }}</p>
+      <p class="end-date">終了: {{ market.end_date|date }}</p>
       {% if market.demo_participation_allowed %}
       <a class="action-link" href="/markets/{{ market.market_id }}">予想する</a>
       {% else %}

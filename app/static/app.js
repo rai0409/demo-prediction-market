@@ -39,11 +39,17 @@
         var data = await response.json();
         if (!response.ok) {
           result.textContent = data.detail || "デモ参加を記録できませんでした。";
+          result.className = "form-message error";
           return;
         }
-        result.textContent = "デモ参加を記録しました。デモ残高: " + Number(data.balance).toFixed(2);
+        var balance = Number(data.balance).toFixed(2);
+        result.textContent = (data.message || "デモ参加を記録しました。") + " デモ残高: " + balance;
+        result.className = "form-message success";
+        var balanceNode = document.getElementById("demo-balance");
+        if (balanceNode) balanceNode.textContent = balance;
       } catch (error) {
         result.textContent = "通信に失敗しました。";
+        result.className = "form-message error";
       }
     });
     updateEstimator();

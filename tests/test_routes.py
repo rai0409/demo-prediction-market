@@ -42,6 +42,9 @@ def test_post_demo_predict(client, sample_markets):
     )
     assert response.status_code == 200
     assert response.json()["balance"] == INITIAL_DEMO_POINTS - 50
+    assert response.json()["message"] == "デモ参加を記録しました。"
+    assert response.json()["position"]["outcome"] == "YES"
+    assert response.json()["position"]["estimated_return"] > 0
 
 
 def test_debug_source_status_returns_expected_keys(client):
@@ -76,6 +79,58 @@ def test_debug_source_status_returns_expected_keys(client):
         "runtime_error_file_exists",
     }
     assert expected.issubset(payload.keys())
+
+
+def test_dashboard_renders_status_metadata(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.text
+    assert "データ状態" in html
+    assert "表示中" in html
+    assert "取得合計" in html
+    assert "非表示" in html
+    assert "全マーケットを見る" in html
+
+
+def test_market_card_includes_predict_for_eligible_market(client):
+    html = client.get("/").text
+    assert "予想する" in html
+    assert "デモ参加可" in html
+
+
+def test_market_card_includes_block_reason_for_ineligible_when_rendered(client, db_conn, sample_markets):
+    closed = dict(sample_markets[0])
+    closed["market_id"] = "closed-card-market"
+    closed["closed"] = True
+    replace_markets(db_conn, [closed])
+    html = client.get("/markets/closed-card-market").text
+    assert "デモ参加対象外" in html
+    assert "終了済み" in html
+    assert "id=\"prediction-form\"" not in html
+
+
+def test_market_detail_renders_demo_panel_for_eligible_market(client):
+    html = client.get("/markets/sample-market-tokyo-rain").text
+    assert "id=\"prediction-form\"" in html
+    assert "デモ参加する" in html
+    assert "現在のデモ残高" in html
+
+
+def test_demo_positions_page_renders_empty_state(client):
+    html = client.get("/demo-positions").text
+    assert "デモ参加はまだありません。" in html
+    assert "マーケットへ" in html
+
+
+def test_demo_positions_page_renders_positions(client, sample_markets):
+    client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 25},
+    )
+    html = client.get("/demo-positions").text
+    assert "Tokyo weekend rain forecast" in html
+    assert "simulated" in html
+    assert "予想履歴" in html
 
 
 def test_ui_text_uses_required_words(client):

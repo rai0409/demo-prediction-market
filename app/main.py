@@ -33,6 +33,36 @@ db = connect(settings.db_path)
 templates = Jinja2Templates(directory="app/templates")
 
 
+def format_percent(value: float | int | str | None) -> str:
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def format_number(value: float | int | str | None) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if abs(number) >= 1_000_000:
+        return f"{number / 1_000_000:.2f}M"
+    if abs(number) >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return f"{number:.2f}"
+
+
+def format_datetime(value: str | None) -> str:
+    if not value:
+        return "-"
+    return str(value).replace("T", " ").replace("+00:00", " UTC").replace("Z", " UTC")
+
+
+templates.env.filters["percent"] = format_percent
+templates.env.filters["number"] = format_number
+templates.env.filters["date"] = format_datetime
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db(db)
@@ -76,6 +106,28 @@ def data_status_badge(markets: list[dict]) -> str:
     return str(status)
 
 
+def hidden_market_count(meta: dict) -> int:
+    keys = (
+        "hidden_closed_count",
+        "hidden_inactive_count",
+        "hidden_expired_count",
+        "hidden_no_liquidity_count",
+        "hidden_resolved_probability_count",
+    )
+    return sum(int(meta.get(key, 0) or 0) for key in keys)
+
+
+def enrich_activity_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
+    enriched: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        market = get_market(conn, item.get("market_id", ""))
+        item["market_title"] = market.get("title") if market else item.get("market_id", "")
+        item["market_question"] = market.get("question") if market else ""
+        enriched.append(item)
+    return enriched
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     all_markets = ensure_markets(conn, settings)
@@ -88,6 +140,7 @@ async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
             markets=market_response["markets"],
             market_meta=market_response,
             data_status_badge=data_status_badge(all_markets),
+            hidden_market_count=hidden_market_count(market_response),
         ),
     )
 
@@ -114,8 +167,8 @@ async def demo_positions(request: Request, conn: sqlite3.Connection = Depends(ge
         "demo_positions.html",
         template_context(
             request,
-            positions=list_positions(conn),
-            orders=list_orders(conn),
+            positions=enrich_activity_rows(conn, list_positions(conn)),
+            orders=enrich_activity_rows(conn, list_orders(conn)),
             ledger=list_ledger(conn),
         ),
     )
@@ -203,4 +256,5 @@ async def api_demo_predict(payload: PredictionRequest, conn: sqlite3.Connection 
         )
     except DemoPredictionError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+    result["message"] = "デモ参加を記録しました。"
     return result
