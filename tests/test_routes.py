@@ -1,4 +1,5 @@
 from app.storage import INITIAL_DEMO_POINTS
+from app.storage import replace_markets
 
 
 def test_health(client):
@@ -11,6 +12,27 @@ def test_api_markets(client):
     response = client.get("/api/markets")
     assert response.status_code == 200
     assert response.json()["count"] >= 3
+    payload = response.json()
+    assert "total_market_count" in payload
+    assert "displayable_market_count" in payload
+    assert "hidden_closed_count" in payload
+    assert "hidden_inactive_count" in payload
+    assert "hidden_expired_count" in payload
+    assert "hidden_no_liquidity_count" in payload
+    assert "hidden_resolved_probability_count" in payload
+    assert "filters_applied" in payload
+
+
+def test_api_markets_include_all_returns_hidden_markets(client, db_conn, sample_markets):
+    closed = dict(sample_markets[0])
+    closed["market_id"] = "route-closed-market"
+    closed["closed"] = True
+    replace_markets(db_conn, [sample_markets[0], closed])
+    default_response = client.get("/api/markets").json()
+    include_all_response = client.get("/api/markets?include_all=true").json()
+    assert default_response["count"] == 1
+    assert include_all_response["count"] == 2
+    assert include_all_response["hidden_closed_count"] == 1
 
 
 def test_post_demo_predict(client, sample_markets):
@@ -41,6 +63,14 @@ def test_debug_source_status_returns_expected_keys(client):
         "fallback_used",
         "market_count",
         "sample_market_count",
+        "total_market_count",
+        "displayable_market_count",
+        "hidden_closed_count",
+        "hidden_inactive_count",
+        "hidden_expired_count",
+        "hidden_no_liquidity_count",
+        "hidden_resolved_probability_count",
+        "latest_filter_run_at",
         "runtime_status_file_exists",
         "runtime_response_file_exists",
         "runtime_error_file_exists",

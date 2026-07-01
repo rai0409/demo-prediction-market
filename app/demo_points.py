@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from app.market_display import classify_market_for_display
 from app.storage import DEMO_USER_ID, get_balance, get_market
 
 
@@ -29,6 +30,10 @@ def create_demo_prediction(
     market = get_market(conn, market_id)
     if market is None:
         raise DemoPredictionError("market not found", 404)
+    classification = classify_market_for_display(market)
+    if not classification.is_demo_participation_allowed:
+        reason = classification.reasons[0] if classification.reasons else "デモ参加対象外"
+        raise DemoPredictionError(f"demo participation not allowed: {reason}")
     try:
         numeric_stake = float(stake)
     except (TypeError, ValueError):

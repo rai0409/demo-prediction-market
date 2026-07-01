@@ -12,6 +12,12 @@
     <p class="card-meta">{{ market.data_source_status }} · {{ market.fetched_at }}</p>
     <h1>{{ market.title }}</h1>
     <h2>{{ market.question }}</h2>
+    <p class="status-label">{{ market.display_status }}</p>
+    {% if market.demo_participation_allowed %}
+    <p class="notice">このマーケットはデモ参加できます。</p>
+    {% else %}
+    <p class="blocked-label">デモ参加対象外: {{ market.demo_participation_block_reason }}</p>
+    {% endif %}
     <p>{{ market.description }}</p>
     <div class="outcome-stack">
       {% for outcome in market.outcomes %}
@@ -44,6 +50,7 @@
       <p>{{ line }}</p>
       {% endfor %}
     </section>
+    {% if market.demo_participation_allowed %}
     <form id="prediction-form" data-market-id="{{ market.market_id }}">
       <label for="outcome">参加内容を確認</label>
       <select id="outcome" name="outcome">
@@ -62,6 +69,12 @@
       <button type="submit">デモ参加する</button>
       <p id="prediction-result" role="status"></p>
     </form>
+    {% else %}
+    <div class="simulation-summary">
+      <p>このマーケットは現在デモ参加できません。</p>
+      <p>理由: {{ market.demo_participation_block_reason }}</p>
+    </div>
+    {% endif %}
   </aside>
 </section>
 {% endblock %}

@@ -49,6 +49,15 @@
     updateEstimator();
   }
 
+  function statusBadge(status) {
+    if (status === "live") return "LIVE Polymarket";
+    if (status === "sample_fallback") return "Sample fallback";
+    if (status === "live_failed_sample_fallback" || status === "live_empty_sample_fallback") {
+      return "Live failed, sample fallback";
+    }
+    return status || "";
+  }
+
   async function pollMarkets() {
     var list = document.getElementById("market-list");
     if (!list) return;
@@ -57,8 +66,12 @@
       if (!response.ok) return;
       var data = await response.json();
       if (!data.markets || !data.markets.length) return;
-      document.getElementById("data-status").textContent = data.markets[0].data_source_status;
+      document.getElementById("data-status").textContent = statusBadge(data.markets[0].data_source_status);
       document.getElementById("freshness").textContent = data.markets[0].fetched_at;
+      var displayed = document.getElementById("displayed-count");
+      var total = document.getElementById("total-count");
+      if (displayed) displayed.textContent = data.count;
+      if (total) total.textContent = data.total_market_count;
     } catch (error) {
       var status = document.getElementById("data-status");
       if (status) status.textContent = "last fetch failed";

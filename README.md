@@ -118,3 +118,39 @@ Fetch statuses:
 - `sample_fallback`: sample mode is active or sample data was intentionally loaded.
 
 The safety boundary is unchanged: no real orders, no wallet, no deposit, no withdrawal, no cashout, no external point exchange, and no private credentials.
+
+## v0.3 Active Market Filtering
+
+Live Polymarket fetch remains supported with `DEMO_PREDICTION_LIVE=1`. The default dashboard now filters the normal market list to current displayable markets.
+
+Filtered out by default:
+
+- closed markets
+- inactive markets
+- expired markets
+- markets with no displayable outcomes or probabilities
+- markets with no liquidity
+- markets whose probabilities look resolved, such as 0% / 100%
+
+The market API returns count metadata for displayed and hidden markets:
+
+```bash
+curl http://127.0.0.1:8092/api/markets
+```
+
+To inspect every fetched market, including archived or hidden rows:
+
+```bash
+curl "http://127.0.0.1:8092/api/markets?include_all=true"
+```
+
+Additional filters are available:
+
+- `include_closed=true`
+- `include_expired=true`
+- `include_inactive=true`
+- `include_all=true`
+
+`POST /api/demo/predict` now enforces the same eligibility boundary server-side. Local demo participation is rejected for closed, inactive, expired, zero-liquidity, and resolved-looking markets even if a caller bypasses the UI.
+
+The safety boundary remains unchanged: the app still does not place real orders, connect wallets, support deposits, support withdrawals, support cashout, exchange external points, or use private credentials.

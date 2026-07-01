@@ -11,6 +11,7 @@ import sqlite3
 
 from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
+from app.market_display import enrich_market_for_display, filtered_market_response
 from app.realtime import ensure_markets, refresh_markets_with_result, source_status
 from app.safety import DISCLAIMER
 from app.storage import (
@@ -64,10 +65,31 @@ def template_context(request: Request, **extra):
     return context
 
 
+def data_status_badge(markets: list[dict]) -> str:
+    status = markets[0].get("data_source_status") if markets else "sample_fallback"
+    if status == "live":
+        return "LIVE Polymarket"
+    if status == "sample_fallback":
+        return "Sample fallback"
+    if status in {"live_failed_sample_fallback", "live_empty_sample_fallback"}:
+        return "Live failed, sample fallback"
+    return str(status)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    markets = ensure_markets(conn, settings)
-    return templates.TemplateResponse(request, "index.html", template_context(request, markets=markets))
+    all_markets = ensure_markets(conn, settings)
+    market_response = filtered_market_response(all_markets)
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        template_context(
+            request,
+            markets=market_response["markets"],
+            market_meta=market_response,
+            data_status_badge=data_status_badge(all_markets),
+        ),
+    )
 
 
 @app.get("/markets/{market_id}", response_class=HTMLResponse)
@@ -76,6 +98,7 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
     market = get_market(conn, market_id)
     if market is None:
         raise HTTPException(status_code=404, detail="market not found")
+    market = enrich_market_for_display(market)
     snapshots = list_snapshots(conn, market_id, limit=12)
     return templates.TemplateResponse(
         request,
@@ -104,9 +127,21 @@ async def health():
 
 
 @app.get("/api/markets")
-async def api_markets(conn: sqlite3.Connection = Depends(get_conn)):
+async def api_markets(
+    include_closed: bool = False,
+    include_expired: bool = False,
+    include_inactive: bool = False,
+    include_all: bool = False,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
     markets = ensure_markets(conn, settings)
-    return {"markets": markets, "count": len(markets)}
+    return filtered_market_response(
+        markets,
+        include_closed=include_closed,
+        include_expired=include_expired,
+        include_inactive=include_inactive,
+        include_all=include_all,
+    )
 
 
 @app.get("/api/markets/{market_id}")
@@ -115,7 +150,7 @@ async def api_market(market_id: str, conn: sqlite3.Connection = Depends(get_conn
     market = get_market(conn, market_id)
     if market is None:
         raise HTTPException(status_code=404, detail="market not found")
-    return market
+    return enrich_market_for_display(market)
 
 
 @app.get("/api/markets/{market_id}/snapshots")

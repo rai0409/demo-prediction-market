@@ -14,6 +14,7 @@ from app.polymarket_gamma import (
     sample_fetch_result,
     write_status_file,
 )
+from app.market_display import filtered_market_response
 from app.storage import get_last_fetch_run, list_markets, replace_markets
 
 
@@ -63,6 +64,7 @@ def source_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any
     fetch_run = get_last_fetch_run(conn) or {}
     markets = list_markets(conn)
     sample_market_count = sum(1 for market in markets if market.get("source") == "sample")
+    filter_summary = filtered_market_response(markets)
     return {
         "live_enabled": settings.live,
         "configured_limit": settings.limit,
@@ -78,6 +80,14 @@ def source_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any
         "fallback_used": bool(status_file.get("fallback_used", False)),
         "market_count": len(markets),
         "sample_market_count": sample_market_count,
+        "total_market_count": filter_summary["total_market_count"],
+        "displayable_market_count": filter_summary["displayable_market_count"],
+        "hidden_closed_count": filter_summary["hidden_closed_count"],
+        "hidden_inactive_count": filter_summary["hidden_inactive_count"],
+        "hidden_expired_count": filter_summary["hidden_expired_count"],
+        "hidden_no_liquidity_count": filter_summary["hidden_no_liquidity_count"],
+        "hidden_resolved_probability_count": filter_summary["hidden_resolved_probability_count"],
+        "latest_filter_run_at": filter_summary["latest_filter_run_at"],
         "runtime_status_file_exists": Path(GAMMA_STATUS_PATH).exists(),
         "runtime_response_file_exists": Path(GAMMA_RESPONSE_PATH).exists(),
         "runtime_error_file_exists": Path(GAMMA_ERROR_PATH).exists(),
