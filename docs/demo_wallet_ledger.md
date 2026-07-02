@@ -80,6 +80,8 @@ balance_before + amount = balance_after
 
 Settlement win rows add local demo points. Settlement loss rows record a zero-amount ledger row. Both use `reference_type=demo_settlement`.
 
+WebSocket `market_resolved` observations can create `結果候補`, but they do not create payout ledger rows unless REST/conservative confirmation agrees.
+
 ## Local-Only Limitations
 
 This is not a production point system. It has no authentication, no multi-user security model, no external reconciliation, and no legal/regulatory review.

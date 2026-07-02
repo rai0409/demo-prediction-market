@@ -10,7 +10,15 @@ from app.polymarket_ws import (
     select_ws_markets,
 )
 from app.realtime import attach_realtime_updates, realtime_status
-from app.storage import get_latest_realtime_update, insert_realtime_update, replace_markets
+from app.storage import (
+    count_resolution_candidates,
+    get_latest_realtime_update,
+    get_latest_resolution_candidate,
+    insert_realtime_update,
+    list_markets_with_resolution_candidates,
+    list_resolution_candidate_updates,
+    replace_markets,
+)
 
 
 def _settings(stale_seconds=90):
@@ -110,6 +118,30 @@ def test_apply_ws_events_to_storage_stores_updates(db_conn, sample_markets):
     assert inserted == 1
     assert latest["market_id"] == market["market_id"]
     assert latest["best_bid"] == 0.4
+
+
+def test_resolution_candidate_row_is_listed(db_conn, sample_markets):
+    market = _ws_market(sample_markets[0])
+    replace_markets(db_conn, [market])
+    events = parse_ws_event({"event_type": "market_resolved", "asset_id": "asset-yes", "winningOutcome": "YES"})
+    apply_ws_events_to_storage(db_conn, [market], events)
+    candidates = list_resolution_candidate_updates(db_conn, market_id=market["market_id"])
+    assert len(candidates) == 1
+    assert candidates[0]["winning_outcome"] == "YES"
+
+
+def test_latest_candidate_and_candidate_count_work(db_conn, sample_markets):
+    market = _ws_market(sample_markets[0])
+    replace_markets(db_conn, [market])
+    apply_ws_events_to_storage(
+        db_conn,
+        [market],
+        parse_ws_event({"event_type": "market_resolved", "asset_id": "asset-yes", "winningOutcome": "YES"}),
+    )
+    latest = get_latest_resolution_candidate(db_conn, market["market_id"])
+    assert latest["winning_outcome"] == "YES"
+    assert count_resolution_candidates(db_conn) == 1
+    assert list_markets_with_resolution_candidates(db_conn) == [market["market_id"]]
 
 
 def test_realtime_status_returns_rest_only_when_no_updates(db_conn):

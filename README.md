@@ -185,6 +185,7 @@ JSON:
 - `GET /api/demo/wallet`: local demo point ledger/audit summary.
 - `POST /api/demo/wallet/add-points`: local `デモポイント追加`.
 - `POST /api/demo/wallet/reset`: local `デモ残高リセット`.
+- `GET /api/demo/resolution-candidates`: public WebSocket `market_resolved` observations treated as `結果候補`.
 - `GET /api/demo/positions`: local positions/orders/ledger.
 - `POST /api/demo/predict`: local-only demo participation. It never calls external trading APIs.
 
@@ -239,6 +240,12 @@ v1.0 adds `デモポイント管理`, richer ledger metadata, idempotency keys f
 New ledger rows include `balance_before`, `balance_after`, `reference_type`, `reference_id`, `idempotency_key`, and `request_id`. Demo participation, demo point addition, demo balance reset, and demo settlement all remain local-only simulation records.
 
 See [docs/demo_wallet_ledger.md](docs/demo_wallet_ledger.md).
+
+## v1.1 REST-Confirmed Resolution Candidates
+
+v1.1 uses public WebSocket `market_resolved` events as `結果候補`. A candidate can show `WS検知あり`, but it never triggers local demo payout by itself.
+
+Local demo settlement requires REST/conservative confirmation. If WS and REST agree, the result is `REST確認済み`; if REST is clear without WS, the app uses `REST判定`; if WS exists but REST is unclear, the result remains `WSのみ未確認`; if WS and REST disagree, it is `WS/REST不一致` and no local demo settlement occurs.
 
 ## Roadmap
 

@@ -48,6 +48,10 @@
     <div class="summary-card"><span>的中</span><strong id="settlement-wins">0</strong></div>
     <div class="summary-card"><span>不的中</span><strong id="settlement-losses">0</strong></div>
     <div class="summary-card"><span>判定保留</span><strong id="settlement-pending">0</strong></div>
+    <div class="summary-card"><span>WS確認済み</span><strong id="settlement-ws-confirmed">0</strong></div>
+    <div class="summary-card"><span>WSのみ未確認</span><strong id="settlement-ws-unconfirmed">0</strong></div>
+    <div class="summary-card"><span>WS/REST不一致</span><strong id="settlement-ws-conflict">0</strong></div>
+    <div class="summary-card"><span>REST判定</span><strong id="settlement-rest-only">0</strong></div>
     <div class="summary-card"><span>精算デモポイント</span><strong id="settlement-payout">0.00</strong></div>
     <div class="summary-card"><span>現在のデモ残高</span><strong id="settlement-balance">{{ demo_balance|number }}</strong></div>
   </div>
@@ -61,8 +65,12 @@
         <th>参加時確率</th>
         <th>推定デモリターン</th>
         <th>状態</th>
+        <th>WS検知</th>
+        <th>REST確認</th>
+        <th>判定状態</th>
         <th>結果</th>
         <th>精算デモポイント</th>
+        <th>参照ID</th>
         <th>判定ソース</th>
         <th>判定メモ</th>
         <th>結果確定日時</th>
@@ -77,10 +85,14 @@
         <td>{{ result.probability|percent }}</td>
         <td>{{ result.estimated_return|number }}</td>
         <td>{{ result.status_label }}</td>
+        <td>{{ result.ws_candidate_label }}</td>
+        <td>{{ result.rest_confirmation_label }}</td>
+        <td>{{ result.rest_confirmation_label }}</td>
         <td>{{ result.winning_outcome_label }}</td>
         <td>{{ result.payout|number }}</td>
+        <td>demo_settlement {{ result.id }}</td>
         <td>{{ result.settlement_source or "-" }}</td>
-        <td>{{ result.settlement_note or "-" }}</td>
+        <td>{{ result.confirmation_note or "-" }}</td>
         <td>{{ result.settled_at|date }}</td>
       </tr>
       {% endfor %}

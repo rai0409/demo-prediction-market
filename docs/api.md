@@ -224,6 +224,25 @@ Response shape summary:
 
 Notes: Result rows include market title/question when available, selected outcome, stake, probability, estimated return, status, winning outcome, payout, settlement source/note, created time, and settled time.
 
+## GET /api/demo/resolution-candidates
+
+Purpose: Return public WebSocket `market_resolved` observations that are treated as local result candidates.
+
+Response shape summary:
+
+- `candidate_count`
+- `markets_with_candidates_count`
+- `candidates`
+- `latest_by_market`
+- `pending_settlement_market_ids`
+- `generated_at`
+
+Notes:
+
+- Candidates are not enough for local demo settlement.
+- `POST /api/demo/settle` still requires REST/conservative confirmation.
+- Raw event JSON is omitted from this endpoint.
+
 ## POST /api/demo/settle
 
 Purpose: Check pending local demo result rows against stored public market data and settle only when the winning outcome is clear.
@@ -237,11 +256,19 @@ Response shape summary:
 - `unknown_count`
 - `total_payout`
 - `balance`
+- `ws_candidate_count`
+- `ws_confirmed_count`
+- `ws_unconfirmed_count`
+- `ws_conflict_count`
+- `rest_only_settled_count`
 
 Notes:
 
 - Uses explicit winning outcome fields when available.
 - Uses a strict probability fallback only for closed/resolved markets with exactly one probability `>= 0.999` and all others `<= 0.001`.
+- Uses WebSocket `market_resolved` observations only as candidates.
+- Does not settle from WebSocket-only candidates.
+- Blocks settlement when WebSocket and REST disagree.
 - Does not infer a final result from closed/inactive/end-date signals alone.
 - Repeated calls do not double-pay.
 - Local demo settlement only; no external order or money movement occurs.

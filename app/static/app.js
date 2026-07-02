@@ -131,6 +131,10 @@
         setText("settlement-wins", data.settled_win_count);
         setText("settlement-losses", data.settled_loss_count);
         setText("settlement-pending", data.pending_count + data.unknown_count);
+        setText("settlement-ws-confirmed", data.ws_confirmed_count || 0);
+        setText("settlement-ws-unconfirmed", data.ws_unconfirmed_count || 0);
+        setText("settlement-ws-conflict", data.ws_conflict_count || 0);
+        setText("settlement-rest-only", data.rest_only_settled_count || 0);
         setText("settlement-payout", Number(data.total_payout || 0).toFixed(2));
         setText("settlement-balance", Number(data.balance || 0).toFixed(2));
         if (summary) summary.hidden = false;

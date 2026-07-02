@@ -45,6 +45,23 @@ The app does not infer a result from `closed=true` alone, `active=false` alone, 
 
 If resolution cannot be determined safely, the status remains `pending`, `settlement_pending`, or `settlement_unknown`.
 
+## WebSocket Candidate Confirmation
+
+v1.1 treats public `market_resolved` WebSocket events as `結果候補` only.
+
+Settlement is allowed only when:
+
+- WebSocket candidate and REST/conservative extraction agree (`REST確認済み`), or
+- REST/conservative extraction is clear without a candidate (`REST判定`).
+
+Settlement is not allowed when:
+
+- only a WebSocket candidate exists (`WSのみ未確認`),
+- WebSocket and REST disagree (`WS/REST不一致`),
+- both signals are unclear (`判定保留`).
+
+WebSocket-only candidates never create payout ledger rows.
+
 ## Idempotency
 
 Settlement is designed to avoid double payout:

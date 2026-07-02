@@ -271,6 +271,55 @@ def latest_realtime_status(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def list_resolution_candidate_updates(
+    conn: sqlite3.Connection,
+    market_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    sql = """
+        select * from market_realtime_updates
+        where event_type = 'market_resolved'
+          and (winning_outcome is not null or winning_asset_id is not null)
+    """
+    params: list[Any] = []
+    if market_id is not None:
+        sql += " and market_id = ?"
+        params.append(market_id)
+    sql += " order by datetime(coalesce(event_timestamp, received_at)) desc, id desc limit ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_latest_resolution_candidate(conn: sqlite3.Connection, market_id: str) -> dict[str, Any] | None:
+    candidates = list_resolution_candidate_updates(conn, market_id=market_id, limit=1)
+    return candidates[0] if candidates else None
+
+
+def count_resolution_candidates(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        """
+        select count(*) as count from market_realtime_updates
+        where event_type = 'market_resolved'
+          and (winning_outcome is not null or winning_asset_id is not null)
+        """
+    ).fetchone()
+    return int(row["count"] or 0)
+
+
+def list_markets_with_resolution_candidates(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        """
+        select distinct market_id from market_realtime_updates
+        where event_type = 'market_resolved'
+          and market_id is not null
+          and (winning_outcome is not null or winning_asset_id is not null)
+        order by market_id
+        """
+    ).fetchall()
+    return [str(row["market_id"]) for row in rows]
+
+
 def get_balance(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> float:
     row = conn.execute("select balance from demo_users where user_id = ?", (user_id,)).fetchone()
     if row is None:

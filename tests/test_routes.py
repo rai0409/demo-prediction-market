@@ -1,4 +1,4 @@
-from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id
+from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id, insert_realtime_update
 from app.storage import replace_markets
 
 
@@ -114,6 +114,31 @@ def test_api_demo_settle_returns_summary(client, db_conn, sample_markets):
     assert payload["settled_win_count"] == 1
     assert payload["settled_loss_count"] == 0
     assert payload["total_payout"] > 0
+    assert "ws_candidate_count" in payload
+    assert "ws_confirmed_count" in payload
+    assert "ws_unconfirmed_count" in payload
+    assert "ws_conflict_count" in payload
+    assert "rest_only_settled_count" in payload
+
+
+def test_api_demo_resolution_candidates_returns_summary(client, db_conn, sample_markets):
+    insert_realtime_update(
+        db_conn,
+        {
+            "market_id": sample_markets[0]["market_id"],
+            "asset_id": "asset-yes",
+            "event_type": "market_resolved",
+            "winning_outcome": "YES",
+            "raw_event_json": "{}",
+        },
+    )
+    db_conn.commit()
+    response = client.get("/api/demo/resolution-candidates")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["candidate_count"] == 1
+    assert payload["markets_with_candidates_count"] == 1
+    assert payload["candidates"][0]["winning_outcome"] == "YES"
 
 
 def test_api_demo_results_includes_updated_status_after_settlement(client, db_conn, sample_markets):
@@ -132,6 +157,7 @@ def test_api_demo_results_includes_updated_status_after_settlement(client, db_co
 
     assert payload["results"][0]["status"] == "settled_loss"
     assert payload["results"][0]["status_label"] == "不的中"
+    assert payload["results"][0]["rest_confirmation_label"] == "REST判定"
     assert payload["settled_count"] == 1
 
 
@@ -234,6 +260,9 @@ def test_demo_results_page_renders(client, sample_markets):
     html = response.text
     assert "結果確認" in html
     assert "結果を確認する" in html
+    assert "WS検知" in html
+    assert "REST確認" in html
+    assert "判定状態" in html
     assert "結果待ち" in html
     assert "参加デモポイント" in html
     assert "判定ソース" in html

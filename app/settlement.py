@@ -8,6 +8,7 @@ from app.storage import (
     DEMO_USER_ID,
     get_balance,
     get_demo_settlement,
+    get_latest_resolution_candidate,
     get_market,
     insert_audit_event,
     insert_ledger_entry,
@@ -105,15 +106,82 @@ def extract_winning_outcome(market: dict[str, Any]) -> str | None:
     return None
 
 
+def _candidate_winning_outcome(candidate: dict[str, Any] | None, market: dict[str, Any]) -> str | None:
+    if not candidate:
+        return None
+    if candidate.get("winning_outcome"):
+        return str(candidate["winning_outcome"])
+    if candidate.get("winning_asset_id"):
+        return _outcome_lookup(market).get(str(candidate["winning_asset_id"]))
+    return None
+
+
+def get_resolution_candidate_for_market(conn: sqlite3.Connection, market_id: str) -> dict[str, Any] | None:
+    return get_latest_resolution_candidate(conn, market_id)
+
+
+def compare_candidate_with_rest_resolution(candidate: dict[str, Any] | None, market: dict[str, Any]) -> dict[str, Any]:
+    candidate_outcome = _candidate_winning_outcome(candidate, market)
+    candidate_asset_id = str(candidate["winning_asset_id"]) if candidate and candidate.get("winning_asset_id") else None
+    rest_outcome = extract_winning_outcome(market)
+
+    if rest_outcome and candidate and candidate_outcome == rest_outcome:
+        return {
+            "candidate_winning_outcome": candidate_outcome,
+            "candidate_winning_asset_id": candidate_asset_id,
+            "rest_winning_outcome": rest_outcome,
+            "confirmation_status": "confirmed_match",
+            "settlement_source": "ws_candidate_rest_confirmed",
+            "note": "WS検知の結果候補とREST確認が一致しました。",
+        }
+    if rest_outcome and not candidate:
+        return {
+            "candidate_winning_outcome": None,
+            "candidate_winning_asset_id": None,
+            "rest_winning_outcome": rest_outcome,
+            "confirmation_status": "rest_clear_without_candidate",
+            "settlement_source": "rest_conservative",
+            "note": "REST判定で明確な結果を確認しました。",
+        }
+    if candidate and not rest_outcome:
+        return {
+            "candidate_winning_outcome": candidate_outcome,
+            "candidate_winning_asset_id": candidate_asset_id,
+            "rest_winning_outcome": None,
+            "confirmation_status": "candidate_only_unconfirmed",
+            "settlement_source": "ws_candidate_unconfirmed",
+            "note": "WS検知の結果候補がありますが、REST確認が未完了です。",
+        }
+    if rest_outcome and candidate and candidate_outcome != rest_outcome:
+        return {
+            "candidate_winning_outcome": candidate_outcome,
+            "candidate_winning_asset_id": candidate_asset_id,
+            "rest_winning_outcome": rest_outcome,
+            "confirmation_status": "conflict",
+            "settlement_source": "ws_candidate_conflict",
+            "note": "WS/REST不一致のため、ローカルのデモ精算を保留します。",
+        }
+    return {
+        "candidate_winning_outcome": candidate_outcome,
+        "candidate_winning_asset_id": candidate_asset_id,
+        "rest_winning_outcome": rest_outcome,
+        "confirmation_status": "unclear",
+        "settlement_source": "unresolved",
+        "note": "WS検知とREST確認のどちらからも明確な結果を確認できません。",
+    }
+
+
 def classify_settlement(settlement: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
-    winning_outcome = extract_winning_outcome(market)
-    if winning_outcome is None:
+    confirmation = compare_candidate_with_rest_resolution(None, market)
+    winning_outcome = confirmation["rest_winning_outcome"]
+    if confirmation["confirmation_status"] not in {"confirmed_match", "rest_clear_without_candidate"} or winning_outcome is None:
         return {
             "status": "settlement_pending",
             "winning_outcome": None,
             "payout": 0.0,
-            "settlement_source": "public_market_data",
-            "settlement_note": "公開マーケットデータから明確な結果を確認できないため、判定保留です。",
+            "settlement_source": confirmation["settlement_source"],
+            "settlement_note": confirmation["note"],
+            "confirmation": confirmation,
         }
 
     if str(settlement["outcome"]) == str(winning_outcome):
@@ -121,15 +189,63 @@ def classify_settlement(settlement: dict[str, Any], market: dict[str, Any]) -> d
             "status": "settled_win",
             "winning_outcome": winning_outcome,
             "payout": float(settlement["estimated_return"]),
-            "settlement_source": "public_market_data",
-            "settlement_note": "明確な結果に基づき、ローカルのデモ精算を記録しました。",
+            "settlement_source": confirmation["settlement_source"],
+            "settlement_note": "REST確認済みの結果に基づき、ローカルのデモ精算を記録しました。",
+            "confirmation": confirmation,
         }
     return {
         "status": "settled_loss",
         "winning_outcome": winning_outcome,
         "payout": 0.0,
-        "settlement_source": "public_market_data",
-        "settlement_note": "明確な結果に基づき、ローカルのデモ精算を記録しました。",
+        "settlement_source": confirmation["settlement_source"],
+        "settlement_note": "REST確認済みの結果に基づき、ローカルのデモ精算を記録しました。",
+        "confirmation": confirmation,
+    }
+
+
+def _classify_settlement_with_candidate(
+    conn: sqlite3.Connection,
+    settlement: dict[str, Any],
+    market: dict[str, Any],
+) -> dict[str, Any]:
+    candidate = get_resolution_candidate_for_market(conn, settlement["market_id"])
+    confirmation = compare_candidate_with_rest_resolution(candidate, market)
+    status = confirmation["confirmation_status"]
+    winning_outcome = confirmation["rest_winning_outcome"]
+    if status in {"candidate_only_unconfirmed", "unclear"}:
+        return {
+            "status": "settlement_pending",
+            "winning_outcome": None,
+            "payout": 0.0,
+            "settlement_source": confirmation["settlement_source"],
+            "settlement_note": confirmation["note"],
+            "confirmation": confirmation,
+        }
+    if status == "conflict":
+        return {
+            "status": "settlement_unknown",
+            "winning_outcome": None,
+            "payout": 0.0,
+            "settlement_source": confirmation["settlement_source"],
+            "settlement_note": confirmation["note"],
+            "confirmation": confirmation,
+        }
+    if str(settlement["outcome"]) == str(winning_outcome):
+        return {
+            "status": "settled_win",
+            "winning_outcome": winning_outcome,
+            "payout": float(settlement["estimated_return"]),
+            "settlement_source": confirmation["settlement_source"],
+            "settlement_note": "REST確認済みの結果に基づき、ローカルのデモ精算を記録しました。",
+            "confirmation": confirmation,
+        }
+    return {
+        "status": "settled_loss",
+        "winning_outcome": winning_outcome,
+        "payout": 0.0,
+        "settlement_source": confirmation["settlement_source"],
+        "settlement_note": "REST確認済みの結果に基づき、ローカルのデモ精算を記録しました。",
+        "confirmation": confirmation,
     }
 
 
@@ -154,8 +270,9 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
                 settled_at=None,
             )
 
-    classified = classify_settlement(settlement, market)
+    classified = _classify_settlement_with_candidate(conn, settlement, market)
     status = classified["status"]
+    confirmation = classified["confirmation"]
     settled_at = datetime.now(timezone.utc).isoformat() if status in SETTLED_STATUSES else None
     marker = f"settlement_id={settlement_id}"
 
@@ -231,6 +348,23 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
             settlement_note=classified["settlement_note"],
             settled_at=settled_at,
         )
+        event_type = {
+            "confirmed_match": "settlement_ws_candidate_confirmed",
+            "candidate_only_unconfirmed": "settlement_ws_candidate_unconfirmed",
+            "conflict": "settlement_ws_candidate_conflict",
+            "rest_clear_without_candidate": "settlement_rest_conservative",
+        }.get(confirmation["confirmation_status"], "settlement_checked")
+        if event_type != "settlement_checked":
+            insert_audit_event(
+                conn,
+                event_type=event_type,
+                user_id=current["user_id"],
+                route="/api/demo/settle",
+                reference_type="demo_settlement",
+                reference_id=settlement_id,
+                after=confirmation,
+                note=confirmation["note"],
+            )
         insert_audit_event(
             conn,
             event_type="settlement_checked",
@@ -241,6 +375,10 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
             after={"status": status, "winning_outcome": classified["winning_outcome"]},
             note=classified["settlement_note"],
         )
+        updated["confirmation_status"] = confirmation["confirmation_status"]
+        updated["candidate_winning_outcome"] = confirmation["candidate_winning_outcome"]
+        updated["candidate_winning_asset_id"] = confirmation["candidate_winning_asset_id"]
+        updated["rest_winning_outcome"] = confirmation["rest_winning_outcome"]
         return updated
 
 
@@ -252,9 +390,25 @@ def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_
     pending_count = 0
     unknown_count = 0
     total_payout = 0.0
+    ws_candidate_count = 0
+    ws_confirmed_count = 0
+    ws_unconfirmed_count = 0
+    ws_conflict_count = 0
+    rest_only_settled_count = 0
 
     for settlement in pending:
         result = settle_one(conn, int(settlement["id"]))
+        confirmation_status = result.get("confirmation_status")
+        if result.get("candidate_winning_outcome") or result.get("candidate_winning_asset_id"):
+            ws_candidate_count += 1
+        if confirmation_status == "confirmed_match":
+            ws_confirmed_count += 1
+        elif confirmation_status == "candidate_only_unconfirmed":
+            ws_unconfirmed_count += 1
+        elif confirmation_status == "conflict":
+            ws_conflict_count += 1
+        elif confirmation_status == "rest_clear_without_candidate" and result["status"] in SETTLED_STATUSES:
+            rest_only_settled_count += 1
         if result["status"] == "settled_win":
             settled_win_count += 1
             total_payout += float(result["payout"])
@@ -273,4 +427,9 @@ def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_
         "unknown_count": unknown_count,
         "total_payout": round(total_payout, 2),
         "balance": get_balance(conn, user_id),
+        "ws_candidate_count": ws_candidate_count,
+        "ws_confirmed_count": ws_confirmed_count,
+        "ws_unconfirmed_count": ws_unconfirmed_count,
+        "ws_conflict_count": ws_conflict_count,
+        "rest_only_settled_count": rest_only_settled_count,
     }

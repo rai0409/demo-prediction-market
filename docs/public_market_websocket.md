@@ -90,9 +90,16 @@ If WebSocket mode is disabled, unavailable, stale, or no asset ids are present, 
 
 ## market_resolved Events
 
-`market_resolved` events are recorded as public realtime observations. They are not trusted alone for local demo settlement in v0.9.
+`market_resolved` events are recorded as public realtime observations and treated as `結果候補`.
 
-Future v1.0 work should reconcile `market_resolved` with REST-confirmed resolution data before allowing settlement from that signal.
+They are not trusted alone for local demo settlement. v1.1 uses them only to prioritize and explain result checking:
+
+- `WS検知あり`: a public WebSocket candidate exists.
+- `WSのみ未確認`: REST confirmation is not clear yet, so no local demo settlement occurs.
+- `REST確認済み`: WebSocket candidate and REST/conservative result agree.
+- `WS/REST不一致`: candidate and REST disagree, so settlement is blocked as `判定不明`.
+
+REST-only conservative settlement still works when no WebSocket candidate exists.
 
 ## Safety Boundary
 

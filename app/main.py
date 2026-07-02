@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -22,18 +23,22 @@ from app.realtime import (
     source_status,
 )
 from app.safety import DISCLAIMER
-from app.settlement import settle_pending_positions
+from app.settlement import compare_candidate_with_rest_resolution, settle_pending_positions
 from app.storage import (
     DEMO_USER_ID,
+    count_resolution_candidates,
     connect,
     get_balance,
+    get_latest_resolution_candidate,
     get_market,
     init_db,
+    list_markets_with_resolution_candidates,
     list_ledger,
     list_demo_results,
     list_markets,
     list_orders,
     list_positions,
+    list_resolution_candidate_updates,
     list_snapshots,
 )
 
@@ -161,12 +166,81 @@ def result_status_label(status: str) -> str:
     }.get(status, status)
 
 
+def confirmation_label(status: str) -> str:
+    return {
+        "confirmed_match": "REST確認済み",
+        "rest_clear_without_candidate": "REST判定",
+        "candidate_only_unconfirmed": "WSのみ未確認",
+        "conflict": "WS/REST不一致",
+        "unclear": "判定保留",
+    }.get(status, "判定不明")
+
+
 def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
     enriched = enrich_activity_rows(conn, rows)
     for item in enriched:
         item["status_label"] = result_status_label(item.get("status", ""))
         item["winning_outcome_label"] = item.get("winning_outcome") or "-"
+        market = get_market(conn, item.get("market_id", ""))
+        candidate = get_latest_resolution_candidate(conn, item.get("market_id", ""))
+        confirmation = compare_candidate_with_rest_resolution(candidate, market or {}) if market else {
+            "candidate_winning_outcome": candidate.get("winning_outcome") if candidate else None,
+            "candidate_winning_asset_id": candidate.get("winning_asset_id") if candidate else None,
+            "rest_winning_outcome": None,
+            "confirmation_status": "unclear",
+            "settlement_source": item.get("settlement_source") or "unresolved",
+            "note": item.get("settlement_note") or "判定保留",
+        }
+        item["ws_candidate_detected"] = bool(candidate)
+        item["ws_candidate_label"] = "WS検知あり" if candidate else "-"
+        item["rest_confirmation_label"] = confirmation_label(confirmation["confirmation_status"])
+        item["confirmation_status"] = confirmation["confirmation_status"]
+        item["confirmation_note"] = item.get("settlement_note") or confirmation["note"]
     return enriched
+
+
+def resolution_candidates_payload(conn: sqlite3.Connection) -> dict:
+    candidates = list_resolution_candidate_updates(conn, limit=100)
+    market_ids_with_candidates = list_markets_with_resolution_candidates(conn)
+    results = list_demo_results(conn)
+    pending_market_ids = {
+        row["market_id"]
+        for row in results
+        if row["status"] in {"pending", "settlement_pending", "settlement_unknown"}
+    }
+    serialized = []
+    for candidate in candidates:
+        serialized.append(
+            {
+                "market_id": candidate["market_id"],
+                "winning_outcome": candidate["winning_outcome"],
+                "winning_asset_id": candidate["winning_asset_id"],
+                "event_timestamp": candidate["event_timestamp"],
+                "received_at": candidate["received_at"],
+                "confirmation_hint": {
+                    "pending_demo_settlement_exists": candidate["market_id"] in pending_market_ids,
+                },
+            }
+        )
+    latest_by_market = {}
+    for market_id in market_ids_with_candidates:
+        candidate = get_latest_resolution_candidate(conn, market_id)
+        if candidate:
+            latest_by_market[market_id] = {
+                "market_id": candidate["market_id"],
+                "winning_outcome": candidate["winning_outcome"],
+                "winning_asset_id": candidate["winning_asset_id"],
+                "event_timestamp": candidate["event_timestamp"],
+                "received_at": candidate["received_at"],
+            }
+    return {
+        "candidate_count": count_resolution_candidates(conn),
+        "markets_with_candidates_count": len(market_ids_with_candidates),
+        "candidates": serialized,
+        "latest_by_market": latest_by_market,
+        "pending_settlement_market_ids": sorted(pending_market_ids),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -372,6 +446,11 @@ async def api_demo_results(conn: sqlite3.Connection = Depends(get_conn)):
         "pending_count": pending_count,
         "settled_count": settled_count,
     }
+
+
+@app.get("/api/demo/resolution-candidates")
+async def api_demo_resolution_candidates(conn: sqlite3.Connection = Depends(get_conn)):
+    return resolution_candidates_payload(conn)
 
 
 @app.post("/api/demo/settle")
