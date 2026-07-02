@@ -70,6 +70,23 @@ def init_db(conn: sqlite3.Connection) -> None:
             estimated_return real not null,
             created_at text not null default current_timestamp
         );
+        create table if not exists demo_settlements (
+            id integer primary key autoincrement,
+            user_id text not null,
+            market_id text not null,
+            position_id integer not null,
+            outcome text not null,
+            stake real not null,
+            probability real not null,
+            estimated_return real not null,
+            status text not null,
+            winning_outcome text,
+            payout real not null default 0,
+            settlement_source text,
+            settlement_note text,
+            settled_at text,
+            created_at text not null default current_timestamp
+        );
         """
     )
     existing = conn.execute("select user_id from demo_users where user_id = ?", (DEMO_USER_ID,)).fetchone()
@@ -142,6 +159,57 @@ def get_balance(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> float:
 def list_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
     rows = conn.execute(
         "select * from simulated_positions where user_id = ? order by id desc",
+        (user_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_settlement_by_position_id(conn: sqlite3.Connection, position_id: int) -> dict[str, Any] | None:
+    row = conn.execute("select * from demo_settlements where position_id = ? order by id desc limit 1", (position_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_pending_settlement_for_position(conn: sqlite3.Connection, position: dict[str, Any]) -> dict[str, Any]:
+    existing = get_settlement_by_position_id(conn, int(position["id"]))
+    if existing:
+        return existing
+    cursor = conn.execute(
+        """
+        insert into demo_settlements(
+            user_id, market_id, position_id, outcome, stake, probability, estimated_return,
+            status, winning_outcome, payout, settlement_source, settlement_note, settled_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            position["user_id"],
+            position["market_id"],
+            int(position["id"]),
+            position["outcome"],
+            float(position["stake"]),
+            float(position["probability"]),
+            float(position["estimated_return"]),
+            "pending",
+            None,
+            0.0,
+            "local_demo",
+            "結果待ち。自動精算はまだ実装していません。",
+            None,
+        ),
+    )
+    row = conn.execute("select * from demo_settlements where id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def ensure_pending_settlements(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> None:
+    for position in list_positions(conn, user_id):
+        create_pending_settlement_for_position(conn, position)
+    conn.commit()
+
+
+def list_demo_results(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
+    ensure_pending_settlements(conn, user_id)
+    rows = conn.execute(
+        "select * from demo_settlements where user_id = ? order by id desc",
         (user_id,),
     ).fetchall()
     return [dict(row) for row in rows]

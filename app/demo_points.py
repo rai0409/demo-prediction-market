@@ -4,7 +4,7 @@ import sqlite3
 from typing import Any
 
 from app.market_display import classify_market_for_display
-from app.storage import DEMO_USER_ID, get_balance, get_market
+from app.storage import DEMO_USER_ID, create_pending_settlement_for_position, get_balance, get_market
 
 
 class DemoPredictionError(ValueError):
@@ -65,15 +65,16 @@ def create_demo_prediction(
             "insert into demo_point_ledger(user_id, market_id, amount, balance_after, entry_type, note) values (?, ?, ?, ?, ?, ?)",
             (user_id, market_id, -numeric_stake, updated_balance, "prediction", f"demo prediction: {outcome}"),
         )
-
-    position = {
-        "id": position_cursor.lastrowid,
-        "user_id": user_id,
-        "market_id": market_id,
-        "outcome": outcome,
-        "stake": numeric_stake,
-        "probability": probability,
-        "estimated_return": estimated_return,
-        "order_id": order_cursor.lastrowid,
-    }
+        position = {
+            "id": position_cursor.lastrowid,
+            "user_id": user_id,
+            "market_id": market_id,
+            "outcome": outcome,
+            "stake": numeric_stake,
+            "probability": probability,
+            "estimated_return": estimated_return,
+            "order_id": order_cursor.lastrowid,
+        }
+        settlement = create_pending_settlement_for_position(conn, position)
+    position["settlement_status"] = settlement["status"]
     return {"balance": updated_balance, "position": position}

@@ -12,7 +12,7 @@ import sqlite3
 from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.market_display import enrich_market_for_display, filtered_market_response
-from app.realtime import ensure_markets, refresh_markets_with_result, source_status
+from app.realtime import ensure_fresh_markets, ensure_markets, refresh_markets_with_result, source_status
 from app.safety import DISCLAIMER
 from app.storage import (
     DEMO_USER_ID,
@@ -21,6 +21,7 @@ from app.storage import (
     get_market,
     init_db,
     list_ledger,
+    list_demo_results,
     list_markets,
     list_orders,
     list_positions,
@@ -128,9 +129,26 @@ def enrich_activity_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dic
     return enriched
 
 
+def result_status_label(status: str) -> str:
+    return {
+        "pending": "結果待ち",
+        "settlement_pending": "判定保留",
+        "settlement_unknown": "判定不明",
+        "settled_win": "的中",
+        "settled_loss": "不的中",
+    }.get(status, status)
+
+
+def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
+    enriched = enrich_activity_rows(conn, rows)
+    for item in enriched:
+        item["status_label"] = result_status_label(item.get("status", ""))
+    return enriched
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    all_markets = ensure_markets(conn, settings)
+    all_markets = ensure_fresh_markets(conn, settings)
     market_response = filtered_market_response(all_markets)
     return templates.TemplateResponse(
         request,
@@ -162,14 +180,37 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
 
 @app.get("/demo-positions", response_class=HTMLResponse)
 async def demo_positions(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    results = {int(row["position_id"]): row for row in enrich_result_rows(conn, list_demo_results(conn))}
+    positions = enrich_activity_rows(conn, list_positions(conn))
+    for position in positions:
+        result = results.get(int(position["id"]))
+        position["result_status"] = result["status"] if result else "pending"
+        position["result_status_label"] = result["status_label"] if result else "結果待ち"
     return templates.TemplateResponse(
         request,
         "demo_positions.html",
         template_context(
             request,
-            positions=enrich_activity_rows(conn, list_positions(conn)),
+            positions=positions,
             orders=enrich_activity_rows(conn, list_orders(conn)),
             ledger=list_ledger(conn),
+        ),
+    )
+
+
+@app.get("/demo-results", response_class=HTMLResponse)
+async def demo_results(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    results = enrich_result_rows(conn, list_demo_results(conn))
+    pending_count = sum(1 for row in results if row["status"] in {"pending", "settlement_pending", "settlement_unknown"})
+    settled_count = sum(1 for row in results if row["status"] in {"settled_win", "settled_loss"})
+    return templates.TemplateResponse(
+        request,
+        "demo_results.html",
+        template_context(
+            request,
+            results=results,
+            pending_count=pending_count,
+            settled_count=settled_count,
         ),
     )
 
@@ -187,7 +228,7 @@ async def api_markets(
     include_all: bool = False,
     conn: sqlite3.Connection = Depends(get_conn),
 ):
-    markets = ensure_markets(conn, settings)
+    markets = ensure_fresh_markets(conn, settings)
     return filtered_market_response(
         markets,
         include_closed=include_closed,
@@ -242,6 +283,19 @@ async def api_demo_positions(conn: sqlite3.Connection = Depends(get_conn)):
         "positions": list_positions(conn),
         "orders": list_orders(conn),
         "ledger": list_ledger(conn),
+    }
+
+
+@app.get("/api/demo/results")
+async def api_demo_results(conn: sqlite3.Connection = Depends(get_conn)):
+    results = enrich_result_rows(conn, list_demo_results(conn))
+    pending_count = sum(1 for row in results if row["status"] in {"pending", "settlement_pending", "settlement_unknown"})
+    settled_count = sum(1 for row in results if row["status"] in {"settled_win", "settled_loss"})
+    return {
+        "balance": get_balance(conn),
+        "results": results,
+        "pending_count": pending_count,
+        "settled_count": settled_count,
     }
 
 

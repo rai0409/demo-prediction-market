@@ -1,4 +1,4 @@
-from app.storage import INITIAL_DEMO_POINTS
+from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id
 from app.storage import replace_markets
 
 
@@ -45,6 +45,32 @@ def test_post_demo_predict(client, sample_markets):
     assert response.json()["message"] == "デモ参加を記録しました。"
     assert response.json()["position"]["outcome"] == "YES"
     assert response.json()["position"]["estimated_return"] > 0
+    assert response.json()["position"]["settlement_status"] == "pending"
+
+
+def test_post_demo_predict_creates_pending_settlement(client, db_conn, sample_markets):
+    response = client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 20},
+    )
+    position_id = response.json()["position"]["id"]
+    settlement = get_settlement_by_position_id(db_conn, position_id)
+    assert settlement is not None
+    assert settlement["status"] == "pending"
+
+
+def test_api_demo_results_returns_pending_result(client, sample_markets):
+    client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 20},
+    )
+    response = client.get("/api/demo/results")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pending_count"] == 1
+    assert payload["settled_count"] == 0
+    assert payload["results"][0]["status"] == "pending"
+    assert payload["results"][0]["market_title"] == "Tokyo weekend rain forecast"
 
 
 def test_debug_source_status_returns_expected_keys(client):
@@ -55,6 +81,8 @@ def test_debug_source_status_returns_expected_keys(client):
         "live_enabled",
         "configured_limit",
         "configured_poll_seconds",
+        "auto_refresh_enabled",
+        "configured_refresh_seconds",
         "database_path",
         "last_fetch_status",
         "last_fetch_error",
@@ -129,8 +157,22 @@ def test_demo_positions_page_renders_positions(client, sample_markets):
     )
     html = client.get("/demo-positions").text
     assert "Tokyo weekend rain forecast" in html
-    assert "simulated" in html
+    assert "結果待ち" in html
+    assert "simulated" not in html
     assert "予想履歴" in html
+
+
+def test_demo_results_page_renders(client, sample_markets):
+    client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 20},
+    )
+    response = client.get("/demo-results")
+    assert response.status_code == 200
+    html = response.text
+    assert "結果確認" in html
+    assert "結果待ち" in html
+    assert "参加デモポイント" in html
 
 
 def test_ui_text_uses_required_words(client):

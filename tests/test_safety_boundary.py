@@ -7,6 +7,9 @@ from app.safety import DISCLAIMER, FORBIDDEN_ROUTE_PATHS
 def test_no_forbidden_routes_exist():
     paths = {route.path for route in app.routes}
     assert paths.isdisjoint(FORBIDDEN_ROUTE_PATHS)
+    assert "/api/buy" not in paths
+    assert "/api/sell" not in paths
+    assert "/api/bet" not in paths
 
 
 def test_no_forbidden_implementation_terms_in_app_source():
@@ -50,3 +53,28 @@ def test_required_disclaimer_exactly_available():
 デモポイントは購入・換金・出金・譲渡・外部ポイント交換・暗号資産交換・景品交換ができません。
 このアプリはPolymarketへの注文、ウォレット接続、入金、出金、売買を行いません。"""
     assert DISCLAIMER == expected
+
+
+def test_forbidden_ui_action_labels_absent():
+    action_sources = []
+    for path in Path("app/templates").rglob("*.html"):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "<a " in line or "<button" in line:
+                action_sources.append(line)
+    combined = "\n".join(action_sources)
+    for term in [
+        "賭ける",
+        "ベット",
+        "Bet now",
+        "place bet",
+        "buy",
+        "sell",
+        "deposit",
+        "withdraw",
+        "cashout",
+        "換金",
+        "入金",
+        "出金",
+    ]:
+        assert term not in combined

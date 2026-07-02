@@ -24,6 +24,14 @@ Response: HTML.
 
 Safety note: These records are local simulation records only.
 
+## GET /demo-results
+
+Purpose: Render local demo result tracking rows.
+
+Response: HTML.
+
+Notes: v0.7 creates pending result rows only. Full automatic settlement is not implemented.
+
 ## GET /health
 
 Purpose: Basic app health check.
@@ -119,6 +127,19 @@ Response shape summary:
 - `positions`
 - `orders`
 - `ledger`
+
+## GET /api/demo/results
+
+Purpose: Return local pending/result tracking rows.
+
+Response shape summary:
+
+- `balance`
+- `results`
+- `pending_count`
+- `settled_count`
+
+Notes: Result rows include market title/question when available, selected outcome, stake, probability, estimated return, status, winning outcome, payout, settlement source/note, created time, and settled time.
 
 ## POST /api/demo/predict
 

@@ -8,6 +8,8 @@ class Settings:
     poll_seconds: int
     limit: int
     db_path: str
+    auto_refresh: bool = False
+    refresh_seconds: int = 30
 
 
 def _int_env(name: str, default: int) -> int:
@@ -38,4 +40,6 @@ def get_settings() -> Settings:
         poll_seconds=max(15, min(30, _int_env("DEMO_PREDICTION_POLL_SECONDS", 30))),
         limit=max(1, _int_env("DEMO_PREDICTION_LIMIT", 50)),
         db_path=os.getenv("DEMO_PREDICTION_DB", "data/demo_prediction.sqlite3"),
+        auto_refresh=_bool_env("DEMO_PREDICTION_AUTO_REFRESH", False),
+        refresh_seconds=max(15, min(300, _int_env("DEMO_PREDICTION_REFRESH_SECONDS", 30))),
     )

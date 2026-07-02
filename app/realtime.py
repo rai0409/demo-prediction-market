@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -50,6 +51,43 @@ def refresh_markets(conn: sqlite3.Connection, settings: Settings) -> list[dict]:
     return refresh_markets_with_result(conn, settings)["markets"]
 
 
+def _parse_fetch_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def should_auto_refresh(conn: sqlite3.Connection, settings: Settings) -> bool:
+    markets = list_markets(conn)
+    if not markets:
+        return True
+    if settings.live and all(market.get("source") == "sample" for market in markets):
+        return True
+    if not getattr(settings, "auto_refresh", False):
+        return False
+    fetch_run = get_last_fetch_run(conn)
+    if not fetch_run:
+        return True
+    fetched_at = _parse_fetch_time(fetch_run.get("fetched_at"))
+    if fetched_at is None:
+        return True
+    age = datetime.now(timezone.utc) - fetched_at
+    return age.total_seconds() >= getattr(settings, "refresh_seconds", 30)
+
+
+def ensure_fresh_markets(conn: sqlite3.Connection, settings: Settings) -> list[dict]:
+    if should_auto_refresh(conn, settings):
+        return refresh_markets(conn, settings)
+    return list_markets(conn)
+
+
 def ensure_markets(conn: sqlite3.Connection, settings: Settings) -> list[dict]:
     markets = list_markets(conn)
     if not markets:
@@ -69,6 +107,8 @@ def source_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any
         "live_enabled": settings.live,
         "configured_limit": settings.limit,
         "configured_poll_seconds": settings.poll_seconds,
+        "auto_refresh_enabled": getattr(settings, "auto_refresh", False),
+        "configured_refresh_seconds": getattr(settings, "refresh_seconds", 30),
         "database_path": settings.db_path,
         "last_fetch_status": status_file.get("status") or fetch_run.get("status"),
         "last_fetch_error": status_file.get("error"),

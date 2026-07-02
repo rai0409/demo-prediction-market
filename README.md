@@ -182,6 +182,21 @@ Actual screenshots are not committed yet.
 - Legal/regulatory review is required before any real-money, external point, or production use.
 - Not production-ready.
 
+## v0.7 Freshness And Results Foundation
+
+Optional REST auto-refresh can be enabled with:
+
+```bash
+DEMO_PREDICTION_AUTO_REFRESH=1
+DEMO_PREDICTION_REFRESH_SECONDS=30
+```
+
+When enabled, dashboard and market API reads refresh only when stored data is stale. The interval is clamped between 15 and 300 seconds.
+
+Local demo participation now creates a pending result row. `/demo-results` and `/api/demo/results` show result tracking fields such as `結果待ち`, `参加デモポイント`, `参加時確率`, `推定デモリターン`, `精算デモポイント`, and `判定ソース`.
+
+Full automatic settlement is intentionally not implemented yet. See [docs/demo_results_and_settlement.md](docs/demo_results_and_settlement.md).
+
 ## Roadmap
 
 - screenshots

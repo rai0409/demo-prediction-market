@@ -37,7 +37,7 @@
         <td>{{ position.stake|number }}</td>
         <td>{{ position.probability|percent }}</td>
         <td>{{ position.estimated_return|number }}</td>
-        <td>simulated</td>
+        <td>{{ position.result_status_label }}</td>
         <td>{{ position.created_at|date }}</td>
       </tr>
       {% endfor %}

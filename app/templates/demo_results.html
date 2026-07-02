@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}デモ結果{% endblock %}
+{% block content %}
+<section class="disclaimer" aria-label="重要な注意事項">
+  {% for line in disclaimer.split('\n') %}
+  <p>{{ line }}</p>
+  {% endfor %}
+</section>
+
+<section class="hero compact-hero">
+  <div>
+    <h1>結果確認</h1>
+    <p class="subtitle">ローカルのデモ参加について、結果待ち・結果確定済みの状態を確認できます。</p>
+  </div>
+  <div class="balance-box">
+    <span>デモ残高</span>
+    <strong>{{ demo_balance|number }}</strong>
+    <span>デモポイント</span>
+  </div>
+</section>
+
+<section class="summary-grid" aria-label="demo results summary">
+  <div class="summary-card">
+    <span>結果待ち</span>
+    <strong>{{ pending_count }}</strong>
+    <span>pending / 判定保留 / 判定不明</span>
+  </div>
+  <div class="summary-card">
+    <span>結果確定済み</span>
+    <strong>{{ settled_count }}</strong>
+    <span>的中 / 不的中</span>
+  </div>
+</section>
+
+<section class="notice">デモポイントに金銭価値はありません。精算デモポイントはローカルシミュレーション上の表示項目です。</section>
+
+<section>
+  <div class="section-heading">
+    <h2>結果</h2>
+    <p>v0.7では結果待ちの記録基盤のみを提供します。自動精算は次のステップです。</p>
+  </div>
+  {% if results %}
+  <table>
+    <thead>
+      <tr>
+        <th>Market</th>
+        <th>Outcome</th>
+        <th>参加デモポイント</th>
+        <th>参加時確率</th>
+        <th>推定デモリターン</th>
+        <th>結果</th>
+        <th>Winning outcome</th>
+        <th>精算デモポイント</th>
+        <th>判定ソース</th>
+        <th>結果確定日時</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in results %}
+      <tr>
+        <td><strong>{{ result.market_title }}</strong><br><span class="muted">{{ result.market_question }}</span></td>
+        <td>{{ result.outcome }}</td>
+        <td>{{ result.stake|number }}</td>
+        <td>{{ result.probability|percent }}</td>
+        <td>{{ result.estimated_return|number }}</td>
+        <td>{{ result.status_label }}</td>
+        <td>{{ result.winning_outcome or "-" }}</td>
+        <td>{{ result.payout|number }}</td>
+        <td>{{ result.settlement_source or "-" }}<br><span class="muted">{{ result.settlement_note or "" }}</span></td>
+        <td>{{ result.settled_at|date }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <h3>結果待ちのデモ参加はまだありません。</h3>
+    <p>マーケット詳細からデモ参加すると、ここに結果待ちとして表示されます。</p>
+    <a class="action-link" href="/">マーケットへ</a>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
