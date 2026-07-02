@@ -7,6 +7,9 @@ from app.safety import DISCLAIMER, FORBIDDEN_ROUTE_PATHS
 def test_no_forbidden_routes_exist():
     paths = {route.path for route in app.routes}
     assert paths.isdisjoint(FORBIDDEN_ROUTE_PATHS)
+    assert "/api/order" not in paths
+    assert "/api/trade" not in paths
+    assert "/api/wallet" not in paths
     assert "/api/buy" not in paths
     assert "/api/sell" not in paths
     assert "/api/bet" not in paths
@@ -73,6 +76,11 @@ def test_forbidden_ui_action_labels_absent():
         "deposit",
         "withdraw",
         "cashout",
+        "profit",
+        "earn money",
+        "稼ぐ",
+        "儲かる",
+        "利益確定",
         "換金",
         "入金",
         "出金",

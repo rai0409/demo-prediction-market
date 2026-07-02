@@ -110,6 +110,18 @@ h1, h2, h3 {
   font-size: 22px;
 }
 
+.compact-summary {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.settlement-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 14px 0;
+}
+
 .disclaimer {
   background: #fff8e6;
   border: 1px solid #f0c36d;

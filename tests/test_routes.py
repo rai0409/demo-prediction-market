@@ -73,6 +73,46 @@ def test_api_demo_results_returns_pending_result(client, sample_markets):
     assert payload["results"][0]["market_title"] == "Tokyo weekend rain forecast"
 
 
+def test_api_demo_settle_returns_summary(client, db_conn, sample_markets):
+    client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 20},
+    )
+    resolved = dict(sample_markets[0])
+    resolved["closed"] = True
+    resolved["active"] = False
+    resolved["probabilities"] = {"YES": 1.0, "NO": 0.0}
+    replace_markets(db_conn, [resolved])
+
+    response = client.post("/api/demo/settle")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["checked_count"] == 1
+    assert payload["settled_win_count"] == 1
+    assert payload["settled_loss_count"] == 0
+    assert payload["total_payout"] > 0
+
+
+def test_api_demo_results_includes_updated_status_after_settlement(client, db_conn, sample_markets):
+    client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "NO", "stake": 20},
+    )
+    resolved = dict(sample_markets[0])
+    resolved["closed"] = True
+    resolved["active"] = False
+    resolved["probabilities"] = {"YES": 1.0, "NO": 0.0}
+    replace_markets(db_conn, [resolved])
+    client.post("/api/demo/settle")
+
+    payload = client.get("/api/demo/results").json()
+
+    assert payload["results"][0]["status"] == "settled_loss"
+    assert payload["results"][0]["status_label"] == "不的中"
+    assert payload["settled_count"] == 1
+
+
 def test_debug_source_status_returns_expected_keys(client):
     response = client.get("/api/debug/source-status")
     assert response.status_code == 200
@@ -171,8 +211,10 @@ def test_demo_results_page_renders(client, sample_markets):
     assert response.status_code == 200
     html = response.text
     assert "結果確認" in html
+    assert "結果を確認する" in html
     assert "結果待ち" in html
     assert "参加デモポイント" in html
+    assert "判定ソース" in html
 
 
 def test_ui_text_uses_required_words(client):

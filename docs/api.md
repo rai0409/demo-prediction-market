@@ -30,7 +30,7 @@ Purpose: Render local demo result tracking rows.
 
 Response: HTML.
 
-Notes: v0.7 creates pending result rows only. Full automatic settlement is not implemented.
+Notes: Includes a `結果を確認する` action that performs conservative local-only demo settlement through `POST /api/demo/settle`.
 
 ## GET /health
 
@@ -140,6 +140,28 @@ Response shape summary:
 - `settled_count`
 
 Notes: Result rows include market title/question when available, selected outcome, stake, probability, estimated return, status, winning outcome, payout, settlement source/note, created time, and settled time.
+
+## POST /api/demo/settle
+
+Purpose: Check pending local demo result rows against stored public market data and settle only when the winning outcome is clear.
+
+Response shape summary:
+
+- `checked_count`
+- `settled_win_count`
+- `settled_loss_count`
+- `pending_count`
+- `unknown_count`
+- `total_payout`
+- `balance`
+
+Notes:
+
+- Uses explicit winning outcome fields when available.
+- Uses a strict probability fallback only for closed/resolved markets with exactly one probability `>= 0.999` and all others `<= 0.001`.
+- Does not infer a final result from closed/inactive/end-date signals alone.
+- Repeated calls do not double-pay.
+- Local demo settlement only; no external order or money movement occurs.
 
 ## POST /api/demo/predict
 

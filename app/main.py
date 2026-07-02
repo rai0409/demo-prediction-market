@@ -14,6 +14,7 @@ from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.market_display import enrich_market_for_display, filtered_market_response
 from app.realtime import ensure_fresh_markets, ensure_markets, refresh_markets_with_result, source_status
 from app.safety import DISCLAIMER
+from app.settlement import settle_pending_positions
 from app.storage import (
     DEMO_USER_ID,
     connect,
@@ -143,6 +144,7 @@ def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]
     enriched = enrich_activity_rows(conn, rows)
     for item in enriched:
         item["status_label"] = result_status_label(item.get("status", ""))
+        item["winning_outcome_label"] = item.get("winning_outcome") or "-"
     return enriched
 
 
@@ -297,6 +299,15 @@ async def api_demo_results(conn: sqlite3.Connection = Depends(get_conn)):
         "pending_count": pending_count,
         "settled_count": settled_count,
     }
+
+
+@app.post("/api/demo/settle")
+async def api_demo_settle(conn: sqlite3.Connection = Depends(get_conn)):
+    if settings.live:
+        ensure_fresh_markets(conn, settings)
+    else:
+        ensure_markets(conn, settings)
+    return settle_pending_positions(conn, DEMO_USER_ID)
 
 
 @app.post("/api/demo/predict")

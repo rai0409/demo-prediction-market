@@ -169,6 +169,11 @@ def get_settlement_by_position_id(conn: sqlite3.Connection, position_id: int) ->
     return dict(row) if row else None
 
 
+def get_demo_settlement(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any] | None:
+    row = conn.execute("select * from demo_settlements where id = ?", (settlement_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def create_pending_settlement_for_position(conn: sqlite3.Connection, position: dict[str, Any]) -> dict[str, Any]:
     existing = get_settlement_by_position_id(conn, int(position["id"]))
     if existing:
@@ -213,6 +218,58 @@ def list_demo_results(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> 
         (user_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_pending_settlements(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
+    ensure_pending_settlements(conn, user_id)
+    rows = conn.execute(
+        """
+        select * from demo_settlements
+        where user_id = ? and status in ('pending', 'settlement_pending', 'settlement_unknown')
+        order by id asc
+        """,
+        (user_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_demo_settlement(
+    conn: sqlite3.Connection,
+    settlement_id: int,
+    *,
+    status: str,
+    winning_outcome: str | None,
+    payout: float,
+    settlement_source: str | None,
+    settlement_note: str | None,
+    settled_at: str | None,
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        update demo_settlements
+        set status = ?,
+            winning_outcome = ?,
+            payout = ?,
+            settlement_source = ?,
+            settlement_note = ?,
+            settled_at = ?
+        where id = ?
+        """,
+        (status, winning_outcome, float(payout), settlement_source, settlement_note, settled_at, settlement_id),
+    )
+    updated = get_demo_settlement(conn, settlement_id)
+    if updated is None:
+        raise ValueError("demo settlement missing")
+    return updated
+
+
+def settlement_ledger_entry_exists(conn: sqlite3.Connection, settlement_id: int) -> bool:
+    marker = f"settlement_id={settlement_id}"
+    row = conn.execute(
+        "select id from demo_point_ledger where note like ? limit 1",
+        (f"%{marker}%",),
+    ).fetchone()
+    return row is not None
 
 
 def list_orders(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:

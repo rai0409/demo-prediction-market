@@ -1,12 +1,12 @@
-# Demo Results And Settlement Foundation
+# Demo Results And Settlement
 
-v0.7 adds pending result tracking for local-only demo participation.
+v0.7 added pending result tracking for local-only demo participation. v0.8 adds conservative local-only demo settlement.
 
 ## Current Scope
 
 When `POST /api/demo/predict` creates a local simulated position, the app also creates a `demo_settlements` row with status `pending`.
 
-The result screen at `/demo-results` shows:
+The result screen at `/demo-results` shows result rows and a `結果を確認する` action. That action calls `POST /api/demo/settle`, checks pending rows against stored public market data, and updates only local SQLite demo records.
 
 - 結果待ち
 - 結果確定済み
@@ -17,17 +17,50 @@ The result screen at `/demo-results` shows:
 - 判定ソース
 - 結果確定日時
 
-## Not Implemented Yet
+## Conservative Settlement Rules
 
-Full automatic settlement is intentionally not implemented in v0.7.
+The app settles only when a winning outcome is clear.
 
-The next settlement step should only mark results as `settled_win` or `settled_loss` when a clear and reliable winning outcome is available, for example:
+Preferred explicit fields include:
 
-- `winning_outcome` is explicitly available in normalized/stored market data, or
-- market resolution state is confirmed through a safe public REST source, and
-- the app can map the resolved outcome to the local simulated position outcome without ambiguity.
+- `winning_outcome`
+- `winningOutcome`
+- `resolved_outcome`
+- `resolution_outcome`
+- `winningOutcomeName`
+- `winning_asset_id`
+- `winningAssetId`
 
-If resolution cannot be determined safely, the status should remain `pending`, `settlement_pending`, or `settlement_unknown`.
+For winning asset ids, the id is mapped to an outcome only when stored market data has an unambiguous token/outcome mapping.
+
+The fallback probability rule is intentionally strict. The app may infer a winning outcome only when:
+
+- the market is closed or resolved,
+- outcomes are available,
+- probabilities are available,
+- exactly one outcome has probability `>= 0.999`, and
+- every other outcome has probability `<= 0.001`.
+
+The app does not infer a result from `closed=true` alone, `active=false` alone, an end date alone, or high-but-not-final probabilities such as `0.8` or `0.9`.
+
+If resolution cannot be determined safely, the status remains `pending`, `settlement_pending`, or `settlement_unknown`.
+
+## Idempotency
+
+Settlement is designed to avoid double payout:
+
+- rows already marked `settled_win` or `settled_loss` are returned unchanged,
+- ledger notes include `settlement_id=<id>`,
+- repeated settlement calls do not add a second win payout,
+- loss settlement records a zero-amount ledger entry once.
+
+## Statuses
+
+- `pending`: result has not been checked yet.
+- `settlement_pending`: public data does not show a clear result yet.
+- `settlement_unknown`: required local market data is missing.
+- `settled_win`: selected outcome matched the clear winning outcome.
+- `settled_loss`: selected outcome did not match the clear winning outcome.
 
 ## Safety Boundary
 

@@ -90,6 +90,26 @@ def test_outcome_prices_as_json_string():
     ]
     markets = normalize_events(payload, source="polymarket", status="live", fetched_at="now")
     assert markets[0]["probabilities"]["NO"] == 0.69
+    assert markets[0]["clob_token_ids"] == ["token-a", "token-b"]
+
+
+def test_normalizer_preserves_resolution_fields():
+    payload = [
+        {
+            "id": "market-resolved",
+            "question": "Will resolution fields survive?",
+            "outcomes": ["YES", "NO"],
+            "outcomePrices": [1, 0],
+            "winningOutcome": "YES",
+            "winningAssetId": "token-a",
+            "marketResolved": True,
+            "clobTokenIds": ["token-a", "token-b"],
+        }
+    ]
+    markets = normalize_events(payload, source="polymarket", status="live", fetched_at="now")
+    assert markets[0]["winning_outcome"] == "YES"
+    assert markets[0]["winning_asset_id"] == "token-a"
+    assert markets[0]["resolved"] is True
 
 
 def test_missing_optional_fields_do_not_crash():

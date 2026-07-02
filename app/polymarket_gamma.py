@@ -238,6 +238,15 @@ def normalize_events(
             outcomes, probabilities = _normalize_outcomes(market)
             if not outcomes:
                 continue
+            clob_token_ids = _parse_jsonish(
+                _first(
+                    market.get("clobTokenIds"),
+                    market.get("clob_token_ids"),
+                    market.get("tokenIds"),
+                    market.get("outcomeTokenIds"),
+                    default=[],
+                )
+            )
             title = _first(event_title, question)
             slug = str(_first(market.get("slug"), event.get("slug"), market_id, default=market_id))
             normalized.append(
@@ -260,6 +269,37 @@ def normalize_events(
                     ),
                     "outcomes": outcomes,
                     "probabilities": probabilities,
+                    "clob_token_ids": clob_token_ids if isinstance(clob_token_ids, list) else [],
+                    "winning_outcome": _first(
+                        market.get("winning_outcome"),
+                        market.get("winningOutcome"),
+                        market.get("resolved_outcome"),
+                        market.get("resolution_outcome"),
+                        market.get("winningOutcomeName"),
+                        event.get("winning_outcome"),
+                        event.get("winningOutcome"),
+                        event.get("resolved_outcome"),
+                        event.get("resolution_outcome"),
+                        event.get("winningOutcomeName"),
+                    ),
+                    "winning_asset_id": _first(
+                        market.get("winning_asset_id"),
+                        market.get("winningAssetId"),
+                        event.get("winning_asset_id"),
+                        event.get("winningAssetId"),
+                    ),
+                    "resolved": _bool(
+                        _first(
+                            market.get("resolved"),
+                            market.get("market_resolved"),
+                            market.get("marketResolved"),
+                            event.get("resolved"),
+                            event.get("market_resolved"),
+                            event.get("marketResolved"),
+                            default=False,
+                        ),
+                        False,
+                    ),
                     "volume": _float(_first(market.get("volume"), event.get("volume"), default=0)),
                     "volume_24hr": _float(
                         _first(

@@ -84,7 +84,48 @@
     }
   }
 
+  function setText(id, value) {
+    var node = document.getElementById(id);
+    if (node) node.textContent = value;
+  }
+
+  function attachSettlementCheck() {
+    var button = document.getElementById("settlement-check-button");
+    if (!button) return;
+    button.addEventListener("click", async function () {
+      var result = document.getElementById("settlement-result");
+      var summary = document.getElementById("settlement-summary");
+      result.textContent = "";
+      result.className = "form-message";
+      button.disabled = true;
+      try {
+        var response = await fetch("/api/demo/settle", {method: "POST"});
+        var data = await response.json();
+        if (!response.ok) {
+          result.textContent = data.detail || "結果確認に失敗しました。";
+          result.className = "form-message error";
+          return;
+        }
+        setText("settlement-checked", data.checked_count);
+        setText("settlement-wins", data.settled_win_count);
+        setText("settlement-losses", data.settled_loss_count);
+        setText("settlement-pending", data.pending_count + data.unknown_count);
+        setText("settlement-payout", Number(data.total_payout || 0).toFixed(2));
+        setText("settlement-balance", Number(data.balance || 0).toFixed(2));
+        if (summary) summary.hidden = false;
+        result.textContent = "結果確認が完了しました。ページを再読み込みすると最新の状態を表示します。";
+        result.className = "form-message success";
+      } catch (error) {
+        result.textContent = "通信に失敗しました。";
+        result.className = "form-message error";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
   attachPredictionForm();
+  attachSettlementCheck();
   pollMarkets();
   var seconds = Number(document.body.dataset.pollSeconds || "30");
   window.setInterval(pollMarkets, Math.max(15, Math.min(30, seconds)) * 1000);
