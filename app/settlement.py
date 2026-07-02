@@ -9,6 +9,8 @@ from app.storage import (
     get_balance,
     get_demo_settlement,
     get_market,
+    insert_audit_event,
+    insert_ledger_entry,
     list_pending_settlements,
     settlement_ledger_entry_exists,
     update_demo_settlement,
@@ -167,39 +169,59 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
         if status == "settled_win":
             payout = float(classified["payout"])
             if not settlement_ledger_entry_exists(conn, settlement_id):
-                balance_after = round(get_balance(conn, current["user_id"]) + payout, 2)
+                balance_before = get_balance(conn, current["user_id"])
+                balance_after = round(balance_before + payout, 2)
                 conn.execute("update demo_users set balance = ? where user_id = ?", (balance_after, current["user_id"]))
-                conn.execute(
-                    """
-                    insert into demo_point_ledger(user_id, market_id, amount, balance_after, entry_type, note)
-                    values (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        current["user_id"],
-                        current["market_id"],
-                        payout,
-                        balance_after,
-                        "settlement_win",
-                        f"demo settlement win: {marker}",
-                    ),
+                insert_ledger_entry(
+                    conn,
+                    user_id=current["user_id"],
+                    market_id=current["market_id"],
+                    amount=payout,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                    entry_type="settlement_win",
+                    note=f"demo settlement win: {marker}",
+                    reference_type="demo_settlement",
+                    reference_id=settlement_id,
+                )
+                insert_audit_event(
+                    conn,
+                    event_type="settlement_paid",
+                    user_id=current["user_id"],
+                    route="/api/demo/settle",
+                    reference_type="demo_settlement",
+                    reference_id=settlement_id,
+                    before={"balance": balance_before},
+                    after={"balance": balance_after, "payout": payout},
+                    note="デモ精算",
                 )
         elif status == "settled_loss" and not settlement_ledger_entry_exists(conn, settlement_id):
-            conn.execute(
-                """
-                insert into demo_point_ledger(user_id, market_id, amount, balance_after, entry_type, note)
-                values (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    current["user_id"],
-                    current["market_id"],
-                    0.0,
-                    get_balance(conn, current["user_id"]),
-                    "settlement_loss",
-                    f"demo settlement loss: {marker}",
-                ),
+            balance_before = get_balance(conn, current["user_id"])
+            insert_ledger_entry(
+                conn,
+                user_id=current["user_id"],
+                market_id=current["market_id"],
+                amount=0.0,
+                balance_before=balance_before,
+                balance_after=balance_before,
+                entry_type="settlement_loss",
+                note=f"demo settlement loss: {marker}",
+                reference_type="demo_settlement",
+                reference_id=settlement_id,
+            )
+            insert_audit_event(
+                conn,
+                event_type="settlement_loss",
+                user_id=current["user_id"],
+                route="/api/demo/settle",
+                reference_type="demo_settlement",
+                reference_id=settlement_id,
+                before={"balance": balance_before},
+                after={"balance": balance_before, "payout": 0.0},
+                note="デモ精算",
             )
 
-        return update_demo_settlement(
+        updated = update_demo_settlement(
             conn,
             settlement_id,
             status=status,
@@ -209,6 +231,17 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
             settlement_note=classified["settlement_note"],
             settled_at=settled_at,
         )
+        insert_audit_event(
+            conn,
+            event_type="settlement_checked",
+            user_id=current["user_id"],
+            route="/api/demo/settle",
+            reference_type="demo_settlement",
+            reference_id=settlement_id,
+            after={"status": status, "winning_outcome": classified["winning_outcome"]},
+            note=classified["settlement_note"],
+        )
+        return updated
 
 
 def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> dict[str, Any]:

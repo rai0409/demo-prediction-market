@@ -79,6 +79,13 @@ h1, h2, h3 {
   padding: 16px;
 }
 
+.panel-card {
+  background: #ffffff;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 18px;
+}
+
 .balance-box {
   display: grid;
   min-width: 180px;
@@ -120,6 +127,18 @@ h1, h2, h3 {
   flex-wrap: wrap;
   gap: 12px;
   margin: 14px 0;
+}
+
+.wallet-actions {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  margin: 22px 0;
+}
+
+.wallet-actions form {
+  display: grid;
+  gap: 10px;
 }
 
 .disclaimer {

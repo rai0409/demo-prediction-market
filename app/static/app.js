@@ -145,8 +145,84 @@
     });
   }
 
+  function optionalValue(id) {
+    var node = document.getElementById(id);
+    return node && node.value ? node.value : null;
+  }
+
+  function updateBalance(value) {
+    var balanceNode = document.getElementById("demo-balance");
+    if (balanceNode) balanceNode.textContent = Number(value || 0).toFixed(2);
+  }
+
+  function attachDemoPointManagement() {
+    var addForm = document.getElementById("demo-points-add-form");
+    if (addForm) {
+      addForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        var result = document.getElementById("demo-points-add-result");
+        result.textContent = "";
+        try {
+          var response = await fetch("/api/demo/wallet/add-points", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              amount: document.getElementById("add-amount").value,
+              reason: optionalValue("add-reason"),
+              idempotency_key: optionalValue("add-idempotency-key")
+            })
+          });
+          var data = await response.json();
+          if (!response.ok) {
+            result.textContent = data.detail || "デモポイント追加に失敗しました。";
+            result.className = "form-message error";
+            return;
+          }
+          updateBalance(data.balance);
+          result.textContent = "デモポイント追加を記録しました。";
+          result.className = "form-message success";
+        } catch (error) {
+          result.textContent = "通信に失敗しました。";
+          result.className = "form-message error";
+        }
+      });
+    }
+
+    var resetForm = document.getElementById("demo-balance-reset-form");
+    if (resetForm) {
+      resetForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        var result = document.getElementById("demo-balance-reset-result");
+        result.textContent = "";
+        try {
+          var response = await fetch("/api/demo/wallet/reset", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              reason: optionalValue("reset-reason"),
+              idempotency_key: optionalValue("reset-idempotency-key")
+            })
+          });
+          var data = await response.json();
+          if (!response.ok) {
+            result.textContent = data.detail || "デモ残高リセットに失敗しました。";
+            result.className = "form-message error";
+            return;
+          }
+          updateBalance(data.balance);
+          result.textContent = "デモ残高リセットを記録しました。";
+          result.className = "form-message success";
+        } catch (error) {
+          result.textContent = "通信に失敗しました。";
+          result.className = "form-message error";
+        }
+      });
+    }
+  }
+
   attachPredictionForm();
   attachSettlementCheck();
+  attachDemoPointManagement();
   pollMarkets();
   pollRealtimeStatus();
   var seconds = Number(document.body.dataset.pollSeconds || "30");

@@ -25,6 +25,7 @@ FastAPIベースのローカル技術MVPです。Polymarketの公開マーケッ
 - active market filtering
 - server-side eligibility guard
 - local demo point ledger
+- local demo point management with idempotency and audit events
 - optional public market WebSocket freshness observations
 - dashboard/detail/positions UI
 - diagnostics endpoints
@@ -65,6 +66,7 @@ Live API results depend on the public Gamma API response at runtime, so counts m
 7. Store local simulated orders, simulated positions, and demo point ledger entries.
 8. Expose diagnostics through runtime files and `/api/debug/source-status`.
 9. Optionally collect public market WebSocket observations into `market_realtime_updates` and display them separately from REST probabilities.
+10. Track demo point balance changes with reference IDs, processing IDs, and local audit events.
 
 ## Setup
 
@@ -154,11 +156,12 @@ python -m pytest tests -q
 
 1. Open the dashboard.
 2. Refresh live data with `POST /api/refresh` or run with `DEMO_PREDICTION_LIVE=1`.
-3. Open a market detail page.
-4. Choose an outcome.
-5. Enter demo points.
-6. Click `デモ参加する`.
-7. View `デモポジション`.
+3. Open `デモポイント管理` to review `デモ残高`, `デモポイント履歴`, and `監査ログ`.
+4. Open a market detail page.
+5. Choose an outcome.
+6. Enter demo points.
+7. Click `デモ参加する`.
+8. View `デモポジション`.
 
 ## API endpoints
 
@@ -179,6 +182,9 @@ JSON:
 - `GET /api/debug/source-status`: live/sample/fallback/filter diagnostics.
 - `GET /api/realtime/status`: optional public WebSocket freshness diagnostics.
 - `GET /api/demo/balance`: local demo balance.
+- `GET /api/demo/wallet`: local demo point ledger/audit summary.
+- `POST /api/demo/wallet/add-points`: local `デモポイント追加`.
+- `POST /api/demo/wallet/reset`: local `デモ残高リセット`.
 - `GET /api/demo/positions`: local positions/orders/ledger.
 - `POST /api/demo/predict`: local-only demo participation. It never calls external trading APIs.
 
@@ -225,6 +231,14 @@ Full automatic settlement is intentionally not implemented yet. See [docs/demo_r
 v0.9 adds an optional public market WebSocket observation layer. It captures market data events such as book updates, price changes, last trade price, best bid/ask, and `market_resolved` into local SQLite.
 
 REST remains the canonical fetch path. WebSocket observations are displayed separately and do not overwrite REST probabilities. `market_resolved` observations are recorded but not used alone for demo settlement.
+
+## v1.0 Demo Point Ledger Foundation
+
+v1.0 adds `デモポイント管理`, richer ledger metadata, idempotency keys for local demo actions, and `監査ログ`.
+
+New ledger rows include `balance_before`, `balance_after`, `reference_type`, `reference_id`, `idempotency_key`, and `request_id`. Demo participation, demo point addition, demo balance reset, and demo settlement all remain local-only simulation records.
+
+See [docs/demo_wallet_ledger.md](docs/demo_wallet_ledger.md).
 
 ## Roadmap
 

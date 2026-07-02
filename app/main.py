@@ -11,6 +11,7 @@ import sqlite3
 
 from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
+from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response
 from app.realtime import (
     attach_realtime_updates,
@@ -87,6 +88,18 @@ class PredictionRequest(BaseModel):
     market_id: str
     outcome: str
     stake: float | str
+    idempotency_key: str | None = None
+
+
+class AddDemoPointsRequest(BaseModel):
+    amount: float | str
+    reason: str | None = None
+    idempotency_key: str | None = None
+
+
+class ResetDemoBalanceRequest(BaseModel):
+    reason: str | None = None
+    idempotency_key: str | None = None
 
 
 async def get_conn() -> sqlite3.Connection:
@@ -226,6 +239,21 @@ async def demo_results(request: Request, conn: sqlite3.Connection = Depends(get_
     )
 
 
+@app.get("/demo-wallet", response_class=HTMLResponse)
+async def demo_wallet_page(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    snapshot = wallet_snapshot(conn)
+    return templates.TemplateResponse(
+        request,
+        "demo_wallet.html",
+        template_context(
+            request,
+            ledger=snapshot["ledger"],
+            audit_events=snapshot["audit_events"],
+            wallet_summary=snapshot["summary"],
+        ),
+    )
+
+
 @app.get("/health")
 async def health():
     return {"ok": True, "title": app.title}
@@ -293,6 +321,36 @@ async def api_demo_balance(conn: sqlite3.Connection = Depends(get_conn)):
     return {"user_id": DEMO_USER_ID, "balance": get_balance(conn)}
 
 
+@app.get("/api/demo/wallet")
+async def api_demo_wallet(conn: sqlite3.Connection = Depends(get_conn)):
+    return wallet_snapshot(conn)
+
+
+@app.post("/api/demo/wallet/add-points")
+async def api_demo_wallet_add_points(payload: AddDemoPointsRequest, conn: sqlite3.Connection = Depends(get_conn)):
+    try:
+        return add_demo_points(
+            conn,
+            amount=payload.amount,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+        )
+    except DemoWalletError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+
+@app.post("/api/demo/wallet/reset")
+async def api_demo_wallet_reset(payload: ResetDemoBalanceRequest, conn: sqlite3.Connection = Depends(get_conn)):
+    try:
+        return reset_demo_balance(
+            conn,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+        )
+    except DemoWalletError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+
 @app.get("/api/demo/positions")
 async def api_demo_positions(conn: sqlite3.Connection = Depends(get_conn)):
     return {
@@ -333,6 +391,7 @@ async def api_demo_predict(payload: PredictionRequest, conn: sqlite3.Connection 
             market_id=payload.market_id,
             outcome=payload.outcome,
             stake=payload.stake,
+            idempotency_key=payload.idempotency_key,
         )
     except DemoPredictionError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})

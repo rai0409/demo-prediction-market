@@ -64,9 +64,27 @@ def init_db(conn: sqlite3.Connection) -> None:
             user_id text not null,
             market_id text,
             amount real not null,
+            balance_before real,
             balance_after real not null,
             entry_type text not null,
             note text not null,
+            reference_type text,
+            reference_id text,
+            idempotency_key text,
+            request_id text,
+            created_at text not null default current_timestamp
+        );
+        create table if not exists demo_audit_events (
+            id integer primary key autoincrement,
+            event_type text not null,
+            user_id text,
+            route text,
+            request_id text,
+            reference_type text,
+            reference_id text,
+            before_json text,
+            after_json text,
+            note text,
             created_at text not null default current_timestamp
         );
         create table if not exists simulated_orders (
@@ -76,6 +94,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             outcome text not null,
             stake real not null,
             probability real not null,
+            idempotency_key text,
+            request_id text,
             created_at text not null default current_timestamp
         );
         create table if not exists simulated_positions (
@@ -86,6 +106,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             stake real not null,
             probability real not null,
             estimated_return real not null,
+            idempotency_key text,
+            request_id text,
             created_at text not null default current_timestamp
         );
         create table if not exists demo_settlements (
@@ -107,6 +129,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
+    _ensure_column(conn, "demo_point_ledger", "reference_type", "text")
+    _ensure_column(conn, "demo_point_ledger", "reference_id", "text")
+    _ensure_column(conn, "demo_point_ledger", "idempotency_key", "text")
+    _ensure_column(conn, "demo_point_ledger", "request_id", "text")
+    _ensure_column(conn, "simulated_orders", "idempotency_key", "text")
+    _ensure_column(conn, "simulated_orders", "request_id", "text")
+    _ensure_column(conn, "simulated_positions", "idempotency_key", "text")
+    _ensure_column(conn, "simulated_positions", "request_id", "text")
     existing = conn.execute("select user_id from demo_users where user_id = ?", (DEMO_USER_ID,)).fetchone()
     if existing is None:
         conn.execute("insert into demo_users(user_id, balance) values (?, ?)", (DEMO_USER_ID, INITIAL_DEMO_POINTS))
@@ -115,6 +146,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             (DEMO_USER_ID, INITIAL_DEMO_POINTS, INITIAL_DEMO_POINTS, "initial", "initial demo points"),
         )
     conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"alter table {table} add column {column} {declaration}")
 
 
 def store_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> None:
@@ -241,12 +278,153 @@ def get_balance(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> float:
     return float(row["balance"])
 
 
+def insert_ledger_entry(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    amount: float,
+    balance_after: float,
+    entry_type: str,
+    note: str,
+    market_id: str | None = None,
+    balance_before: float | None = None,
+    reference_type: str | None = None,
+    reference_id: str | int | None = None,
+    idempotency_key: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    cursor = conn.execute(
+        """
+        insert into demo_point_ledger(
+            user_id, market_id, amount, balance_before, balance_after, entry_type, note,
+            reference_type, reference_id, idempotency_key, request_id
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            market_id,
+            float(amount),
+            balance_before,
+            float(balance_after),
+            entry_type,
+            note,
+            reference_type,
+            str(reference_id) if reference_id is not None else None,
+            idempotency_key,
+            request_id,
+        ),
+    )
+    row = conn.execute("select * from demo_point_ledger where id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def find_ledger_by_idempotency_key(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    entry_type: str,
+    idempotency_key: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        select * from demo_point_ledger
+        where user_id = ? and entry_type = ? and idempotency_key = ?
+        order by id desc limit 1
+        """,
+        (user_id, entry_type, idempotency_key),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_audit_event(
+    conn: sqlite3.Connection,
+    *,
+    event_type: str,
+    user_id: str | None = None,
+    route: str | None = None,
+    request_id: str | None = None,
+    reference_type: str | None = None,
+    reference_id: str | int | None = None,
+    before: Any = None,
+    after: Any = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    cursor = conn.execute(
+        """
+        insert into demo_audit_events(
+            event_type, user_id, route, request_id, reference_type, reference_id,
+            before_json, after_json, note
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_type,
+            user_id,
+            route,
+            request_id,
+            reference_type,
+            str(reference_id) if reference_id is not None else None,
+            json.dumps(before, ensure_ascii=False) if before is not None else None,
+            json.dumps(after, ensure_ascii=False) if after is not None else None,
+            note,
+        ),
+    )
+    row = conn.execute("select * from demo_audit_events where id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def list_audit_events(conn: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "select * from demo_audit_events order by id desc limit ?",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def ledger_summary(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> dict[str, Any]:
+    rows = list_ledger(conn, user_id)
+    return {
+        "total_added": round(sum(float(row["amount"]) for row in rows if row["entry_type"] == "demo_point_add"), 2),
+        "total_used_for_demo_participation": round(
+            abs(sum(float(row["amount"]) for row in rows if row["entry_type"] == "prediction")),
+            2,
+        ),
+        "total_settled": round(
+            sum(float(row["amount"]) for row in rows if row["entry_type"] in {"settlement_win", "settlement_loss"}),
+            2,
+        ),
+        "total_adjusted": round(sum(float(row["amount"]) for row in rows if row["entry_type"] == "demo_balance_reset"), 2),
+        "ledger_count": len(rows),
+    }
+
+
 def list_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
     rows = conn.execute(
         "select * from simulated_positions where user_id = ? order by id desc",
         (user_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_position_by_id(conn: sqlite3.Connection, position_id: int) -> dict[str, Any] | None:
+    row = conn.execute("select * from simulated_positions where id = ?", (position_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_position_by_idempotency_key(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    idempotency_key: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        select * from simulated_positions
+        where user_id = ? and idempotency_key = ?
+        order by id desc limit 1
+        """,
+        (user_id, idempotency_key),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def get_settlement_by_position_id(conn: sqlite3.Connection, position_id: int) -> dict[str, Any] | None:

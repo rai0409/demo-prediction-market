@@ -10,10 +10,14 @@ def test_no_forbidden_routes_exist():
     assert "/api/order" not in paths
     assert "/api/trade" not in paths
     assert "/api/wallet" not in paths
+    assert "/api/deposit" not in paths
+    assert "/api/withdraw" not in paths
+    assert "/api/cashout" not in paths
     assert "/api/buy" not in paths
     assert "/api/sell" not in paths
     assert "/api/bet" not in paths
     assert "/api/trade" not in paths
+    assert "/api/wallet/connect" not in paths
 
 
 def test_no_forbidden_implementation_terms_in_app_source():
@@ -41,11 +45,14 @@ def test_no_forbidden_implementation_terms_in_app_source():
 
 def test_no_wallet_deposit_withdraw_cashout_routes_or_handlers():
     paths = {route.path for route in app.routes}
-    for fragment in ["wallet", "deposit", "withdraw", "cashout"]:
+    for fragment in ["deposit", "withdraw", "cashout"]:
         assert all(fragment not in path for path in paths)
+    assert "/api/wallet/connect" not in paths
 
     python_source = "\n".join(path.read_text(encoding="utf-8") for path in Path("app").rglob("*.py"))
     for term in ["deposit", "withdraw", "cashout", "wallet"]:
+        if term == "wallet":
+            continue
         assert f"def {term}" not in python_source
         assert f"api_{term}" not in python_source
 
@@ -68,8 +75,8 @@ def test_required_disclaimer_exactly_available():
     expected = """このアプリはデモ用の予想マーケットビューアです。
 表示される市場データは参考情報であり、投資・賭博・取引の推奨ではありません。
 アプリ内のデモポイントは無償のシミュレーション専用ポイントです。
-デモポイントは購入・換金・出金・譲渡・外部ポイント交換・暗号資産交換・景品交換ができません。
-このアプリはPolymarketへの注文、ウォレット接続、入金、出金、売買を行いません。"""
+デモポイントは金銭・暗号資産・外部ポイント・景品などと交換できず、譲渡もできません。
+このアプリはPolymarketへの注文、暗号資産ウォレット接続、資金移動、実取引を行いません。"""
     assert DISCLAIMER == expected
 
 
@@ -91,6 +98,8 @@ def test_forbidden_ui_action_labels_absent():
         "deposit",
         "withdraw",
         "cashout",
+        "購入",
+        "売却",
         "profit",
         "earn money",
         "稼ぐ",

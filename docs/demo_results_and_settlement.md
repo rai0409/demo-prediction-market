@@ -51,8 +51,11 @@ Settlement is designed to avoid double payout:
 
 - rows already marked `settled_win` or `settled_loss` are returned unchanged,
 - ledger notes include `settlement_id=<id>`,
+- ledger rows use `reference_type=demo_settlement` and `reference_id=<id>`,
 - repeated settlement calls do not add a second win payout,
 - loss settlement records a zero-amount ledger entry once.
+
+v1.0 settlement ledger rows also include `balance_before` and `balance_after`, and settlement checks create local audit events.
 
 ## Statuses
 

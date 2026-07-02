@@ -147,6 +147,59 @@ Response shape summary:
 - `user_id`
 - `balance`
 
+## GET /api/demo/wallet
+
+Purpose: Return local demo point management state.
+
+Response shape summary:
+
+- `user_id`
+- `balance`
+- `ledger`
+- `audit_events`
+- `summary`
+
+Summary fields:
+
+- `total_added`
+- `total_used_for_demo_participation`
+- `total_settled`
+- `total_adjusted`
+- `ledger_count`
+
+## POST /api/demo/wallet/add-points
+
+Purpose: Add local demo points for simulation.
+
+Request shape:
+
+```json
+{"amount": 1000, "reason": "デモポイント追加", "idempotency_key": "optional-key"}
+```
+
+Notes:
+
+- Amount is clamped to the accepted range `1..100000`.
+- Creates a `demo_point_add` ledger row with balance-before/balance-after metadata.
+- Creates a local audit event.
+- Repeated idempotency keys replay the previous local result.
+
+## POST /api/demo/wallet/reset
+
+Purpose: Reset local demo balance to the default starting balance.
+
+Request shape:
+
+```json
+{"reason": "デモ残高リセット", "idempotency_key": "optional-key"}
+```
+
+Notes:
+
+- Creates a `demo_balance_reset` ledger row.
+- Creates a local audit event.
+- Repeated idempotency keys replay the previous local result.
+
 ## GET /api/demo/positions
 
 Purpose: Return local simulation state.
@@ -200,7 +253,7 @@ Purpose: Create a local-only simulated prediction record.
 Request shape:
 
 ```json
-{"market_id": "sample-market-tokyo-rain", "outcome": "YES", "stake": 100}
+{"market_id": "sample-market-tokyo-rain", "outcome": "YES", "stake": 100, "idempotency_key": "optional-key"}
 ```
 
 Response shape summary:
@@ -216,5 +269,6 @@ Safety notes:
 - Validates numeric positive stake.
 - Validates sufficient demo balance.
 - Validates demo participation eligibility server-side.
+- Optional idempotency key prevents duplicate local deduction for replayed requests.
 - Never places a real order.
 - Never calls external trading APIs.

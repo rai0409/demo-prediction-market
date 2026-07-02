@@ -261,3 +261,35 @@ def test_app_ui_action_text_avoids_forbidden_labels(client):
     assert "place bet" not in combined
     assert ">buy<" not in combined
     assert ">sell<" not in combined
+
+
+def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
+    combined = (
+        client.get("/").text
+        + client.get("/markets/sample-market-tokyo-rain").text
+        + client.get("/demo-wallet").text
+        + client.get("/demo-positions").text
+        + client.get("/demo-results").text
+    )
+    for term in [
+        "入金",
+        "出金",
+        "換金",
+        "賭ける",
+        "ベット",
+        "購入",
+        "売却",
+        "利益確定",
+        "稼ぐ",
+        "儲かる",
+        "deposit",
+        "withdraw",
+        "cashout",
+        "buy",
+        "sell",
+        "profit",
+        "earn money",
+        "Bet now",
+        "place bet",
+    ]:
+        assert term not in combined
