@@ -31,3 +31,28 @@ def test_refresh_seconds_clamp(monkeypatch):
     assert get_settings().refresh_seconds == 15
     monkeypatch.setenv("DEMO_PREDICTION_REFRESH_SECONDS", "999")
     assert get_settings().refresh_seconds == 300
+
+
+def test_websocket_config_defaults(monkeypatch):
+    monkeypatch.delenv("DEMO_PREDICTION_WS_ENABLED", raising=False)
+    monkeypatch.delenv("DEMO_PREDICTION_WS_TOP_N", raising=False)
+    monkeypatch.delenv("DEMO_PREDICTION_WS_STALE_SECONDS", raising=False)
+    settings = get_settings()
+    assert settings.ws_enabled is False
+    assert settings.ws_top_n == 10
+    assert settings.ws_stale_seconds == 90
+
+
+def test_websocket_config_clamps(monkeypatch):
+    monkeypatch.setenv("DEMO_PREDICTION_WS_ENABLED", "1")
+    monkeypatch.setenv("DEMO_PREDICTION_WS_TOP_N", "999")
+    monkeypatch.setenv("DEMO_PREDICTION_WS_STALE_SECONDS", "1")
+    settings = get_settings()
+    assert settings.ws_enabled is True
+    assert settings.ws_top_n == 50
+    assert settings.ws_stale_seconds == 15
+    monkeypatch.setenv("DEMO_PREDICTION_WS_TOP_N", "0")
+    monkeypatch.setenv("DEMO_PREDICTION_WS_STALE_SECONDS", "9999")
+    settings = get_settings()
+    assert settings.ws_top_n == 1
+    assert settings.ws_stale_seconds == 600

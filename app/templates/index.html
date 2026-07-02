@@ -41,6 +41,11 @@
     <strong id="freshness">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
     <span>{{ poll_seconds }}秒ごとに画面情報を確認</span>
   </div>
+  <div class="summary-card">
+    <span>リアルタイム状態</span>
+    <strong id="realtime-summary">RESTのみ</strong>
+    <span>任意の公開マーケットWebSocket</span>
+  </div>
 </section>
 
 <section class="hidden-summary">
@@ -63,7 +68,9 @@
       <div class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ market.data_source_status }}</span></div>
       <h3>{{ market.title }}</h3>
       <p>{{ market.question }}</p>
-      <p class="status-label">{{ market.display_status }}</p>
+      <p class="status-label">{{ market.display_status }} / リアルタイム状態:
+        {% if market.realtime_status == "ws_live" %}WebSocket更新中{% elif market.realtime_status == "ws_stale" %}WebSocket stale{% else %}RESTのみ{% endif %}
+      </p>
       {% if market.outcomes|length >= 2 %}
       {% set first = market.outcomes[0] %}
       {% set second = market.outcomes[1] %}
@@ -79,7 +86,11 @@
         <div><dt>Volume</dt><dd>{{ market.volume|number }}</dd></div>
         <div><dt>24h</dt><dd>{{ market.volume_24hr|number }}</dd></div>
         <div><dt>Liquidity</dt><dd>{{ market.liquidity|number }}</dd></div>
+        <div><dt>最良買い気配</dt><dd>{{ market.best_bid|number }}</dd></div>
+        <div><dt>最良売り気配</dt><dd>{{ market.best_ask|number }}</dd></div>
+        <div><dt>直近取引価格</dt><dd>{{ market.last_trade_price|number }}</dd></div>
       </dl>
+      <p class="end-date">WebSocket最終更新: {{ market.ws_last_event_at|date }}</p>
       <p class="end-date">終了: {{ market.end_date|date }}</p>
       {% if market.demo_participation_allowed %}
       <a class="action-link" href="/markets/{{ market.market_id }}">予想する</a>

@@ -31,6 +31,24 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload text not null,
             fetched_at text not null
         );
+        create table if not exists market_realtime_updates (
+            id integer primary key autoincrement,
+            market_id text,
+            asset_id text,
+            event_type text not null,
+            best_bid real,
+            best_ask real,
+            last_trade_price real,
+            price real,
+            size real,
+            side text,
+            spread real,
+            winning_outcome text,
+            winning_asset_id text,
+            raw_event_json text not null,
+            event_timestamp text,
+            received_at text not null default current_timestamp
+        );
         create table if not exists fetch_runs (
             id integer primary key autoincrement,
             fetched_at text not null,
@@ -147,6 +165,73 @@ def list_snapshots(conn: sqlite3.Connection, market_id: str, limit: int = 20) ->
         (market_id, limit),
     ).fetchall()
     return [{"fetched_at": row["fetched_at"], "market": json.loads(row["payload"])} for row in rows]
+
+
+def insert_realtime_update(conn: sqlite3.Connection, update: dict[str, Any]) -> dict[str, Any]:
+    cursor = conn.execute(
+        """
+        insert into market_realtime_updates(
+            market_id, asset_id, event_type, best_bid, best_ask, last_trade_price, price,
+            size, side, spread, winning_outcome, winning_asset_id, raw_event_json, event_timestamp
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            update.get("market_id"),
+            update.get("asset_id"),
+            update["event_type"],
+            update.get("best_bid"),
+            update.get("best_ask"),
+            update.get("last_trade_price"),
+            update.get("price"),
+            update.get("size"),
+            update.get("side"),
+            update.get("spread"),
+            update.get("winning_outcome"),
+            update.get("winning_asset_id"),
+            update["raw_event_json"],
+            update.get("event_timestamp"),
+        ),
+    )
+    row = conn.execute("select * from market_realtime_updates where id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def get_latest_realtime_update(conn: sqlite3.Connection, market_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        select * from market_realtime_updates
+        where market_id = ?
+        order by datetime(coalesce(event_timestamp, received_at)) desc, id desc
+        limit 1
+        """,
+        (market_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_latest_realtime_updates(conn: sqlite3.Connection, market_ids: list[str]) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for market_id in market_ids:
+        update = get_latest_realtime_update(conn, market_id)
+        if update:
+            latest[market_id] = update
+    return latest
+
+
+def latest_realtime_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        select max(coalesce(event_timestamp, received_at)) as latest_update_at,
+               count(*) as update_count,
+               count(distinct market_id) as market_update_count
+        from market_realtime_updates
+        """
+    ).fetchone()
+    return {
+        "latest_update_at": row["latest_update_at"] if row else None,
+        "update_count": int(row["update_count"] or 0) if row else 0,
+        "market_update_count": int(row["market_update_count"] or 0) if row else 0,
+    }
 
 
 def get_balance(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> float:

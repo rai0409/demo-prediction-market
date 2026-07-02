@@ -12,7 +12,14 @@ import sqlite3
 from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.market_display import enrich_market_for_display, filtered_market_response
-from app.realtime import ensure_fresh_markets, ensure_markets, refresh_markets_with_result, source_status
+from app.realtime import (
+    attach_realtime_updates,
+    ensure_fresh_markets,
+    ensure_markets,
+    realtime_status,
+    refresh_markets_with_result,
+    source_status,
+)
 from app.safety import DISCLAIMER
 from app.settlement import settle_pending_positions
 from app.storage import (
@@ -91,6 +98,7 @@ def template_context(request: Request, **extra):
         "request": request,
         "disclaimer": DISCLAIMER,
         "poll_seconds": settings.poll_seconds,
+        "ws_enabled": settings.ws_enabled,
         "demo_balance": get_balance(db, DEMO_USER_ID),
     }
     context.update(extra)
@@ -150,7 +158,7 @@ def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    all_markets = ensure_fresh_markets(conn, settings)
+    all_markets = attach_realtime_updates(conn, ensure_fresh_markets(conn, settings), settings)
     market_response = filtered_market_response(all_markets)
     return templates.TemplateResponse(
         request,
@@ -171,6 +179,7 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
     market = get_market(conn, market_id)
     if market is None:
         raise HTTPException(status_code=404, detail="market not found")
+    market = attach_realtime_updates(conn, [market], settings)[0]
     market = enrich_market_for_display(market)
     snapshots = list_snapshots(conn, market_id, limit=12)
     return templates.TemplateResponse(
@@ -230,7 +239,7 @@ async def api_markets(
     include_all: bool = False,
     conn: sqlite3.Connection = Depends(get_conn),
 ):
-    markets = ensure_fresh_markets(conn, settings)
+    markets = attach_realtime_updates(conn, ensure_fresh_markets(conn, settings), settings)
     return filtered_market_response(
         markets,
         include_closed=include_closed,
@@ -246,6 +255,7 @@ async def api_market(market_id: str, conn: sqlite3.Connection = Depends(get_conn
     market = get_market(conn, market_id)
     if market is None:
         raise HTTPException(status_code=404, detail="market not found")
+    market = attach_realtime_updates(conn, [market], settings)[0]
     return enrich_market_for_display(market)
 
 
@@ -271,6 +281,11 @@ async def api_refresh(conn: sqlite3.Connection = Depends(get_conn)):
 @app.get("/api/debug/source-status")
 async def api_debug_source_status(conn: sqlite3.Connection = Depends(get_conn)):
     return source_status(conn, settings)
+
+
+@app.get("/api/realtime/status")
+async def api_realtime_status(conn: sqlite3.Connection = Depends(get_conn)):
+    return realtime_status(conn, settings)
 
 
 @app.get("/api/demo/balance")

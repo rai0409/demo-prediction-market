@@ -17,6 +17,7 @@ from app.polymarket_gamma import (
 )
 from app.market_display import filtered_market_response
 from app.storage import get_last_fetch_run, list_markets, replace_markets
+from app.storage import latest_realtime_status, list_latest_realtime_updates
 
 
 def refresh_markets_with_result(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
@@ -95,6 +96,70 @@ def ensure_markets(conn: sqlite3.Connection, settings: Settings) -> list[dict]:
     if settings.live and all(market.get("source") == "sample" for market in markets):
         return refresh_markets(conn, settings)
     return markets
+
+
+def _update_time(update: dict[str, Any]) -> datetime | None:
+    return _parse_fetch_time(update.get("event_timestamp") or update.get("received_at"))
+
+
+def _is_ws_live(update: dict[str, Any], settings: Settings) -> bool:
+    updated_at = _update_time(update)
+    if updated_at is None:
+        return False
+    age = datetime.now(timezone.utc) - updated_at
+    return age.total_seconds() <= getattr(settings, "ws_stale_seconds", 90)
+
+
+def attach_realtime_updates(
+    conn: sqlite3.Connection,
+    markets: list[dict[str, Any]],
+    settings: Settings,
+) -> list[dict[str, Any]]:
+    latest = list_latest_realtime_updates(conn, [str(market.get("market_id")) for market in markets])
+    enriched: list[dict[str, Any]] = []
+    for market in markets:
+        item = dict(market)
+        update = latest.get(str(item.get("market_id")))
+        if update:
+            item.update(
+                {
+                    "realtime_status": "ws_live" if _is_ws_live(update, settings) else "ws_stale",
+                    "ws_last_event_at": update.get("event_timestamp") or update.get("received_at"),
+                    "best_bid": update.get("best_bid"),
+                    "best_ask": update.get("best_ask"),
+                    "last_trade_price": update.get("last_trade_price"),
+                    "realtime_spread": update.get("spread"),
+                }
+            )
+        else:
+            item.update(
+                {
+                    "realtime_status": "rest_only",
+                    "ws_last_event_at": None,
+                    "best_bid": None,
+                    "best_ask": None,
+                    "last_trade_price": None,
+                    "realtime_spread": None,
+                }
+            )
+        enriched.append(item)
+    return enriched
+
+
+def realtime_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+    markets = list_markets(conn)
+    enriched = attach_realtime_updates(conn, markets, settings)
+    status = latest_realtime_status(conn)
+    return {
+        "ws_enabled": getattr(settings, "ws_enabled", False),
+        "ws_top_n": getattr(settings, "ws_top_n", 10),
+        "ws_stale_seconds": getattr(settings, "ws_stale_seconds", 90),
+        "latest_update_at": status["latest_update_at"],
+        "update_count": status["update_count"],
+        "live_market_update_count": sum(1 for market in enriched if market["realtime_status"] == "ws_live"),
+        "stale_market_update_count": sum(1 for market in enriched if market["realtime_status"] == "ws_stale"),
+        "rest_only_count": sum(1 for market in enriched if market["realtime_status"] == "rest_only"),
+    }
 
 
 def source_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:

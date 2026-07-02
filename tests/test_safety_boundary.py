@@ -13,6 +13,7 @@ def test_no_forbidden_routes_exist():
     assert "/api/buy" not in paths
     assert "/api/sell" not in paths
     assert "/api/bet" not in paths
+    assert "/api/trade" not in paths
 
 
 def test_no_forbidden_implementation_terms_in_app_source():
@@ -47,6 +48,20 @@ def test_no_wallet_deposit_withdraw_cashout_routes_or_handlers():
     for term in ["deposit", "withdraw", "cashout", "wallet"]:
         assert f"def {term}" not in python_source
         assert f"api_{term}" not in python_source
+
+
+def test_websocket_layer_uses_no_private_credentials_or_user_channel():
+    source = Path("app/polymarket_ws.py").read_text(encoding="utf-8")
+    for term in [
+        "api_key",
+        "api_secret",
+        "passphrase",
+        "private_key",
+        "wallet",
+        "user_channel",
+        "/ws/user",
+    ]:
+        assert term not in source
 
 
 def test_required_disclaimer_exactly_available():

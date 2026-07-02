@@ -25,6 +25,7 @@ FastAPIベースのローカル技術MVPです。Polymarketの公開マーケッ
 - active market filtering
 - server-side eligibility guard
 - local demo point ledger
+- optional public market WebSocket freshness observations
 - dashboard/detail/positions UI
 - diagnostics endpoints
 - automated tests
@@ -37,7 +38,7 @@ FastAPIベースのローカル技術MVPです。Polymarketの公開マーケッ
 - latest live check: 50 normalized markets
 - latest live check: 21 displayable markets after filtering
 - `/api/markets?include_all=true` returns all fetched normalized markets
-- tests pass: `44 passed`
+- tests pass
 
 Live API results depend on the public Gamma API response at runtime, so counts may change.
 
@@ -63,6 +64,7 @@ Live API results depend on the public Gamma API response at runtime, so counts m
 6. Server-side guard checks eligibility on `POST /api/demo/predict`.
 7. Store local simulated orders, simulated positions, and demo point ledger entries.
 8. Expose diagnostics through runtime files and `/api/debug/source-status`.
+9. Optionally collect public market WebSocket observations into `market_realtime_updates` and display them separately from REST probabilities.
 
 ## Setup
 
@@ -122,6 +124,26 @@ curl -s 'http://127.0.0.1:8092/api/markets?include_all=true' | python -m json.to
 curl -s http://127.0.0.1:8092/api/debug/source-status | python -m json.tool
 ```
 
+## Optional public market WebSocket freshness
+
+WebSocket mode is off by default and is not required for the app.
+
+```bash
+DEMO_PREDICTION_LIVE=1 DEMO_PREDICTION_WS_ENABLED=1 python scripts/run_market_ws.py
+```
+
+Settings:
+
+```bash
+DEMO_PREDICTION_WS_ENABLED=0
+DEMO_PREDICTION_WS_TOP_N=10
+DEMO_PREDICTION_WS_STALE_SECONDS=90
+```
+
+The FastAPI app does not start the socket automatically. The standalone runner stores public market observations, and the dashboard/API show `リアルタイム状態`, `WebSocket更新中`, `WebSocket stale`, or `RESTのみ`. REST fetch and sample fallback remain intact.
+
+See [docs/public_market_websocket.md](docs/public_market_websocket.md).
+
 ## Tests
 
 ```bash
@@ -155,6 +177,7 @@ JSON:
 - `GET /api/markets/{market_id}`: one enriched market.
 - `GET /api/markets/{market_id}/snapshots`: recent stored snapshots.
 - `GET /api/debug/source-status`: live/sample/fallback/filter diagnostics.
+- `GET /api/realtime/status`: optional public WebSocket freshness diagnostics.
 - `GET /api/demo/balance`: local demo balance.
 - `GET /api/demo/positions`: local positions/orders/ledger.
 - `POST /api/demo/predict`: local-only demo participation. It never calls external trading APIs.
@@ -196,6 +219,12 @@ When enabled, dashboard and market API reads refresh only when stored data is st
 Local demo participation now creates a pending result row. `/demo-results` and `/api/demo/results` show result tracking fields such as `結果待ち`, `参加デモポイント`, `参加時確率`, `推定デモリターン`, `精算デモポイント`, and `判定ソース`.
 
 Full automatic settlement is intentionally not implemented yet. See [docs/demo_results_and_settlement.md](docs/demo_results_and_settlement.md).
+
+## v0.9 Public Market WebSocket Freshness
+
+v0.9 adds an optional public market WebSocket observation layer. It captures market data events such as book updates, price changes, last trade price, best bid/ask, and `market_resolved` into local SQLite.
+
+REST remains the canonical fetch path. WebSocket observations are displayed separately and do not overwrite REST probabilities. `market_resolved` observations are recorded but not used alone for demo settlement.
 
 ## Roadmap
 

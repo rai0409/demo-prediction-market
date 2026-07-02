@@ -21,6 +21,28 @@ def test_api_markets(client):
     assert "hidden_no_liquidity_count" in payload
     assert "hidden_resolved_probability_count" in payload
     assert "filters_applied" in payload
+    assert payload["markets"][0]["realtime_status"] == "rest_only"
+    assert "best_bid" in payload["markets"][0]
+    assert "best_ask" in payload["markets"][0]
+    assert "last_trade_price" in payload["markets"][0]
+
+
+def test_api_realtime_status_renders_json(client):
+    response = client.get("/api/realtime/status")
+    assert response.status_code == 200
+    payload = response.json()
+    expected = {
+        "ws_enabled",
+        "ws_top_n",
+        "ws_stale_seconds",
+        "latest_update_at",
+        "update_count",
+        "live_market_update_count",
+        "stale_market_update_count",
+        "rest_only_count",
+    }
+    assert expected.issubset(payload.keys())
+    assert payload["rest_only_count"] >= 1
 
 
 def test_api_markets_include_all_returns_hidden_markets(client, db_conn, sample_markets):

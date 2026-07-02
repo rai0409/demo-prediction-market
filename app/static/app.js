@@ -84,6 +84,27 @@
     }
   }
 
+  async function pollRealtimeStatus() {
+    var summary = document.getElementById("realtime-summary");
+    if (!summary) return;
+    try {
+      var response = await fetch("/api/realtime/status");
+      if (!response.ok) return;
+      var data = await response.json();
+      if (!data.ws_enabled) {
+        summary.textContent = "RESTのみ";
+      } else if (data.live_market_update_count > 0) {
+        summary.textContent = "WebSocket更新中";
+      } else if (data.stale_market_update_count > 0) {
+        summary.textContent = "WebSocket stale";
+      } else {
+        summary.textContent = "RESTのみ";
+      }
+    } catch (error) {
+      summary.textContent = "RESTのみ";
+    }
+  }
+
   function setText(id, value) {
     var node = document.getElementById(id);
     if (node) node.textContent = value;
@@ -127,6 +148,10 @@
   attachPredictionForm();
   attachSettlementCheck();
   pollMarkets();
+  pollRealtimeStatus();
   var seconds = Number(document.body.dataset.pollSeconds || "30");
-  window.setInterval(pollMarkets, Math.max(15, Math.min(30, seconds)) * 1000);
+  window.setInterval(function () {
+    pollMarkets();
+    pollRealtimeStatus();
+  }, Math.max(15, Math.min(30, seconds)) * 1000);
 })();

@@ -72,6 +72,15 @@ Response shape summary:
 
 Each market includes display fields such as `display_status`, `display_reasons`, `demo_participation_allowed`, and `demo_participation_block_reason`.
 
+When public WebSocket observations exist, each market also includes:
+
+- `realtime_status`: `ws_live`, `ws_stale`, or `rest_only`
+- `ws_last_event_at`
+- `best_bid`
+- `best_ask`
+- `last_trade_price`
+- `realtime_spread`
+
 ## GET /api/markets?include_all=true
 
 Purpose: Return all stored normalized markets, including hidden/archived rows.
@@ -107,6 +116,27 @@ Response shape summary:
 - runtime diagnostic file existence flags
 
 Safety note: No secrets are exposed because the app does not use secrets.
+
+## GET /api/realtime/status
+
+Purpose: Return optional public market WebSocket freshness status.
+
+Response shape summary:
+
+- `ws_enabled`
+- `ws_top_n`
+- `ws_stale_seconds`
+- `latest_update_at`
+- `update_count`
+- `live_market_update_count`
+- `stale_market_update_count`
+- `rest_only_count`
+
+Notes:
+
+- WebSocket is disabled by default.
+- The app continues to work through REST/sample fallback when no WebSocket observations exist.
+- No private credentials are exposed or required.
 
 ## GET /api/demo/balance
 
