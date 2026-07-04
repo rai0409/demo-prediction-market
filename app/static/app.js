@@ -1,3 +1,22 @@
+function t(key, fallback) {
+  if (window.I18N && Object.prototype.hasOwnProperty.call(window.I18N, key)) {
+    return window.I18N[key];
+  }
+  return fallback || key;
+}
+
+function statusLabel(status) {
+  return t(`status.${status}`, status || t("common.none", "None"));
+}
+
+function confirmationStatusLabel(status) {
+  return t(`confirmation.${status}`, status || t("common.none", "None"));
+}
+
+function realtimeStatusLabel(status) {
+  return t(`realtime.${status}`, status || t("realtime.rest_only", "REST only"));
+}
+
 (function () {
   function moneylessReturn(stake, probability) {
     if (!probability || probability <= 0) return 0;

@@ -1,76 +1,107 @@
 {% extends "base.html" %}
-{% block title %}予想マーケット・デモビューア{% endblock %}
+{% block title %}{{ t("app.title") }}{% endblock %}
+
 {% block content %}
 <section class="hero">
   <div>
-    <p class="eyebrow">Demo Prediction Market Viewer</p>
-    <h1>予想マーケット・デモビューア</h1>
-    <p class="subtitle">公開予想マーケットを閲覧し、デモポイントでローカルだけのデモ参加を記録できます。</p>
+    <p class="eyebrow">{{ t("app.title") }}</p>
+    <h1>{{ t("app.title") }}</h1>
+    <p class="subtitle">{{ t("app.subtitle") }}</p>
   </div>
 </section>
 
-<section class="disclaimer" aria-label="重要な注意事項">
+<section class="disclaimer" aria-label="{{ t('safety.local_only') }}">
+  {% if lang == "en" %}
+  <p>This app is a demo-only prediction market viewer.</p>
+  <p>All demo points and demo positions are local-only records for product demonstration.</p>
+  <p>No real-money functionality is provided.</p>
+  {% else %}
   {% for line in disclaimer.split('\n') %}
   <p>{{ line }}</p>
   {% endfor %}
+  {% endif %}
 </section>
 
 <section class="summary-grid" aria-label="dashboard summary">
   <div class="summary-card balance-box">
-    <span>デモ残高</span>
+    <span>{{ t("demo.balance") }}</span>
     <strong id="demo-balance">{{ demo_balance|number }}</strong>
-    <span>デモポイント</span>
+    <span>{{ t("demo.points") }}</span>
   </div>
+
   <div class="summary-card">
-    <span>データ状態</span>
+    <span>{{ t("market.data_status") }}</span>
     <strong id="data-status" class="badge">{{ data_status_badge }}</strong>
     <span>Near-real-time REST polling</span>
   </div>
+
   <div class="summary-card">
-    <span>表示中</span>
+    <span>{% if lang == "en" %}Displayed{% else %}表示中{% endif %}</span>
     <strong id="displayed-count">{{ market_meta.count }}</strong>
-    <span>取得合計 <span id="total-count">{{ market_meta.total_market_count }}</span></span>
+    <span>{% if lang == "en" %}Total fetched{% else %}取得合計{% endif %} <span id="total-count">{{ market_meta.total_market_count }}</span></span>
   </div>
+
   <div class="summary-card">
-    <span>非表示</span>
+    <span>{% if lang == "en" %}Hidden{% else %}非表示{% endif %}</span>
     <strong id="hidden-count">{{ hidden_market_count }}</strong>
-    <span>終了済み・期限切れなど</span>
+    <span>{% if lang == "en" %}Closed, expired, or filtered{% else %}終了済み・期限切れなど{% endif %}</span>
   </div>
+
   <div class="summary-card">
-    <span>最終取得</span>
+    <span>{{ t("market.last_fetch") }}</span>
     <strong id="freshness">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
-    <span>{{ poll_seconds }}秒ごとに画面情報を確認</span>
+    <span>{% if lang == "en" %}Checks page data every {{ poll_seconds }} seconds{% else %}{{ poll_seconds }}秒ごとに画面情報を確認{% endif %}</span>
   </div>
+
   <div class="summary-card">
-    <span>リアルタイム状態</span>
-    <strong id="realtime-summary">RESTのみ</strong>
-    <span>任意の公開マーケットWebSocket</span>
+    <span>{{ t("realtime.status") }}</span>
+    <strong id="realtime-summary">{{ t("realtime.rest_only") }}</strong>
+    <span>{% if lang == "en" %}Optional public market WebSocket{% else %}任意の公開マーケットWebSocket{% endif %}</span>
   </div>
 </section>
 
 <section class="hidden-summary">
-  <span>非表示: 終了済み {{ market_meta.hidden_closed_count }}</span>
-  <span>非アクティブ {{ market_meta.hidden_inactive_count }}</span>
-  <span>期限切れ {{ market_meta.hidden_expired_count }}</span>
-  <span>流動性なし {{ market_meta.hidden_no_liquidity_count }}</span>
-  <span>確率が確定済みに近い {{ market_meta.hidden_resolved_probability_count }}</span>
-  <a href="/api/markets?include_all=true">全マーケットを見る</a>
+  <span>{% if lang == "en" %}Hidden: closed{% else %}非表示: 終了済み{% endif %} {{ market_meta.hidden_closed_count }}</span>
+  <span>{% if lang == "en" %}Inactive{% else %}非アクティブ{% endif %} {{ market_meta.hidden_inactive_count }}</span>
+  <span>{% if lang == "en" %}Expired{% else %}期限切れ{% endif %} {{ market_meta.hidden_expired_count }}</span>
+  <span>{% if lang == "en" %}No liquidity{% else %}流動性なし{% endif %} {{ market_meta.hidden_no_liquidity_count }}</span>
+  <span>{% if lang == "en" %}Near-resolved probability{% else %}確率が確定済みに近い{% endif %} {{ market_meta.hidden_resolved_probability_count }}</span>
+  <a href="/api/markets?include_all=true">{% if lang == "en" %}View all markets{% else %}全マーケットを見る{% endif %}</a>
 </section>
 
 <section>
   <div class="section-heading">
-    <h2>マーケット</h2>
-    <p>現在表示可能な市場のみを並べています。</p>
+    <h2>{{ t("nav.markets") }}</h2>
+    <p>{% if lang == "en" %}Only currently displayable markets are shown.{% else %}現在表示可能な市場のみを並べています。{% endif %}</p>
   </div>
+
   <div id="market-list" class="market-grid">
     {% for market in markets %}
     <article class="market-card" data-market-id="{{ market.market_id }}">
-      <div class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ market.data_source_status }}</span></div>
+      <div class="card-meta">
+        <span class="badge subtle">{{ market.source }}</span>
+        <span>{{ market.data_source_status }}</span>
+      </div>
+
       <h3>{{ market.title }}</h3>
       <p>{{ market.question }}</p>
-      <p class="status-label">{{ market.display_status }} / リアルタイム状態:
-        {% if market.realtime_status == "ws_live" %}WebSocket更新中{% elif market.realtime_status == "ws_stale" %}WebSocket stale{% else %}RESTのみ{% endif %}
+
+      <p class="status-label">
+        {% if market.demo_participation_allowed %}
+          {% if lang == "en" %}Demo eligible{% else %}デモ参加可{% endif %}
+        {% else %}
+          {% if lang == "en" %}Not eligible{% else %}デモ参加対象外{% endif %}
+        {% endif %}
+        / {{ t("realtime.status") }}:
+        {% if market.realtime_status == "ws_live" %}
+          {{ t("realtime.ws_live") }}
+        {% elif market.realtime_status == "ws_stale" %}
+          {{ t("realtime.ws_stale") }}
+        {% else %}
+          {{ t("realtime.rest_only") }}
+        {% endif %}
       </p>
+
       {% if market.outcomes|length >= 2 %}
       {% set first = market.outcomes[0] %}
       {% set second = market.outcomes[1] %}
@@ -82,24 +113,35 @@
         <span style="width: {{ market.probabilities[first] * 100 }}%"></span>
       </div>
       {% endif %}
+
       <dl class="metrics">
-        <div><dt>Volume</dt><dd>{{ market.volume|number }}</dd></div>
-        <div><dt>24h</dt><dd>{{ market.volume_24hr|number }}</dd></div>
-        <div><dt>Liquidity</dt><dd>{{ market.liquidity|number }}</dd></div>
-        <div><dt>最良買い気配</dt><dd>{{ market.best_bid|number }}</dd></div>
-        <div><dt>最良売り気配</dt><dd>{{ market.best_ask|number }}</dd></div>
-        <div><dt>直近取引価格</dt><dd>{{ market.last_trade_price|number }}</dd></div>
+        <div><dt>{{ t("market.volume") }}</dt><dd>{{ market.volume|number }}</dd></div>
+        <div><dt>{{ t("market.volume_24h") }}</dt><dd>{{ market.volume_24hr|number }}</dd></div>
+        <div><dt>{{ t("market.liquidity") }}</dt><dd>{{ market.liquidity|number }}</dd></div>
+        <div><dt>{{ t("realtime.best_bid") }}</dt><dd>{{ market.best_bid|number }}</dd></div>
+        <div><dt>{{ t("realtime.best_ask") }}</dt><dd>{{ market.best_ask|number }}</dd></div>
+        <div><dt>{{ t("realtime.last_trade") }}</dt><dd>{{ market.last_trade_price|number }}</dd></div>
       </dl>
-      <p class="end-date">WebSocket最終更新: {{ market.ws_last_event_at|date }}</p>
-      <p class="end-date">終了: {{ market.end_date|date }}</p>
+
+      <p class="end-date">{{ t("realtime.last_event") }}: {{ market.ws_last_event_at|date }}</p>
+      <p class="end-date">{{ t("market.end_date") }}: {{ market.end_date|date }}</p>
+
       {% if market.demo_participation_allowed %}
-      <a class="action-link" href="/markets/{{ market.market_id }}">予想する</a>
+      <a class="action-link" href="/markets/{{ market.market_id }}?lang={{ lang }}">{{ t("demo.join_action") }}</a>
       {% else %}
-      <p class="blocked-label">デモ参加対象外: {{ market.demo_participation_block_reason }}</p>
+      <p class="blocked-label">
+        {% if lang == "en" %}Not eligible for demo participation{% else %}デモ参加対象外{% endif %}: {{ market.demo_participation_block_reason }}
+      </p>
       {% endif %}
     </article>
     {% else %}
-    <p class="notice">表示できるマーケットがありません。データ状態とフィルター条件を確認してください。</p>
+    <p class="notice">
+      {% if lang == "en" %}
+      No displayable markets are available. Check the data status and filter conditions.
+      {% else %}
+      表示できるマーケットがありません。データ状態とフィルター条件を確認してください。
+      {% endif %}
+    </p>
     {% endfor %}
   </div>
 </section>

@@ -506,3 +506,25 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.lang-switch a {
+  text-decoration: none;
+  opacity: 0.72;
+}
+
+.lang-switch a.active {
+  font-weight: 700;
+  opacity: 1;
+}
+
+.lang-switch span {
+  opacity: 0.45;
+}

@@ -23,6 +23,7 @@ from app.realtime import (
     source_status,
 )
 from app.safety import DISCLAIMER
+from app.i18n import detect_lang, template_i18n_context
 from app.settlement import compare_candidate_with_rest_resolution, settle_pending_positions
 from app.storage import (
     DEMO_USER_ID,
@@ -119,8 +120,23 @@ def template_context(request: Request, **extra):
         "ws_enabled": settings.ws_enabled,
         "demo_balance": get_balance(db, DEMO_USER_ID),
     }
+    context.update(template_i18n_context(request))
     context.update(extra)
     return context
+
+
+def set_lang_cookie_if_needed(response, request: Request):
+    lang = detect_lang(request)
+    requested_lang = request.query_params.get("lang")
+    if requested_lang in {"ja", "en"}:
+        response.set_cookie(
+            "demo_lang",
+            lang,
+            max_age=60 * 60 * 24 * 365,
+            httponly=False,
+            samesite="lax",
+        )
+    return response
 
 
 def data_status_badge(markets: list[dict]) -> str:
