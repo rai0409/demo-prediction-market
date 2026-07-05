@@ -29,6 +29,12 @@
         <span>/</span>
         <a href="{{ lang_url_en }}" class="{% if lang == 'en' %}active{% endif %}">EN</a>
       </div>
+
+      <form class="demo-user-switch" action="/demo-user" method="post">
+        <label for="demo-user-input">{% if lang == "en" %}Participant{% else %}参加者{% endif %}</label>
+        <input id="demo-user-input" name="demo_user" type="text" value="{{ demo_user_id }}" maxlength="40" autocomplete="off">
+        <button type="submit">{% if lang == "en" %}Switch{% else %}切替{% endif %}</button>
+      </form>
     </header>
 
     <main class="page">

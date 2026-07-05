@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 
-DEMO_USER_ID = "local-demo-user"
+DEMO_USER_ID = "participant-1"
 INITIAL_DEMO_POINTS = 10000.0
+USER_ID_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -152,6 +154,30 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaratio
     columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"alter table {table} add column {column} {declaration}")
+
+
+def normalize_demo_user_id(value: str | None) -> str:
+    text = (value or DEMO_USER_ID).strip()
+    if not text:
+        text = DEMO_USER_ID
+    normalized = USER_ID_PATTERN.sub("-", text)[:40].strip(".-_")
+    return normalized or DEMO_USER_ID
+
+
+def ensure_demo_user(conn: sqlite3.Connection, user_id: str) -> str:
+    normalized = normalize_demo_user_id(user_id)
+    existing = conn.execute("select user_id from demo_users where user_id = ?", (normalized,)).fetchone()
+    if existing is None:
+        conn.execute("insert into demo_users(user_id, balance) values (?, ?)", (normalized, INITIAL_DEMO_POINTS))
+        conn.execute(
+            """
+            insert into demo_point_ledger(user_id, amount, balance_before, balance_after, entry_type, note)
+            values (?, ?, ?, ?, ?, ?)
+            """,
+            (normalized, INITIAL_DEMO_POINTS, 0.0, INITIAL_DEMO_POINTS, "initial", "initial demo points"),
+        )
+        conn.commit()
+    return normalized
 
 
 def store_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> None:

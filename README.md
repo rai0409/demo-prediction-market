@@ -115,11 +115,19 @@ Open `http://127.0.0.1:8093`.
 ## Limited MVP check flow
 
 1. Open `http://127.0.0.1:8093`.
-2. Confirm the dashboard shows only displayable markets.
-3. Open a market detail page and confirm the non-cash demo point notice.
-4. Use `デモ参加する` with demo points only.
-5. Open `マイスコア`, `デモポジション`, and `結果確認`.
-6. Confirm the UI says demo points cannot be cashed out, transferred, or exchanged for products, gift cards, Pay balances, stock vouchers, crypto assets, external points, or prizes.
+2. Enter a limited MVP participant code in `参加者` and switch users when testing multiple participants.
+3. Confirm the dashboard shows only displayable markets.
+4. Open a market detail page and confirm the non-cash demo point notice.
+5. Use `デモ参加する` with demo points only.
+6. Open `マイスコア`, `デモポジション`, and `結果確認`.
+7. Confirm each participant has separate demo point balance, positions, results, and history.
+8. Confirm the UI says demo points cannot be cashed out, transferred, or exchanged for products, gift cards, Pay balances, stock vouchers, crypto assets, external points, or prizes.
+
+## Limited MVP participant separation
+
+Phase 3-A uses a simple participant-code cookie for limited MVP checks. This keeps demo point balances, demo participation, positions, results, and history separated by participant.
+
+This is not production authentication. It is not OAuth, email login, password login, KYC, payment, gift card exchange, Pay exchange, or exchangeable point infrastructure.
 
 ## Developer diagnostics
 

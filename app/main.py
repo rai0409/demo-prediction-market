@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ from app.storage import (
     DEMO_USER_ID,
     count_resolution_candidates,
     connect,
+    ensure_demo_user,
     get_balance,
     get_latest_resolution_candidate,
     get_market,
@@ -41,6 +43,7 @@ from app.storage import (
     list_positions,
     list_resolution_candidate_updates,
     list_snapshots,
+    normalize_demo_user_id,
 )
 
 
@@ -117,13 +120,46 @@ async def get_conn() -> sqlite3.Connection:
     return db
 
 
-def template_context(request: Request, **extra):
+DEMO_USER_COOKIE = "demo_user_id"
+DEMO_USER_HEADER = "x-demo-user"
+
+
+def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
+    user_id = (
+        request.query_params.get("demo_user")
+        or request.headers.get(DEMO_USER_HEADER)
+        or request.cookies.get(DEMO_USER_COOKIE)
+        or DEMO_USER_ID
+    )
+    return ensure_demo_user(conn, normalize_demo_user_id(user_id))
+
+
+def set_demo_user_cookie_if_needed(response, request: Request, user_id: str):
+    if request.query_params.get("demo_user") or request.headers.get(DEMO_USER_HEADER):
+        response.set_cookie(
+            DEMO_USER_COOKIE,
+            user_id,
+            max_age=60 * 60 * 24 * 30,
+            httponly=True,
+            samesite="lax",
+        )
+    return response
+
+
+def prepare_response(response, request: Request, user_id: str):
+    set_lang_cookie_if_needed(response, request)
+    set_demo_user_cookie_if_needed(response, request, user_id)
+    return response
+
+
+def template_context(request: Request, conn: sqlite3.Connection, user_id: str, **extra):
     context = {
         "request": request,
         "disclaimer": DISCLAIMER,
         "poll_seconds": settings.poll_seconds,
         "ws_enabled": settings.ws_enabled,
-        "demo_balance": get_balance(db, DEMO_USER_ID),
+        "demo_user_id": user_id,
+        "demo_balance": get_balance(conn, user_id),
     }
     context.update(template_i18n_context(request))
     context.update(extra)
@@ -220,10 +256,10 @@ def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]
     return enriched
 
 
-def resolution_candidates_payload(conn: sqlite3.Connection) -> dict:
+def resolution_candidates_payload(conn: sqlite3.Connection, user_id: str) -> dict:
     candidates = list_resolution_candidate_updates(conn, limit=100)
     market_ids_with_candidates = list_markets_with_resolution_candidates(conn)
-    results = list_demo_results(conn)
+    results = list_demo_results(conn, user_id)
     pending_market_ids = {
         row["market_id"]
         for row in results
@@ -266,23 +302,28 @@ def resolution_candidates_payload(conn: sqlite3.Connection) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
     all_markets = attach_realtime_updates(conn, ensure_fresh_markets(conn, settings), settings)
     market_response = filtered_market_response(all_markets)
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "index.html",
         template_context(
             request,
+            conn,
+            user_id,
             markets=market_response["markets"],
             market_meta=market_response,
             data_status_badge=data_status_badge(all_markets),
             hidden_market_count=hidden_market_count(market_response),
         ),
     )
+    return prepare_response(response, request, user_id)
 
 
 @app.get("/markets/{market_id}", response_class=HTMLResponse)
 async def market_detail(request: Request, market_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
     ensure_markets(conn, settings)
     market = get_market(conn, market_id)
     if market is None:
@@ -290,63 +331,93 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
     market = attach_realtime_updates(conn, [market], settings)[0]
     market = enrich_market_for_display(market)
     snapshots = list_snapshots(conn, market_id, limit=12)
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "market_detail.html",
-        template_context(request, market=market, snapshots=snapshots),
+        template_context(request, conn, user_id, market=market, snapshots=snapshots),
     )
+    return prepare_response(response, request, user_id)
 
 
 @app.get("/demo-positions", response_class=HTMLResponse)
 async def demo_positions(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    results = {int(row["position_id"]): row for row in enrich_result_rows(conn, list_demo_results(conn))}
-    positions = enrich_activity_rows(conn, list_positions(conn))
+    user_id = current_demo_user_id(request, conn)
+    results = {int(row["position_id"]): row for row in enrich_result_rows(conn, list_demo_results(conn, user_id))}
+    positions = enrich_activity_rows(conn, list_positions(conn, user_id))
     for position in positions:
         result = results.get(int(position["id"]))
         position["result_status"] = result["status"] if result else "pending"
         position["result_status_label"] = result["status_label"] if result else "結果待ち"
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "demo_positions.html",
         template_context(
             request,
+            conn,
+            user_id,
             positions=positions,
-            orders=enrich_activity_rows(conn, list_orders(conn)),
-            ledger=list_ledger(conn),
+            orders=enrich_activity_rows(conn, list_orders(conn, user_id)),
+            ledger=list_ledger(conn, user_id),
         ),
     )
+    return prepare_response(response, request, user_id)
 
 
 @app.get("/demo-results", response_class=HTMLResponse)
 async def demo_results(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    results = enrich_result_rows(conn, list_demo_results(conn))
+    user_id = current_demo_user_id(request, conn)
+    results = enrich_result_rows(conn, list_demo_results(conn, user_id))
     pending_count = sum(1 for row in results if row["status"] in {"pending", "settlement_pending", "settlement_unknown"})
     settled_count = sum(1 for row in results if row["status"] in {"settled_win", "settled_loss"})
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "demo_results.html",
         template_context(
             request,
+            conn,
+            user_id,
             results=results,
             pending_count=pending_count,
             settled_count=settled_count,
         ),
     )
+    return prepare_response(response, request, user_id)
 
 
 @app.get("/demo-wallet", response_class=HTMLResponse)
 async def demo_wallet_page(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    snapshot = wallet_snapshot(conn)
-    return templates.TemplateResponse(
+    user_id = current_demo_user_id(request, conn)
+    snapshot = wallet_snapshot(conn, user_id)
+    response = templates.TemplateResponse(
         request,
         "demo_wallet.html",
         template_context(
             request,
+            conn,
+            user_id,
             ledger=snapshot["ledger"],
             audit_events=snapshot["audit_events"],
             wallet_summary=snapshot["summary"],
         ),
     )
+    return prepare_response(response, request, user_id)
+
+
+@app.post("/demo-user")
+async def set_demo_user(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    body = (await request.body()).decode("utf-8")
+    form = parse_qs(body)
+    user_id = ensure_demo_user(conn, normalize_demo_user_id(form.get("demo_user", [""])[0]))
+    lang = detect_lang(request)
+    response = RedirectResponse(url=f"/?lang={lang}", status_code=303)
+    response.set_cookie(
+        DEMO_USER_COOKIE,
+        user_id,
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
 
 
 @app.get("/health")
@@ -412,57 +483,75 @@ async def api_realtime_status(conn: sqlite3.Connection = Depends(get_conn)):
 
 
 @app.get("/api/demo/balance")
-async def api_demo_balance(conn: sqlite3.Connection = Depends(get_conn)):
-    return {"user_id": DEMO_USER_ID, "balance": get_balance(conn)}
+async def api_demo_balance(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    return {"user_id": user_id, "balance": get_balance(conn, user_id)}
 
 
 @app.get("/api/demo/wallet")
-async def api_demo_wallet(conn: sqlite3.Connection = Depends(get_conn)):
-    return wallet_snapshot(conn)
+async def api_demo_wallet(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    return wallet_snapshot(conn, user_id)
 
 
 @app.post("/api/demo/wallet/add-points")
-async def api_demo_wallet_add_points(payload: AddDemoPointsRequest, conn: sqlite3.Connection = Depends(get_conn)):
+async def api_demo_wallet_add_points(
+    request: Request,
+    payload: AddDemoPointsRequest,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    user_id = current_demo_user_id(request, conn)
     try:
         return add_demo_points(
             conn,
             amount=payload.amount,
             reason=payload.reason,
             idempotency_key=payload.idempotency_key,
+            user_id=user_id,
         )
     except DemoWalletError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.post("/api/demo/wallet/reset")
-async def api_demo_wallet_reset(payload: ResetDemoBalanceRequest, conn: sqlite3.Connection = Depends(get_conn)):
+async def api_demo_wallet_reset(
+    request: Request,
+    payload: ResetDemoBalanceRequest,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    user_id = current_demo_user_id(request, conn)
     try:
         return reset_demo_balance(
             conn,
             reason=payload.reason,
             idempotency_key=payload.idempotency_key,
+            user_id=user_id,
         )
     except DemoWalletError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/api/demo/positions")
-async def api_demo_positions(conn: sqlite3.Connection = Depends(get_conn)):
+async def api_demo_positions(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
     return {
-        "balance": get_balance(conn),
-        "positions": list_positions(conn),
-        "orders": list_orders(conn),
-        "ledger": list_ledger(conn),
+        "user_id": user_id,
+        "balance": get_balance(conn, user_id),
+        "positions": list_positions(conn, user_id),
+        "orders": list_orders(conn, user_id),
+        "ledger": list_ledger(conn, user_id),
     }
 
 
 @app.get("/api/demo/results")
-async def api_demo_results(conn: sqlite3.Connection = Depends(get_conn)):
-    results = enrich_result_rows(conn, list_demo_results(conn))
+async def api_demo_results(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    results = enrich_result_rows(conn, list_demo_results(conn, user_id))
     pending_count = sum(1 for row in results if row["status"] in {"pending", "settlement_pending", "settlement_unknown"})
     settled_count = sum(1 for row in results if row["status"] in {"settled_win", "settled_loss"})
     return {
-        "balance": get_balance(conn),
+        "user_id": user_id,
+        "balance": get_balance(conn, user_id),
         "results": results,
         "pending_count": pending_count,
         "settled_count": settled_count,
@@ -470,21 +559,28 @@ async def api_demo_results(conn: sqlite3.Connection = Depends(get_conn)):
 
 
 @app.get("/api/demo/resolution-candidates")
-async def api_demo_resolution_candidates(conn: sqlite3.Connection = Depends(get_conn)):
-    return resolution_candidates_payload(conn)
+async def api_demo_resolution_candidates(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    return resolution_candidates_payload(conn, user_id)
 
 
 @app.post("/api/demo/settle")
-async def api_demo_settle(conn: sqlite3.Connection = Depends(get_conn)):
+async def api_demo_settle(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
     if settings.live:
         ensure_fresh_markets(conn, settings)
     else:
         ensure_markets(conn, settings)
-    return settle_pending_positions(conn, DEMO_USER_ID)
+    return settle_pending_positions(conn, user_id)
 
 
 @app.post("/api/demo/predict")
-async def api_demo_predict(payload: PredictionRequest, conn: sqlite3.Connection = Depends(get_conn)):
+async def api_demo_predict(
+    request: Request,
+    payload: PredictionRequest,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    user_id = current_demo_user_id(request, conn)
     try:
         result = create_demo_prediction(
             conn,
@@ -492,6 +588,7 @@ async def api_demo_predict(payload: PredictionRequest, conn: sqlite3.Connection 
             outcome=payload.outcome,
             stake=payload.stake,
             idempotency_key=payload.idempotency_key,
+            user_id=user_id,
         )
     except DemoPredictionError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
