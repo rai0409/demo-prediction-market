@@ -10,16 +10,16 @@
 <section class="hero compact-hero">
   <div>
     <h1>デモポジション</h1>
-    <p class="subtitle">予想履歴、デモポジション、デモポイント台帳を確認できます。</p>
+    <p class="subtitle">予想履歴、デモポジション、デモポイント履歴を確認できます。</p>
   </div>
   <div class="balance-box">
-    <span>デモ残高</span>
+    <span>マイスコア</span>
     <strong>{{ "%.2f"|format(demo_balance) }}</strong>
     <span>デモポイント</span>
   </div>
 </section>
 
-<section class="notice">デモポイントに金銭価値はありません。結果はローカルのデモ精算として記録されます。</section>
+<section class="notice">デモポイントはMVP検証用の非換金スコアです。換金、譲渡、商品・ギフト券・Pay・株引換券・暗号資産との交換はできません。</section>
 
 <section>
   <div class="section-heading">
@@ -28,7 +28,7 @@
   </div>
   {% if positions %}
   <table>
-    <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Probability</th><th>Estimated simulation return</th><th>Status</th><th>Created</th></tr></thead>
+    <thead><tr><th>マーケット</th><th>選択</th><th>使用デモポイント</th><th>参加時確率</th><th>参考スコア</th><th>状態</th><th>日時</th></tr></thead>
     <tbody>
       {% for position in positions %}
       <tr>
@@ -56,7 +56,7 @@
   <h2>予想履歴</h2>
   {% if orders %}
   <table>
-    <thead><tr><th>Market</th><th>Outcome</th><th>Stake</th><th>Probability</th><th>Created</th></tr></thead>
+    <thead><tr><th>マーケット</th><th>選択</th><th>使用デモポイント</th><th>参加時確率</th><th>日時</th></tr></thead>
     <tbody>
       {% for order in orders %}
       <tr>
@@ -75,9 +75,9 @@
 </section>
 
 <section>
-  <h2>デモポイント ledger</h2>
+  <h2>デモポイント履歴</h2>
   <table>
-    <thead><tr><th>Type</th><th>Amount</th><th>Balance</th><th>Note</th><th>Created</th></tr></thead>
+    <thead><tr><th>種別</th><th>増減</th><th>マイスコア</th><th>メモ</th><th>日時</th></tr></thead>
     <tbody>
       {% for entry in ledger %}
       <tr><td>{{ entry.entry_type }}</td><td>{{ entry.amount|number }}</td><td>{{ entry.balance_after|number }}</td><td>{{ entry.note }}</td><td>{{ entry.created_at|date }}</td></tr>

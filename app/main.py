@@ -71,7 +71,12 @@ def format_number(value: float | int | str | None) -> str:
 def format_datetime(value: str | None) -> str:
     if not value:
         return "-"
-    return str(value).replace("T", " ").replace("+00:00", " UTC").replace("Z", " UTC")
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text.replace("T", " ")[:16]
+    return parsed.strftime("%Y-%m-%d %H:%M")
 
 
 templates.env.filters["percent"] = format_percent
@@ -142,12 +147,12 @@ def set_lang_cookie_if_needed(response, request: Request):
 def data_status_badge(markets: list[dict]) -> str:
     status = markets[0].get("data_source_status") if markets else "sample_fallback"
     if status == "live":
-        return "LIVE Polymarket"
+        return "外部参考データ"
     if status == "sample_fallback":
-        return "Sample fallback"
+        return "参考データ"
     if status in {"live_failed_sample_fallback", "live_empty_sample_fallback"}:
-        return "Live failed, sample fallback"
-    return str(status)
+        return "参考データ"
+    return "参考データ"
 
 
 def hidden_market_count(meta: dict) -> int:
@@ -184,10 +189,10 @@ def result_status_label(status: str) -> str:
 
 def confirmation_label(status: str) -> str:
     return {
-        "confirmed_match": "REST確認済み",
-        "rest_clear_without_candidate": "REST判定",
-        "candidate_only_unconfirmed": "WSのみ未確認",
-        "conflict": "WS/REST不一致",
+        "confirmed_match": "参考データ確認済み",
+        "rest_clear_without_candidate": "参考データ判定",
+        "candidate_only_unconfirmed": "結果候補のみ",
+        "conflict": "参考データ不一致",
         "unclear": "判定保留",
     }.get(status, "判定不明")
 
@@ -208,7 +213,7 @@ def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]
             "note": item.get("settlement_note") or "判定保留",
         }
         item["ws_candidate_detected"] = bool(candidate)
-        item["ws_candidate_label"] = "WS検知あり" if candidate else "-"
+        item["ws_candidate_label"] = "結果候補あり" if candidate else "-"
         item["rest_confirmation_label"] = confirmation_label(confirmation["confirmation_status"])
         item["confirmation_status"] = confirmation["confirmation_status"]
         item["confirmation_note"] = item.get("settlement_note") or confirmation["note"]

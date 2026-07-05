@@ -1,23 +1,24 @@
 # Demo Prediction Market Viewer / 予想マーケット・デモビューア
 
-FastAPIベースのローカル技術MVPです。Polymarketの公開マーケットデータを取得し、アクティブで表示可能な市場だけをダッシュボードに出し、ローカルのデモポイントで `予想する` / `デモ参加する` 体験をシミュレーションできます。
+FastAPIベースのローカル技術MVPです。外部予測市場の公開参考データを取得し、アクティブで表示可能な市場だけをダッシュボードに出し、ローカルのデモポイントで `予想する` / `デモ参加する` 体験をシミュレーションできます。
 
 ## 重要な安全メモ
 
 このリポジトリは技術検証用のローカルシミュレーションです。
 
 - Polymarketへ注文を送信しません。
+- Polymarket公式・提携・公認サービスではありません。
 - ウォレット接続を実装していません。
 - 入金、出金、換金、外部ポイント交換をサポートしません。
 - 秘密鍵、シードフレーズ、APIキー、APIシークレットなどの private credentials を使いません。
 - 投資助言、賭博助言、法的助言ではありません。
 
-アプリ内の `デモポイント` は無償のシミュレーション専用ポイントであり、購入、換金、出金、譲渡、外部ポイント交換、暗号資産交換、景品交換はできません。
+アプリ内の `デモポイント` はMVP検証用の非換金スコアです。購入、換金、出金、譲渡はできず、商品、ギフト券、Pay、株引換券、暗号資産、外部ポイント、景品とは交換できません。
 
 ## このプロジェクトで示していること
 
 - FastAPI web app
-- Polymarket public Gamma API integration
+- external public prediction-market reference data integration
 - defensive API normalization
 - sample fallback design
 - SQLite storage
@@ -156,7 +157,7 @@ python -m pytest tests -q
 
 1. Open the dashboard.
 2. Refresh live data with `POST /api/refresh` or run with `DEMO_PREDICTION_LIVE=1`.
-3. Open `デモポイント管理` to review `デモ残高`, `デモポイント履歴`, and `監査ログ`.
+3. Open `マイスコア` to review the non-cash demo point balance and `デモポイント履歴`.
 4. Open a market detail page.
 5. Choose an outcome.
 6. Enter demo points.
@@ -211,6 +212,14 @@ Actual screenshots are not committed yet.
 - Public API format may change.
 - Legal/regulatory review is required before any real-money, external point, or production use.
 - Not production-ready.
+
+## Phase 3 TODO
+
+- Authentication and role-based access for internal operations.
+- CSRF protection for state-changing forms.
+- Rate limits for public and demo-participation endpoints.
+- Production-grade administrator permissions and audit review screens.
+- Abuse/fraud detection and operational monitoring.
 
 ## v0.7 Freshness And Results Foundation
 

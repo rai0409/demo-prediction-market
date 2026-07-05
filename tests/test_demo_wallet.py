@@ -112,8 +112,8 @@ def test_demo_wallet_page_renders(client):
     response = client.get("/demo-wallet")
     assert response.status_code == 200
     html = response.text
-    assert "デモポイント管理" in html
-    assert "デモポイント追加" in html
-    assert "デモ残高リセット" in html
+    assert "マイスコア" in html
+    assert "デモポイント調整" in html
+    assert "初期状態に戻す" in html
     assert "デモポイント履歴" in html
-    assert "監査ログ" in html
+    assert "非換金" in html

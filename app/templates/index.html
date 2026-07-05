@@ -13,8 +13,9 @@
 <section class="disclaimer" aria-label="{{ t('safety.local_only') }}">
   {% if lang == "en" %}
   <p>This app is a demo-only prediction market viewer.</p>
-  <p>All demo points and demo positions are local-only records for product demonstration.</p>
-  <p>No real-money functionality is provided.</p>
+  <p>Demo points are non-cash MVP validation scores and cannot be transferred or exchanged.</p>
+  <p>They cannot be exchanged for products, gift cards, Pay balances, stock vouchers, crypto assets, or anything outside the app.</p>
+  <p>This app is not official, endorsed by, or affiliated with Polymarket.</p>
   {% else %}
   {% for line in disclaimer.split('\n') %}
   <p>{{ line }}</p>
@@ -32,7 +33,7 @@
   <div class="summary-card">
     <span>{{ t("market.data_status") }}</span>
     <strong id="data-status" class="badge">{{ data_status_badge }}</strong>
-    <span>Near-real-time REST polling</span>
+    <span>{% if lang == "en" %}Public reference data{% else %}外部予測市場の公開参考データ{% endif %}</span>
   </div>
 
   <div class="summary-card">
@@ -50,13 +51,13 @@
   <div class="summary-card">
     <span>{{ t("market.last_fetch") }}</span>
     <strong id="freshness">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
-    <span>{% if lang == "en" %}Checks page data every {{ poll_seconds }} seconds{% else %}{{ poll_seconds }}秒ごとに画面情報を確認{% endif %}</span>
+    <span>{% if lang == "en" %}Auto-updates the latest information{% else %}最新情報を自動更新{% endif %}</span>
   </div>
 
   <div class="summary-card">
     <span>{{ t("realtime.status") }}</span>
     <strong id="realtime-summary">{{ t("realtime.rest_only") }}</strong>
-    <span>{% if lang == "en" %}Optional public market WebSocket{% else %}任意の公開マーケットWebSocket{% endif %}</span>
+    <span>{% if lang == "en" %}Reference data check{% else %}参考データの更新確認{% endif %}</span>
   </div>
 </section>
 
@@ -66,7 +67,7 @@
   <span>{% if lang == "en" %}Expired{% else %}期限切れ{% endif %} {{ market_meta.hidden_expired_count }}</span>
   <span>{% if lang == "en" %}No liquidity{% else %}流動性なし{% endif %} {{ market_meta.hidden_no_liquidity_count }}</span>
   <span>{% if lang == "en" %}Near-resolved probability{% else %}確率が確定済みに近い{% endif %} {{ market_meta.hidden_resolved_probability_count }}</span>
-  <a href="/api/markets?include_all=true">{% if lang == "en" %}View all markets{% else %}全マーケットを見る{% endif %}</a>
+  <a href="/#market-list">{% if lang == "en" %}Back to market list{% else %}マーケット一覧へ戻る{% endif %}</a>
 </section>
 
 <section>
@@ -80,7 +81,7 @@
     <article class="market-card" data-market-id="{{ market.market_id }}">
       <div class="card-meta">
         <span class="badge subtle">{{ market.source }}</span>
-        <span>{{ market.data_source_status }}</span>
+        <span>{{ source_status_label(market.data_source_status) }}</span>
       </div>
 
       <h3>{{ market.title }}</h3>

@@ -9,11 +9,11 @@
 
 <section class="detail-layout">
   <article class="market-detail">
-    <p class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ market.data_source_status }}</span><span>{{ market.fetched_at|date }}</span></p>
+    <p class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ source_status_label(market.data_source_status) }}</span><span>最終更新: {{ market.fetched_at|date }}</span></p>
     <h1>{{ market.title }}</h1>
     <h2>{{ market.question }}</h2>
-    <p class="status-label">{{ market.display_status }} / リアルタイム状態:
-      {% if market.realtime_status == "ws_live" %}WebSocket更新中{% elif market.realtime_status == "ws_stale" %}WebSocket stale{% else %}RESTのみ{% endif %}
+    <p class="status-label">{{ market.display_status }} / 更新状態:
+      {% if market.realtime_status == "ws_live" %}最新情報を自動更新{% elif market.realtime_status == "ws_stale" %}更新確認中{% else %}参考データ{% endif %}
     </p>
     {% if market.demo_participation_allowed %}
     <p class="notice">このマーケットはデモ参加できます。</p>
@@ -21,14 +21,14 @@
     <p class="blocked-label">デモ参加対象外: {{ market.demo_participation_block_reason }}</p>
     {% endif %}
     <dl class="metrics detail-metrics">
-      <div><dt>Volume</dt><dd>{{ market.volume|number }}</dd></div>
-      <div><dt>24h Volume</dt><dd>{{ market.volume_24hr|number }}</dd></div>
-      <div><dt>Liquidity</dt><dd>{{ market.liquidity|number }}</dd></div>
-      <div><dt>End date</dt><dd>{{ market.end_date|date }}</dd></div>
+      <div><dt>関心度</dt><dd>{{ market.volume|number }}</dd></div>
+      <div><dt>24時間の関心度</dt><dd>{{ market.volume_24hr|number }}</dd></div>
+      <div><dt>参考データ量</dt><dd>{{ market.liquidity|number }}</dd></div>
+      <div><dt>終了予定</dt><dd>{{ market.end_date|date }}</dd></div>
       <div><dt>最良買い気配</dt><dd>{{ market.best_bid|number }}</dd></div>
       <div><dt>最良売り気配</dt><dd>{{ market.best_ask|number }}</dd></div>
-      <div><dt>直近取引価格</dt><dd>{{ market.last_trade_price|number }}</dd></div>
-      <div><dt>WebSocket最終更新</dt><dd>{{ market.ws_last_event_at|date }}</dd></div>
+      <div><dt>直近参考値</dt><dd>{{ market.last_trade_price|number }}</dd></div>
+      <div><dt>最終更新</dt><dd>{{ market.ws_last_event_at|date }}</dd></div>
     </dl>
     <div class="outcome-stack outcome-cards">
       {% for outcome in market.outcomes %}
@@ -42,11 +42,11 @@
       {% endfor %}
     </div>
     <section class="description-block">
-      <h3>Description / resolution condition</h3>
+      <h3>説明 / 結果条件</h3>
       <p>{{ market.description or "説明はありません。" }}</p>
     </section>
     <section>
-      <h3>Snapshot trend</h3>
+      <h3>参考データの推移</h3>
       {% if snapshots %}
       <div class="trend" aria-label="probability trend">
         {% for snapshot in snapshots|reverse %}
@@ -55,16 +55,16 @@
         {% endfor %}
       </div>
       <table class="snapshot-table">
-        <thead><tr><th>Fetched</th><th>Status</th><th>First outcome</th></tr></thead>
+        <thead><tr><th>最終更新</th><th>状態</th><th>先頭の選択肢</th></tr></thead>
         <tbody>
           {% for snapshot in snapshots %}
           {% set first = snapshot.market.outcomes[0] %}
-          <tr><td>{{ snapshot.fetched_at|date }}</td><td>{{ snapshot.market.data_source_status }}</td><td>{{ first }} {{ snapshot.market.probabilities[first]|percent }}</td></tr>
+          <tr><td>{{ snapshot.fetched_at|date }}</td><td>{{ source_status_label(snapshot.market.data_source_status) }}</td><td>{{ first }} {{ snapshot.market.probabilities[first]|percent }}</td></tr>
           {% endfor %}
         </tbody>
       </table>
       {% else %}
-      <p class="notice">Snapshot history is not available yet.</p>
+      <p class="notice">参考データの履歴はまだありません。</p>
       {% endif %}
     </section>
   </article>
@@ -78,7 +78,7 @@
     </section>
     {% if market.demo_participation_allowed %}
     <form id="prediction-form" data-market-id="{{ market.market_id }}">
-      <div class="balance-inline"><span>現在のデモ残高</span><strong>{{ demo_balance|number }}</strong><span>デモポイント</span></div>
+      <div class="balance-inline"><span>現在のマイスコア</span><strong>{{ demo_balance|number }}</strong><span>デモポイント</span></div>
       <label for="outcome">参加内容を確認</label>
       <select id="outcome" name="outcome">
         {% for outcome in market.outcomes %}
@@ -89,9 +89,9 @@
       <input id="stake" name="stake" type="number" min="1" step="1" value="100">
       <div class="simulation-summary">
         <p>現在の推定確率: <strong id="selected-probability"></strong></p>
-        <p>estimated simulation return: <strong id="estimated-return"></strong> デモポイント</p>
-        <p>maximum demo point loss: <strong id="max-loss">100</strong> デモポイント</p>
-        <p>デモポイントに金銭価値はありません。結果確認はローカルのデモ精算として記録されます。</p>
+        <p>参考スコア: <strong id="estimated-return"></strong> デモポイント</p>
+        <p>使用デモポイント: <strong id="max-loss">100</strong> デモポイント</p>
+        <p>デモポイントは換金・譲渡できず、商品・ギフト券・Pay・株引換券・暗号資産とは交換できないMVP検証用スコアです。</p>
       </div>
       <button type="submit">デモ参加する</button>
       <p id="prediction-result" role="status"></p>

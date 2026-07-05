@@ -1,5 +1,11 @@
+import re
+
 from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id, insert_realtime_update
 from app.storage import replace_markets
+
+
+def visible_html(html: str) -> str:
+    return re.sub(r"<script\b[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
 
 
 def test_health(client):
@@ -157,7 +163,7 @@ def test_api_demo_results_includes_updated_status_after_settlement(client, db_co
 
     assert payload["results"][0]["status"] == "settled_loss"
     assert payload["results"][0]["status_label"] == "不的中"
-    assert payload["results"][0]["rest_confirmation_label"] == "REST判定"
+    assert payload["results"][0]["rest_confirmation_label"] == "参考データ判定"
     assert payload["settled_count"] == 1
 
 
@@ -205,7 +211,7 @@ def test_dashboard_renders_status_metadata(client):
     assert "表示中" in html
     assert "取得合計" in html
     assert "非表示" in html
-    assert "全マーケットを見る" in html
+    assert "マーケット一覧へ戻る" in html
 
 
 def test_market_card_includes_predict_for_eligible_market(client):
@@ -229,7 +235,7 @@ def test_market_detail_renders_demo_panel_for_eligible_market(client):
     html = client.get("/markets/sample-market-tokyo-rain").text
     assert "id=\"prediction-form\"" in html
     assert "デモ参加する" in html
-    assert "現在のデモ残高" in html
+    assert "現在のマイスコア" in html
 
 
 def test_demo_positions_page_renders_empty_state(client):
@@ -260,8 +266,8 @@ def test_demo_results_page_renders(client, sample_markets):
     html = response.text
     assert "結果確認" in html
     assert "結果を確認する" in html
-    assert "WS検知" in html
-    assert "REST確認" in html
+    assert "結果候補" in html
+    assert "参考データ確認" in html
     assert "判定状態" in html
     assert "結果待ち" in html
     assert "参加デモポイント" in html
@@ -279,7 +285,7 @@ def test_ui_text_uses_required_words(client):
     assert "デモポイント" in combined
     assert "予想履歴" in combined
     assert "デモポジション" in combined
-    assert "デモ残高" in combined
+    assert "マイスコア" in combined
 
 
 def test_app_ui_action_text_avoids_forbidden_labels(client):
@@ -293,7 +299,7 @@ def test_app_ui_action_text_avoids_forbidden_labels(client):
 
 
 def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
-    combined = (
+    combined = visible_html(
         client.get("/").text
         + client.get("/markets/sample-market-tokyo-rain").text
         + client.get("/demo-wallet").text
@@ -303,7 +309,6 @@ def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
     for term in [
         "入金",
         "出金",
-        "換金",
         "賭ける",
         "ベット",
         "購入",
@@ -322,3 +327,58 @@ def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
         "place bet",
     ]:
         assert term not in combined
+
+
+def test_public_pages_do_not_link_directly_to_include_all_api(client):
+    combined = (
+        client.get("/").text
+        + client.get("/markets/sample-market-tokyo-rain").text
+        + client.get("/demo-wallet").text
+        + client.get("/demo-positions").text
+        + client.get("/demo-results").text
+    )
+    assert "/api/markets?include_all=true" not in combined
+
+
+def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
+    combined = visible_html(
+        client.get("/").text
+        + client.get("/markets/sample-market-tokyo-rain").text
+        + client.get("/demo-wallet").text
+        + client.get("/demo-positions").text
+        + client.get("/demo-results").text
+    )
+    for term in [
+        "REST",
+        "WebSocket",
+        "WS",
+        "stale",
+        "fallback",
+        "polling",
+        "Near-real-time",
+        "30秒ごと",
+        "処理ID",
+        "参照ID",
+        "Stake",
+        "payout",
+        "Demo Point Management",
+        "デモポイント管理",
+    ]:
+        assert term not in combined
+
+
+def test_demo_wallet_page_shows_non_cashable_non_transferable_non_exchangeable_notice(client):
+    html = client.get("/demo-wallet").text
+    assert "マイスコア" in html
+    assert "非換金" in html
+    assert "換金" in html
+    assert "譲渡" in html
+    assert "商品・ギフト券・Pay・株引換券・暗号資産" in html
+    assert "交換はできません" in html
+
+
+def test_last_updated_rendering_is_not_raw_iso(client):
+    html = client.get("/").text
+    assert "T" not in html.split('id="freshness">', 1)[1].split("</strong>", 1)[0]
+    assert "+00:00" not in html
+    assert "最終取得" in html

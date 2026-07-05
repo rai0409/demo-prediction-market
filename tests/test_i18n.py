@@ -19,12 +19,12 @@ def test_normalize_lang():
 
 
 def test_translation_ja_en():
-    assert t("ja", "wallet.add_points") == "デモポイント追加"
-    assert t("en", "wallet.add_points") == "Add demo points"
+    assert t("ja", "wallet.add_points") == "デモポイント調整"
+    assert t("en", "wallet.add_points") == "Demo point adjustment"
     assert t("ja", "result.check") == "結果を確認する"
     assert t("en", "result.check") == "Check results"
-    assert t("ja", "nav.demo_wallet") == "デモポイント管理"
-    assert t("en", "nav.demo_wallet") == "Demo Point Management"
+    assert t("ja", "nav.demo_wallet") == "マイスコア"
+    assert t("en", "nav.demo_wallet") == "My Score"
 
 
 def test_missing_translation_returns_key_or_default():
@@ -52,31 +52,31 @@ def test_status_labels():
 
 
 def test_confirmation_status_labels():
-    assert confirmation_status_label("ja", "confirmed_match") == "REST確認済み"
-    assert confirmation_status_label("en", "confirmed_match") == "REST confirmed"
+    assert confirmation_status_label("ja", "confirmed_match") == "参考データ確認済み"
+    assert confirmation_status_label("en", "confirmed_match") == "Reference data confirmed"
 
-    assert confirmation_status_label("ja", "rest_clear_without_candidate") == "REST判定"
-    assert confirmation_status_label("en", "rest_clear_without_candidate") == "REST decision"
+    assert confirmation_status_label("ja", "rest_clear_without_candidate") == "参考データ判定"
+    assert confirmation_status_label("en", "rest_clear_without_candidate") == "Reference data decision"
 
-    assert confirmation_status_label("ja", "candidate_only_unconfirmed") == "WSのみ未確認"
-    assert confirmation_status_label("en", "candidate_only_unconfirmed") == "WS only, unconfirmed"
+    assert confirmation_status_label("ja", "candidate_only_unconfirmed") == "結果候補のみ"
+    assert confirmation_status_label("en", "candidate_only_unconfirmed") == "Candidate only"
 
-    assert confirmation_status_label("ja", "conflict") == "WS/REST不一致"
-    assert confirmation_status_label("en", "conflict") == "WS/REST conflict"
+    assert confirmation_status_label("ja", "conflict") == "参考データ不一致"
+    assert confirmation_status_label("en", "conflict") == "Reference data mismatch"
 
     assert confirmation_status_label("ja", "unclear") == "判定不明"
     assert confirmation_status_label("en", "unclear") == "Unknown"
 
 
 def test_realtime_status_labels():
-    assert realtime_status_label("ja", "rest_only") == "RESTのみ"
-    assert realtime_status_label("en", "rest_only") == "REST only"
+    assert realtime_status_label("ja", "rest_only") == "参考データ"
+    assert realtime_status_label("en", "rest_only") == "Reference data"
 
-    assert realtime_status_label("ja", "ws_live") == "WebSocket更新中"
-    assert realtime_status_label("en", "ws_live") == "WebSocket live"
+    assert realtime_status_label("ja", "ws_live") == "最新情報を自動更新"
+    assert realtime_status_label("en", "ws_live") == "Auto-updating"
 
-    assert realtime_status_label("ja", "ws_stale") == "WebSocket stale"
-    assert realtime_status_label("en", "ws_stale") == "WebSocket stale"
+    assert realtime_status_label("ja", "ws_stale") == "更新確認中"
+    assert realtime_status_label("en", "ws_stale") == "Checking updates"
 
-    assert realtime_status_label("ja", None) == "RESTのみ"
-    assert realtime_status_label("en", None) == "REST only"
+    assert realtime_status_label("ja", None) == "参考データ"
+    assert realtime_status_label("en", None) == "Reference data"

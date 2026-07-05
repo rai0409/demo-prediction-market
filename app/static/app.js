@@ -14,7 +14,7 @@ function confirmationStatusLabel(status) {
 }
 
 function realtimeStatusLabel(status) {
-  return t(`realtime.${status}`, status || t("realtime.rest_only", "REST only"));
+  return t(`realtime.${status}`, status || t("realtime.rest_only", "参考データ"));
 }
 
 (function () {
@@ -75,12 +75,26 @@ function realtimeStatusLabel(status) {
   }
 
   function statusBadge(status) {
-    if (status === "live") return "LIVE Polymarket";
-    if (status === "sample_fallback") return "Sample fallback";
+    if (status === "live") return "外部参考データ";
+    if (status === "sample_fallback") return "参考データ";
     if (status === "live_failed_sample_fallback" || status === "live_empty_sample_fallback") {
-      return "Live failed, sample fallback";
+      return "参考データ";
     }
-    return status || "";
+    return "参考データ";
+  }
+
+  function formatMinute(value) {
+    if (!value) return "-";
+    var parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      var year = parsed.getFullYear();
+      var month = String(parsed.getMonth() + 1).padStart(2, "0");
+      var day = String(parsed.getDate()).padStart(2, "0");
+      var hour = String(parsed.getHours()).padStart(2, "0");
+      var minute = String(parsed.getMinutes()).padStart(2, "0");
+      return `${year}-${month}-${day} ${hour}:${minute}`;
+    }
+    return String(value).replace("T", " ").slice(0, 16);
   }
 
   async function pollMarkets() {
@@ -92,14 +106,14 @@ function realtimeStatusLabel(status) {
       var data = await response.json();
       if (!data.markets || !data.markets.length) return;
       document.getElementById("data-status").textContent = statusBadge(data.markets[0].data_source_status);
-      document.getElementById("freshness").textContent = data.markets[0].fetched_at;
+      document.getElementById("freshness").textContent = formatMinute(data.markets[0].fetched_at);
       var displayed = document.getElementById("displayed-count");
       var total = document.getElementById("total-count");
       if (displayed) displayed.textContent = data.count;
       if (total) total.textContent = data.total_market_count;
     } catch (error) {
       var status = document.getElementById("data-status");
-      if (status) status.textContent = "last fetch failed";
+      if (status) status.textContent = "更新確認中";
     }
   }
 
@@ -111,16 +125,16 @@ function realtimeStatusLabel(status) {
       if (!response.ok) return;
       var data = await response.json();
       if (!data.ws_enabled) {
-        summary.textContent = "RESTのみ";
+        summary.textContent = "参考データ";
       } else if (data.live_market_update_count > 0) {
-        summary.textContent = "WebSocket更新中";
+        summary.textContent = "最新情報を自動更新";
       } else if (data.stale_market_update_count > 0) {
-        summary.textContent = "WebSocket stale";
+        summary.textContent = "更新確認中";
       } else {
-        summary.textContent = "RESTのみ";
+        summary.textContent = "参考データ";
       }
     } catch (error) {
-      summary.textContent = "RESTのみ";
+      summary.textContent = "参考データ";
     }
   }
 
@@ -154,7 +168,7 @@ function realtimeStatusLabel(status) {
         setText("settlement-ws-unconfirmed", data.ws_unconfirmed_count || 0);
         setText("settlement-ws-conflict", data.ws_conflict_count || 0);
         setText("settlement-rest-only", data.rest_only_settled_count || 0);
-        setText("settlement-payout", Number(data.total_payout || 0).toFixed(2));
+        setText("settlement-reference-score", Number(data.total_payout || 0).toFixed(2));
         setText("settlement-balance", Number(data.balance || 0).toFixed(2));
         if (summary) summary.hidden = false;
         result.textContent = "結果確認が完了しました。ページを再読み込みすると最新の状態を表示します。";
@@ -197,12 +211,12 @@ function realtimeStatusLabel(status) {
           });
           var data = await response.json();
           if (!response.ok) {
-            result.textContent = data.detail || "デモポイント追加に失敗しました。";
+            result.textContent = data.detail || "デモポイント調整に失敗しました。";
             result.className = "form-message error";
             return;
           }
           updateBalance(data.balance);
-          result.textContent = "デモポイント追加を記録しました。";
+          result.textContent = "デモポイント調整を記録しました。";
           result.className = "form-message success";
         } catch (error) {
           result.textContent = "通信に失敗しました。";
@@ -228,12 +242,12 @@ function realtimeStatusLabel(status) {
           });
           var data = await response.json();
           if (!response.ok) {
-            result.textContent = data.detail || "デモ残高リセットに失敗しました。";
+            result.textContent = data.detail || "初期状態に戻せませんでした。";
             result.className = "form-message error";
             return;
           }
           updateBalance(data.balance);
-          result.textContent = "デモ残高リセットを記録しました。";
+          result.textContent = "初期状態に戻しました。";
           result.className = "form-message success";
         } catch (error) {
           result.textContent = "通信に失敗しました。";

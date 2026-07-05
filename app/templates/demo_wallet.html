@@ -1,63 +1,60 @@
 {% extends "base.html" %}
-{% block title %}デモポイント管理{% endblock %}
+{% block title %}マイスコア{% endblock %}
 {% block content %}
 <section class="hero compact-hero">
   <div>
-    <h1>デモポイント管理</h1>
-    <p class="subtitle">ローカルだけのデモポイント、処理ID、参照ID、監査ログを確認できます。</p>
+    <h1>マイスコア</h1>
+    <p class="subtitle">非換金デモポイントの残高と利用履歴を確認できます。</p>
   </div>
   <div class="balance-box">
-    <span>デモ残高</span>
+    <span>マイスコア</span>
     <strong id="demo-balance">{{ demo_balance|number }}</strong>
     <span>デモポイント</span>
   </div>
 </section>
 
-<section class="notice">デモポイントはアプリ内だけで使うシミュレーション用ポイントです。現金、暗号資産、外部ポイント、景品などには交換できません。</section>
+<section class="notice">デモポイントはMVP検証用の非換金スコアです。換金、譲渡、商品・ギフト券・Pay・株引換券・暗号資産との交換はできません。</section>
 
 <section class="summary-grid" aria-label="demo point summary">
-  <div class="summary-card"><span>追加合計</span><strong>{{ wallet_summary.total_added|number }}</strong></div>
+  <div class="summary-card"><span>付与合計</span><strong>{{ wallet_summary.total_added|number }}</strong></div>
   <div class="summary-card"><span>デモ参加利用</span><strong>{{ wallet_summary.total_used_for_demo_participation|number }}</strong></div>
-  <div class="summary-card"><span>デモ精算</span><strong>{{ wallet_summary.total_settled|number }}</strong></div>
+  <div class="summary-card"><span>参考スコア</span><strong>{{ wallet_summary.total_settled|number }}</strong></div>
   <div class="summary-card"><span>調整合計</span><strong>{{ wallet_summary.total_adjusted|number }}</strong></div>
   <div class="summary-card"><span>履歴件数</span><strong>{{ wallet_summary.ledger_count }}</strong></div>
 </section>
 
-<section class="wallet-actions">
+<details class="wallet-actions">
+  <summary>内部確認用</summary>
   <article class="panel-card">
-    <h2>デモポイント追加</h2>
+    <h2>デモポイント調整</h2>
     <form id="demo-points-add-form">
       <label for="add-amount">デモポイント</label>
       <input id="add-amount" name="amount" type="number" min="1" max="100000" step="1" value="1000">
       <label for="add-reason">理由</label>
-      <input id="add-reason" name="reason" type="text" value="デモポイント追加">
-      <label for="add-idempotency-key">処理ID</label>
-      <input id="add-idempotency-key" name="idempotency_key" type="text" placeholder="任意">
-      <button type="submit">デモポイント追加</button>
+      <input id="add-reason" name="reason" type="text" value="デモポイント調整">
+      <button type="submit">調整を記録</button>
       <p id="demo-points-add-result" class="form-message" role="status"></p>
     </form>
   </article>
   <article class="panel-card">
-    <h2>デモ残高リセット</h2>
+    <h2>初期状態に戻す</h2>
     <form id="demo-balance-reset-form">
       <label for="reset-reason">理由</label>
-      <input id="reset-reason" name="reason" type="text" value="デモ残高リセット">
-      <label for="reset-idempotency-key">処理ID</label>
-      <input id="reset-idempotency-key" name="idempotency_key" type="text" placeholder="任意">
-      <button type="submit">デモ残高リセット</button>
+      <input id="reset-reason" name="reason" type="text" value="初期状態に戻す">
+      <button type="submit">初期状態に戻す</button>
       <p id="demo-balance-reset-result" class="form-message" role="status"></p>
     </form>
   </article>
-</section>
+</details>
 
 <section>
   <div class="section-heading">
     <h2>デモポイント履歴</h2>
-    <p>balance_before / balance_after、参照ID、処理IDを記録します。</p>
+    <p>非換金デモポイントの増減を表示します。</p>
   </div>
   <table>
     <thead>
-      <tr><th>Type</th><th>Amount</th><th>Before</th><th>After</th><th>参照ID</th><th>処理ID</th><th>Note</th><th>Created</th></tr>
+      <tr><th>種別</th><th>増減</th><th>前回</th><th>現在</th><th>メモ</th><th>日時</th></tr>
     </thead>
     <tbody>
       {% for entry in ledger %}
@@ -66,8 +63,6 @@
         <td>{{ entry.amount|number }}</td>
         <td>{{ entry.balance_before|number }}</td>
         <td>{{ entry.balance_after|number }}</td>
-        <td>{{ entry.reference_type or "-" }} {{ entry.reference_id or "" }}</td>
-        <td>{{ entry.idempotency_key or entry.request_id or "-" }}</td>
         <td>{{ entry.note }}</td>
         <td>{{ entry.created_at|date }}</td>
       </tr>
@@ -76,29 +71,4 @@
   </table>
 </section>
 
-<section>
-  <div class="section-heading">
-    <h2>監査ログ</h2>
-    <p>ローカル処理の before / after と参照IDを確認できます。</p>
-  </div>
-  <table>
-    <thead>
-      <tr><th>Event</th><th>Route</th><th>参照ID</th><th>処理ID</th><th>Note</th><th>Created</th></tr>
-    </thead>
-    <tbody>
-      {% for event in audit_events %}
-      <tr>
-        <td>{{ event.event_type }}</td>
-        <td>{{ event.route or "-" }}</td>
-        <td>{{ event.reference_type or "-" }} {{ event.reference_id or "" }}</td>
-        <td>{{ event.request_id or "-" }}</td>
-        <td>{{ event.note or "-" }}</td>
-        <td>{{ event.created_at|date }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6">監査ログはまだありません。</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
 {% endblock %}
