@@ -13,7 +13,7 @@
   </div>
 </section>
 
-<section class="notice">デモポイントはMVP検証用の非換金スコアです。換金、譲渡、商品・ギフト券・Pay・株引換券・暗号資産との交換はできません。</section>
+<section class="notice">デモポイントは商用product基準の検証用非換金スコアです。換金、譲渡、商品・ギフト券・Pay・株引換券・暗号資産との交換はできません。</section>
 
 <section class="summary-grid" aria-label="demo point summary">
   <div class="summary-card"><span>付与合計</span><strong>{{ wallet_summary.total_added|number }}</strong></div>
@@ -25,9 +25,12 @@
 
 <details class="wallet-actions">
   <summary>内部確認用</summary>
+  {% if admin_enabled %}
   <article class="panel-card">
     <h2>デモポイント調整</h2>
     <form id="demo-points-add-form">
+      <label for="admin-token-add">確認コード</label>
+      <input id="admin-token-add" name="admin_token" type="password" autocomplete="off">
       <label for="add-amount">デモポイント</label>
       <input id="add-amount" name="amount" type="number" min="1" max="100000" step="1" value="1000">
       <label for="add-reason">理由</label>
@@ -39,12 +42,17 @@
   <article class="panel-card">
     <h2>初期状態に戻す</h2>
     <form id="demo-balance-reset-form">
+      <label for="admin-token-reset">確認コード</label>
+      <input id="admin-token-reset" name="admin_token" type="password" autocomplete="off">
       <label for="reset-reason">理由</label>
       <input id="reset-reason" name="reason" type="text" value="初期状態に戻す">
       <button type="submit">初期状態に戻す</button>
       <p id="demo-balance-reset-result" class="form-message" role="status"></p>
     </form>
   </article>
+  {% else %}
+  <p class="notice">内部確認は現在利用できません。</p>
+  {% endif %}
 </details>
 
 <section>

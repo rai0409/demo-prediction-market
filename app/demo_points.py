@@ -38,6 +38,7 @@ def create_demo_prediction(
     user_id: str = DEMO_USER_ID,
     idempotency_key: str | None = None,
     request_id: str | None = None,
+    max_stake: float | None = None,
 ) -> dict[str, Any]:
     request_id = request_id or str(uuid4())
     if idempotency_key:
@@ -77,6 +78,8 @@ def create_demo_prediction(
         raise DemoPredictionError("stake must be numeric")
     if numeric_stake <= 0:
         raise DemoPredictionError("stake must be greater than 0")
+    if max_stake is not None and numeric_stake > max_stake:
+        raise DemoPredictionError("stake is above the allowed demo point limit")
     outcomes = market["outcomes"]
     if outcome not in outcomes:
         raise DemoPredictionError("invalid outcome")

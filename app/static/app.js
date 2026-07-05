@@ -18,6 +18,20 @@ function realtimeStatusLabel(status) {
 }
 
 (function () {
+  function csrfToken() {
+    return document.body.dataset.csrfToken || "";
+  }
+
+  function postHeaders(extra) {
+    var headers = {"Content-Type": "application/json", "X-CSRF-Token": csrfToken()};
+    if (extra) {
+      Object.keys(extra).forEach(function (key) {
+        if (extra[key]) headers[key] = extra[key];
+      });
+    }
+    return headers;
+  }
+
   function moneylessReturn(stake, probability) {
     if (!probability || probability <= 0) return 0;
     return stake / probability;
@@ -52,7 +66,7 @@ function realtimeStatusLabel(status) {
       try {
         var response = await fetch("/api/demo/predict", {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: postHeaders(),
           body: JSON.stringify(payload)
         });
         var data = await response.json();
@@ -153,7 +167,10 @@ function realtimeStatusLabel(status) {
       result.className = "form-message";
       button.disabled = true;
       try {
-        var response = await fetch("/api/demo/settle", {method: "POST"});
+        var response = await fetch("/api/demo/settle", {
+          method: "POST",
+          headers: postHeaders({"X-Demo-Admin-Token": optionalValue("admin-token-settle")})
+        });
         var data = await response.json();
         if (!response.ok) {
           result.textContent = data.detail || "結果確認に失敗しました。";
@@ -163,7 +180,7 @@ function realtimeStatusLabel(status) {
         setText("settlement-checked", data.checked_count);
         setText("settlement-wins", data.settled_win_count);
         setText("settlement-losses", data.settled_loss_count);
-        setText("settlement-pending", data.pending_count + data.unknown_count);
+        setText("settlement-hold", data.pending_count + data.unknown_count);
         setText("settlement-ws-confirmed", data.ws_confirmed_count || 0);
         setText("settlement-ws-unconfirmed", data.ws_unconfirmed_count || 0);
         setText("settlement-ws-conflict", data.ws_conflict_count || 0);
@@ -202,7 +219,7 @@ function realtimeStatusLabel(status) {
         try {
           var response = await fetch("/api/demo/wallet/add-points", {
             method: "POST",
-            headers: {"Content-Type": "application/json"},
+            headers: postHeaders({"X-Demo-Admin-Token": optionalValue("admin-token-add")}),
             body: JSON.stringify({
               amount: document.getElementById("add-amount").value,
               reason: optionalValue("add-reason"),
@@ -234,7 +251,7 @@ function realtimeStatusLabel(status) {
         try {
           var response = await fetch("/api/demo/wallet/reset", {
             method: "POST",
-            headers: {"Content-Type": "application/json"},
+            headers: postHeaders({"X-Demo-Admin-Token": optionalValue("admin-token-reset")}),
             body: JSON.stringify({
               reason: optionalValue("reset-reason"),
               idempotency_key: optionalValue("reset-idempotency-key")

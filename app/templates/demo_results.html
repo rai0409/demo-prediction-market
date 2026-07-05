@@ -23,7 +23,7 @@
   <div class="summary-card">
     <span>結果待ち</span>
     <strong>{{ pending_count }}</strong>
-    <span>pending / 判定保留 / 判定不明</span>
+    <span>結果確認待ち・判定保留</span>
   </div>
   <div class="summary-card">
     <span>結果確定済み</span>
@@ -32,22 +32,28 @@
   </div>
 </section>
 
-<section class="notice">デモポイントはMVP検証用の非換金スコアです。換金、譲渡、商品・ギフト券・Pay・株引換券・暗号資産との交換はできません。参考スコアはローカルシミュレーション上の表示項目です。</section>
+<section class="notice">デモポイントは商用product基準の検証用非換金スコアです。換金、譲渡、商品・ギフト券・Pay・株引換券・暗号資産との交換はできません。参考スコアはローカルシミュレーション上の表示項目です。</section>
 
 <section>
   <div class="section-heading">
     <h2>結果</h2>
-    <p>明確な結果が確認できる場合だけ、ローカルのデモ精算を記録します。</p>
+    <p>明確な結果が確認できる場合だけ、参考スコアへ反映します。</p>
   </div>
+  {% if admin_enabled %}
   <div class="settlement-actions">
+    <label for="admin-token-settle">確認コード</label>
+    <input id="admin-token-settle" type="password" autocomplete="off">
     <button id="settlement-check-button" type="button" class="primary-button">結果を確認する</button>
     <p id="settlement-result" class="form-message" role="status"></p>
   </div>
+  {% else %}
+  <p class="notice">結果の記録は現在利用できません。</p>
+  {% endif %}
   <div id="settlement-summary" class="summary-grid compact-summary" hidden>
     <div class="summary-card"><span>確認件数</span><strong id="settlement-checked">0</strong></div>
     <div class="summary-card"><span>的中</span><strong id="settlement-wins">0</strong></div>
     <div class="summary-card"><span>不的中</span><strong id="settlement-losses">0</strong></div>
-    <div class="summary-card"><span>判定保留</span><strong id="settlement-pending">0</strong></div>
+    <div class="summary-card"><span>判定保留</span><strong id="settlement-hold">0</strong></div>
     <div class="summary-card"><span>確認済み</span><strong id="settlement-ws-confirmed">0</strong></div>
     <div class="summary-card"><span>結果候補のみ</span><strong id="settlement-ws-unconfirmed">0</strong></div>
     <div class="summary-card"><span>参考データ不一致</span><strong id="settlement-ws-conflict">0</strong></div>
@@ -59,19 +65,15 @@
   <table>
     <thead>
       <tr>
-        <th>Market</th>
-        <th>Outcome</th>
+        <th>マーケット</th>
+        <th>選択</th>
         <th>参加デモポイント</th>
         <th>参加時確率</th>
-        <th>推定デモリターン</th>
-        <th>状態</th>
-        <th>結果候補</th>
-        <th>参考データ確認</th>
-        <th>判定状態</th>
-        <th>結果</th>
         <th>参考スコア</th>
-        <th>判定ソース</th>
-        <th>判定メモ</th>
+        <th>現在の状態</th>
+        <th>確定理由</th>
+        <th>参照元</th>
+        <th>確定結果</th>
         <th>結果確定日時</th>
       </tr>
     </thead>
@@ -84,13 +86,9 @@
         <td>{{ result.probability|percent }}</td>
         <td>{{ result.estimated_return|number }}</td>
         <td>{{ result.status_label }}</td>
-        <td>{{ result.ws_candidate_label }}</td>
-        <td>{{ result.rest_confirmation_label }}</td>
-        <td>{{ result.rest_confirmation_label }}</td>
+        <td>{{ result.result_reason_label }}</td>
+        <td>{{ result.source_label }}</td>
         <td>{{ result.winning_outcome_label }}</td>
-        <td>{{ result.payout|number }}</td>
-        <td>{{ result.settlement_source or "-" }}</td>
-        <td>{{ result.confirmation_note or "-" }}</td>
         <td>{{ result.settled_at|date }}</td>
       </tr>
       {% endfor %}

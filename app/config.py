@@ -13,6 +13,8 @@ class Settings:
     ws_enabled: bool = False
     ws_top_n: int = 10
     ws_stale_seconds: int = 90
+    admin_token: str = ""
+    max_demo_stake: float = 10000.0
 
 
 def _int_env(name: str, default: int) -> int:
@@ -48,4 +50,6 @@ def get_settings() -> Settings:
         ws_enabled=_bool_env("DEMO_PREDICTION_WS_ENABLED", False),
         ws_top_n=max(1, min(50, _int_env("DEMO_PREDICTION_WS_TOP_N", 10))),
         ws_stale_seconds=max(15, min(600, _int_env("DEMO_PREDICTION_WS_STALE_SECONDS", 90))),
+        admin_token=os.getenv("DEMO_ADMIN_TOKEN", "").strip(),
+        max_demo_stake=float(max(1, _int_env("DEMO_PREDICTION_MAX_DEMO_STAKE", 10000))),
     )

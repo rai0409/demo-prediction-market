@@ -535,7 +535,7 @@ def create_pending_settlement_for_position(conn: sqlite3.Connection, position: d
             None,
             0.0,
             "local_demo",
-            "結果待ち。自動精算はまだ実装していません。",
+            "明確な結果をまだ確認できていません。",
             None,
         ),
     )

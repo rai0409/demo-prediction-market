@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from secrets import compare_digest, token_urlsafe
+from time import monotonic
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -122,6 +124,12 @@ async def get_conn() -> sqlite3.Connection:
 
 DEMO_USER_COOKIE = "demo_user_id"
 DEMO_USER_HEADER = "x-demo-user"
+CSRF_COOKIE = "demo_csrf"
+CSRF_HEADER = "x-csrf-token"
+ADMIN_HEADER = "x-demo-admin-token"
+RATE_LIMIT_WINDOW_SECONDS = 1.0
+RATE_LIMIT_MAX_POSTS = 3
+_post_rate_events: dict[tuple[str, str], list[float]] = {}
 
 
 def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
@@ -132,6 +140,26 @@ def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
         or DEMO_USER_ID
     )
     return ensure_demo_user(conn, normalize_demo_user_id(user_id))
+
+
+def csrf_token_for_request(request: Request) -> str:
+    existing = getattr(request.state, "csrf_token", None)
+    if existing:
+        return existing
+    token = request.cookies.get(CSRF_COOKIE) or token_urlsafe(24)
+    request.state.csrf_token = token
+    return token
+
+
+def set_csrf_cookie(response, token: str):
+    response.set_cookie(
+        CSRF_COOKIE,
+        token,
+        max_age=60 * 60 * 24,
+        httponly=False,
+        samesite="lax",
+    )
+    return response
 
 
 def set_demo_user_cookie_if_needed(response, request: Request, user_id: str):
@@ -149,6 +177,7 @@ def set_demo_user_cookie_if_needed(response, request: Request, user_id: str):
 def prepare_response(response, request: Request, user_id: str):
     set_lang_cookie_if_needed(response, request)
     set_demo_user_cookie_if_needed(response, request, user_id)
+    set_csrf_cookie(response, csrf_token_for_request(request))
     return response
 
 
@@ -160,6 +189,8 @@ def template_context(request: Request, conn: sqlite3.Connection, user_id: str, *
         "ws_enabled": settings.ws_enabled,
         "demo_user_id": user_id,
         "demo_balance": get_balance(conn, user_id),
+        "csrf_token": csrf_token_for_request(request),
+        "admin_enabled": bool(settings.admin_token),
     }
     context.update(template_i18n_context(request))
     context.update(extra)
@@ -178,6 +209,35 @@ def set_lang_cookie_if_needed(response, request: Request):
             samesite="lax",
         )
     return response
+
+
+def require_csrf(request: Request) -> JSONResponse | None:
+    cookie_token = request.cookies.get(CSRF_COOKIE)
+    request_token = request.headers.get(CSRF_HEADER) or request.query_params.get("csrf_token")
+    if not cookie_token or not request_token or not compare_digest(cookie_token, request_token):
+        return JSONResponse(status_code=403, content={"detail": "操作を確認できませんでした。ページを再読み込みしてください。"})
+    return None
+
+
+def require_admin(request: Request) -> JSONResponse | None:
+    if not settings.admin_token:
+        return JSONResponse(status_code=403, content={"detail": "内部操作は現在利用できません。"})
+    supplied = request.headers.get(ADMIN_HEADER) or request.query_params.get("admin_token")
+    if not supplied or not compare_digest(settings.admin_token, supplied):
+        return JSONResponse(status_code=403, content={"detail": "内部操作は許可されていません。"})
+    return None
+
+
+def rate_limit_post(user_id: str, action: str) -> JSONResponse | None:
+    now = monotonic()
+    key = (user_id, action)
+    recent = [timestamp for timestamp in _post_rate_events.get(key, []) if now - timestamp < RATE_LIMIT_WINDOW_SECONDS]
+    if len(recent) >= RATE_LIMIT_MAX_POSTS:
+        _post_rate_events[key] = recent
+        return JSONResponse(status_code=429, content={"detail": "少し時間をおいてからもう一度お試しください。"})
+    recent.append(now)
+    _post_rate_events[key] = recent
+    return None
 
 
 def data_status_badge(markets: list[dict]) -> str:
@@ -233,6 +293,30 @@ def confirmation_label(status: str) -> str:
     }.get(status, "判定不明")
 
 
+def source_label(source: str | None) -> str:
+    return {
+        "ws_candidate_rest_confirmed": "結果候補と参考データが一致",
+        "rest_conservative": "参考データで明確に確認",
+        "ws_candidate_unconfirmed": "結果候補のみ。参考データ確認待ち",
+        "ws_candidate_conflict": "結果候補と参考データが不一致",
+        "unresolved": "参考データ確認待ち",
+        "local_demo": "結果確認待ち",
+        "local_storage": "保存データ確認不可",
+    }.get(source or "", "参考データ確認待ち")
+
+
+def result_reason_label(status: str, confirmation_status: str, note: str | None) -> str:
+    if status in {"settled_win", "settled_loss"}:
+        return "明確な結果を確認したため、参考スコアへ反映しました。"
+    if confirmation_status == "candidate_only_unconfirmed":
+        return "結果候補はありますが、参考データでの確認が未完了です。"
+    if confirmation_status == "conflict":
+        return "結果候補と参考データが一致しないため、結果記録を保留しています。"
+    if confirmation_status == "unclear":
+        return "明確な結果をまだ確認できていません。"
+    return note or "結果確認待ちです。"
+
+
 def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
     enriched = enrich_activity_rows(conn, rows)
     for item in enriched:
@@ -253,6 +337,12 @@ def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]
         item["rest_confirmation_label"] = confirmation_label(confirmation["confirmation_status"])
         item["confirmation_status"] = confirmation["confirmation_status"]
         item["confirmation_note"] = item.get("settlement_note") or confirmation["note"]
+        item["source_label"] = source_label(item.get("settlement_source") or confirmation["settlement_source"])
+        item["result_reason_label"] = result_reason_label(
+            item.get("status", ""),
+            confirmation["confirmation_status"],
+            item.get("settlement_note") or confirmation["note"],
+        )
     return enriched
 
 
@@ -405,6 +495,9 @@ async def demo_wallet_page(request: Request, conn: sqlite3.Connection = Depends(
 
 @app.post("/demo-user")
 async def set_demo_user(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
     body = (await request.body()).decode("utf-8")
     form = parse_qs(body)
     user_id = ensure_demo_user(conn, normalize_demo_user_id(form.get("demo_user", [""])[0]))
@@ -427,12 +520,17 @@ async def health():
 
 @app.get("/api/markets")
 async def api_markets(
+    request: Request,
     include_closed: bool = False,
     include_expired: bool = False,
     include_inactive: bool = False,
     include_all: bool = False,
     conn: sqlite3.Connection = Depends(get_conn),
 ):
+    if include_all:
+        admin_error = require_admin(request)
+        if admin_error:
+            return admin_error
     markets = attach_realtime_updates(conn, ensure_fresh_markets(conn, settings), settings)
     return filtered_market_response(
         markets,
@@ -459,7 +557,13 @@ async def api_snapshots(market_id: str, conn: sqlite3.Connection = Depends(get_c
 
 
 @app.post("/api/refresh")
-async def api_refresh(conn: sqlite3.Connection = Depends(get_conn)):
+async def api_refresh(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
     result = refresh_markets_with_result(conn, settings)
     return {
         "status": result["status"],
@@ -473,7 +577,10 @@ async def api_refresh(conn: sqlite3.Connection = Depends(get_conn)):
 
 
 @app.get("/api/debug/source-status")
-async def api_debug_source_status(conn: sqlite3.Connection = Depends(get_conn)):
+async def api_debug_source_status(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
     return source_status(conn, settings)
 
 
@@ -501,6 +608,15 @@ async def api_demo_wallet_add_points(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     user_id = current_demo_user_id(request, conn)
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    rate_error = rate_limit_post(user_id, "demo-wallet-add")
+    if rate_error:
+        return rate_error
     try:
         return add_demo_points(
             conn,
@@ -520,6 +636,15 @@ async def api_demo_wallet_reset(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     user_id = current_demo_user_id(request, conn)
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    rate_error = rate_limit_post(user_id, "demo-wallet-reset")
+    if rate_error:
+        return rate_error
     try:
         return reset_demo_balance(
             conn,
@@ -560,6 +685,9 @@ async def api_demo_results(request: Request, conn: sqlite3.Connection = Depends(
 
 @app.get("/api/demo/resolution-candidates")
 async def api_demo_resolution_candidates(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
     user_id = current_demo_user_id(request, conn)
     return resolution_candidates_payload(conn, user_id)
 
@@ -567,6 +695,15 @@ async def api_demo_resolution_candidates(request: Request, conn: sqlite3.Connect
 @app.post("/api/demo/settle")
 async def api_demo_settle(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     user_id = current_demo_user_id(request, conn)
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    rate_error = rate_limit_post(user_id, "demo-settle")
+    if rate_error:
+        return rate_error
     if settings.live:
         ensure_fresh_markets(conn, settings)
     else:
@@ -581,6 +718,12 @@ async def api_demo_predict(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     user_id = current_demo_user_id(request, conn)
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    rate_error = rate_limit_post(user_id, "demo-predict")
+    if rate_error:
+        return rate_error
     try:
         result = create_demo_prediction(
             conn,
@@ -589,6 +732,7 @@ async def api_demo_predict(
             stake=payload.stake,
             idempotency_key=payload.idempotency_key,
             user_id=user_id,
+            max_stake=settings.max_demo_stake,
         )
     except DemoPredictionError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})

@@ -30,19 +30,52 @@ def client(db_conn, monkeypatch):
     monkeypatch.setattr(
         main,
         "settings",
-        Settings(live=False, poll_seconds=30, limit=50, db_path=":memory:"),
+        Settings(live=False, poll_seconds=30, limit=50, db_path=":memory:", admin_token="test-admin"),
     )
+    main._post_rate_events.clear()
     async def override_conn():
         return db_conn
 
     main.app.dependency_overrides[main.get_conn] = override_conn
 
     class ASGITestClient:
+        def __init__(self):
+            self.cookies = {}
+
+        async def _send(self, method, url, **kwargs):
+            headers = dict(kwargs.pop("headers", {}) or {})
+            if self.cookies and "cookie" not in {key.lower() for key in headers}:
+                headers["cookie"] = "; ".join(f"{key}={value}" for key, value in self.cookies.items())
+            kwargs["headers"] = headers
+            transport = httpx.ASGITransport(app=main.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as test_client:
+                response = await test_client.request(method, url, **kwargs)
+            self.cookies.update(response.cookies)
+            return response
+
+        async def _ensure_csrf(self):
+            if "demo_csrf" not in self.cookies:
+                await self._send("GET", "/")
+            return self.cookies.get("demo_csrf")
+
         def request(self, method, url, **kwargs):
             async def do_request():
-                transport = httpx.ASGITransport(app=main.app)
-                async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as test_client:
-                    return await test_client.request(method, url, **kwargs)
+                auto_security = kwargs.pop("auto_security", True)
+                auto_admin = kwargs.pop("auto_admin", True)
+                headers = dict(kwargs.pop("headers", {}) or {})
+                endpoint = url.split("?", 1)[0]
+                if method.upper() == "POST" and auto_security:
+                    csrf = await self._ensure_csrf()
+                    headers.setdefault("x-csrf-token", csrf)
+                if method.upper() == "POST" and auto_admin and endpoint in {
+                    "/api/demo/wallet/add-points",
+                    "/api/demo/wallet/reset",
+                    "/api/demo/settle",
+                    "/api/refresh",
+                }:
+                    headers.setdefault("x-demo-admin-token", "test-admin")
+                kwargs["headers"] = headers
+                return await self._send(method, url, **kwargs)
 
             return asyncio.run(do_request())
 

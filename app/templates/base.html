@@ -10,7 +10,7 @@
       window.I18N = {{ js_i18n | default({}) | tojson }};
     </script>
   </head>
-  <body data-poll-seconds="{{ poll_seconds }}">
+  <body data-poll-seconds="{{ poll_seconds }}" data-csrf-token="{{ csrf_token }}">
     <header class="topbar">
       <a class="brand" href="/?lang={{ lang | default('ja') }}">
         <span>{{ t("app.title") }}</span>
@@ -30,7 +30,8 @@
         <a href="{{ lang_url_en }}" class="{% if lang == 'en' %}active{% endif %}">EN</a>
       </div>
 
-      <form class="demo-user-switch" action="/demo-user" method="post">
+      <form class="demo-user-switch" action="/demo-user?csrf_token={{ csrf_token }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="demo-user-input">{% if lang == "en" %}Participant{% else %}参加者{% endif %}</label>
         <input id="demo-user-input" name="demo_user" type="text" value="{{ demo_user_id }}" maxlength="40" autocomplete="off">
         <button type="submit">{% if lang == "en" %}Switch{% else %}切替{% endif %}</button>

@@ -57,7 +57,10 @@ def test_api_markets_include_all_returns_hidden_markets(client, db_conn, sample_
     closed["closed"] = True
     replace_markets(db_conn, [sample_markets[0], closed])
     default_response = client.get("/api/markets").json()
-    include_all_response = client.get("/api/markets?include_all=true").json()
+    include_all_response = client.get(
+        "/api/markets?include_all=true",
+        headers={"x-demo-admin-token": "test-admin"},
+    ).json()
     assert default_response["count"] == 1
     assert include_all_response["count"] == 2
     assert include_all_response["hidden_closed_count"] == 1
@@ -139,7 +142,7 @@ def test_api_demo_resolution_candidates_returns_summary(client, db_conn, sample_
         },
     )
     db_conn.commit()
-    response = client.get("/api/demo/resolution-candidates")
+    response = client.get("/api/demo/resolution-candidates", headers={"x-demo-admin-token": "test-admin"})
     assert response.status_code == 200
     payload = response.json()
     assert payload["candidate_count"] == 1
@@ -168,7 +171,7 @@ def test_api_demo_results_includes_updated_status_after_settlement(client, db_co
 
 
 def test_debug_source_status_returns_expected_keys(client):
-    response = client.get("/api/debug/source-status")
+    response = client.get("/api/debug/source-status", headers={"x-demo-admin-token": "test-admin"})
     assert response.status_code == 200
     payload = response.json()
     expected = {
@@ -266,12 +269,15 @@ def test_demo_results_page_renders(client, sample_markets):
     html = response.text
     assert "結果確認" in html
     assert "結果を確認する" in html
-    assert "結果候補" in html
-    assert "参考データ確認" in html
-    assert "判定状態" in html
     assert "結果待ち" in html
     assert "参加デモポイント" in html
-    assert "判定ソース" in html
+    assert "確定理由" in html
+    assert "参照元" in html
+    assert "明確な結果をまだ確認できていません。" in html
+    assert "<th>Market</th>" not in html
+    assert "<th>Outcome</th>" not in html
+    assert "pending" not in visible_html(html)
+    assert "推定デモリターン" not in html
 
 
 def test_ui_text_uses_required_words(client):
@@ -361,6 +367,10 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
         "参照ID",
         "Stake",
         "payout",
+        "<th>Market</th>",
+        "<th>Outcome</th>",
+        "推定デモリターン",
+        "pending",
         "Demo Point Management",
         "デモポイント管理",
     ]:
