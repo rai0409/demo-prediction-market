@@ -1,11 +1,27 @@
 import re
+from html.parser import HTMLParser
 
 from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id, insert_realtime_update
 from app.storage import replace_markets
 
 
+class TextOnlyParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
 def visible_html(html: str) -> str:
     return re.sub(r"<script\b[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+
+
+def visible_text(html: str) -> str:
+    parser = TextOnlyParser()
+    parser.feed(visible_html(html))
+    return " ".join(parser.parts)
 
 
 def test_health(client):
@@ -347,17 +363,17 @@ def test_public_pages_do_not_link_directly_to_include_all_api(client):
 
 
 def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
-    combined = visible_html(
+    raw_html = (
         client.get("/").text
         + client.get("/markets/sample-market-tokyo-rain").text
         + client.get("/demo-wallet").text
         + client.get("/demo-positions").text
         + client.get("/demo-results").text
     )
+    combined = visible_html(raw_html)
     for term in [
         "REST",
         "WebSocket",
-        "WS",
         "stale",
         "fallback",
         "polling",
@@ -375,6 +391,7 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
         "デモポイント管理",
     ]:
         assert term not in combined
+    assert not re.search(r"(?<![A-Za-z0-9])WS(?![A-Za-z0-9])", visible_text(raw_html))
 
 
 def test_demo_wallet_page_shows_non_cashable_non_transferable_non_exchangeable_notice(client):

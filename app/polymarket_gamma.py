@@ -340,7 +340,7 @@ def fetch_live_markets(limit: int = 50, timeout: float = 8.0) -> FetchResult:
     url = gamma_events_url(limit)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "DemoPredictionMarketViewer/0.2 (+local-mvp; no-trading)",
+        "User-Agent": "DemoPredictionMarketViewer/0.2 (+local-preview; no-trading)",
     }
     http_status: int | None = None
     try:

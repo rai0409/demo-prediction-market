@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import csv
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from io import StringIO
 from secrets import compare_digest, token_urlsafe
 from time import monotonic
-from urllib.parse import parse_qs
+from urllib.parse import urlencode, parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -37,6 +39,10 @@ from app.storage import (
     get_latest_resolution_candidate,
     get_market,
     init_db,
+    list_admin_audit_events,
+    list_admin_ledger_entries,
+    list_admin_settlements,
+    list_demo_user_overview,
     list_markets_with_resolution_candidates,
     list_ledger,
     list_demo_results,
@@ -127,9 +133,13 @@ DEMO_USER_HEADER = "x-demo-user"
 CSRF_COOKIE = "demo_csrf"
 CSRF_HEADER = "x-csrf-token"
 ADMIN_HEADER = "x-demo-admin-token"
+ADMIN_COOKIE = "demo_admin_token"
 RATE_LIMIT_WINDOW_SECONDS = 1.0
 RATE_LIMIT_MAX_POSTS = 3
+ADMIN_DEFAULT_LIMIT = 50
+ADMIN_MAX_LIMIT = 200
 _post_rate_events: dict[tuple[str, str], list[float]] = {}
+_operation_rejections: list[dict[str, str]] = []
 
 
 def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
@@ -215,17 +225,47 @@ def require_csrf(request: Request) -> JSONResponse | None:
     cookie_token = request.cookies.get(CSRF_COOKIE)
     request_token = request.headers.get(CSRF_HEADER) or request.query_params.get("csrf_token")
     if not cookie_token or not request_token or not compare_digest(cookie_token, request_token):
+        record_operation_rejection(request, "csrf", "操作確認に失敗")
         return JSONResponse(status_code=403, content={"detail": "操作を確認できませんでした。ページを再読み込みしてください。"})
     return None
 
 
+def admin_token_from_request(request: Request) -> str | None:
+    return (
+        request.headers.get(ADMIN_HEADER)
+        or request.cookies.get(ADMIN_COOKIE)
+        or request.query_params.get("admin_token")
+    )
+
+
+def is_admin_request(request: Request) -> bool:
+    if not settings.admin_token:
+        return False
+    supplied = admin_token_from_request(request)
+    return bool(supplied and compare_digest(settings.admin_token, supplied))
+
+
 def require_admin(request: Request) -> JSONResponse | None:
     if not settings.admin_token:
+        record_operation_rejection(request, "admin", "管理コード未設定")
         return JSONResponse(status_code=403, content={"detail": "内部操作は現在利用できません。"})
-    supplied = request.headers.get(ADMIN_HEADER) or request.query_params.get("admin_token")
-    if not supplied or not compare_digest(settings.admin_token, supplied):
+    if not is_admin_request(request):
+        record_operation_rejection(request, "admin", "管理コード不一致")
         return JSONResponse(status_code=403, content={"detail": "内部操作は許可されていません。"})
     return None
+
+
+def record_operation_rejection(request: Request, category: str, reason: str) -> None:
+    _operation_rejections.append(
+        {
+            "時刻": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "種別": category,
+            "理由": reason,
+            "経路": request.url.path,
+            "参加者": request.headers.get(DEMO_USER_HEADER) or request.cookies.get(DEMO_USER_COOKIE) or "-",
+        }
+    )
+    del _operation_rejections[:-100]
 
 
 def rate_limit_post(user_id: str, action: str) -> JSONResponse | None:
@@ -234,10 +274,84 @@ def rate_limit_post(user_id: str, action: str) -> JSONResponse | None:
     recent = [timestamp for timestamp in _post_rate_events.get(key, []) if now - timestamp < RATE_LIMIT_WINDOW_SECONDS]
     if len(recent) >= RATE_LIMIT_MAX_POSTS:
         _post_rate_events[key] = recent
+        record_operation_rejection_placeholder(user_id, action, "連続操作")
         return JSONResponse(status_code=429, content={"detail": "少し時間をおいてからもう一度お試しください。"})
     recent.append(now)
     _post_rate_events[key] = recent
     return None
+
+
+def record_operation_rejection_placeholder(user_id: str, action: str, reason: str) -> None:
+    _operation_rejections.append(
+        {
+            "時刻": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "種別": action,
+            "理由": reason,
+            "経路": "-",
+            "参加者": user_id,
+        }
+    )
+    del _operation_rejections[:-100]
+
+
+def _positive_int(value: str | None, default: int, maximum: int | None = None) -> int:
+    try:
+        parsed = int(value or "")
+    except ValueError:
+        parsed = default
+    if parsed < 1:
+        parsed = default
+    if maximum is not None:
+        parsed = min(parsed, maximum)
+    return parsed
+
+
+def _date_boundary(value: str | None, end_of_day: bool = False) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.strptime(value.strip(), "%Y-%m-%d")
+    except ValueError:
+        return ""
+    suffix = "23:59:59" if end_of_day else "00:00:00"
+    return f"{parsed.strftime('%Y-%m-%d')} {suffix}"
+
+
+def admin_filters(request: Request) -> dict[str, str | int]:
+    page = _positive_int(request.query_params.get("page"), 1)
+    limit = _positive_int(request.query_params.get("limit"), ADMIN_DEFAULT_LIMIT, ADMIN_MAX_LIMIT)
+    return {
+        "user_id": (request.query_params.get("participant") or request.query_params.get("user_id") or "").strip(),
+        "event_type": (request.query_params.get("event_type") or "").strip(),
+        "market_id": (request.query_params.get("market_id") or "").strip(),
+        "position_id": (request.query_params.get("position_id") or "").strip(),
+        "settled": (request.query_params.get("settled") or "").strip(),
+        "date_from": (request.query_params.get("date_from") or request.query_params.get("from") or "").strip(),
+        "date_to": (request.query_params.get("date_to") or request.query_params.get("to") or "").strip(),
+        "date_from_sql": _date_boundary(request.query_params.get("date_from") or request.query_params.get("from")),
+        "date_to_sql": _date_boundary(request.query_params.get("date_to") or request.query_params.get("to"), end_of_day=True),
+        "page": page,
+        "limit": limit,
+        "offset": (page - 1) * limit,
+    }
+
+
+def admin_query(filters: dict[str, str | int], *, page_delta: int = 0, export_type: str | None = None) -> str:
+    page = max(1, int(filters["page"]) + page_delta)
+    values = {
+        "participant": filters["user_id"],
+        "event_type": filters["event_type"],
+        "market_id": filters["market_id"],
+        "position_id": filters["position_id"],
+        "settled": filters["settled"],
+        "date_from": filters["date_from"],
+        "date_to": filters["date_to"],
+        "page": page,
+        "limit": filters["limit"],
+    }
+    if export_type:
+        values["type"] = export_type
+    return urlencode({key: value for key, value in values.items() if value not in ("", None)})
 
 
 def data_status_badge(markets: list[dict]) -> str:
@@ -315,6 +429,105 @@ def result_reason_label(status: str, confirmation_status: str, note: str | None)
     if confirmation_status == "unclear":
         return "明確な結果をまだ確認できていません。"
     return note or "結果確認待ちです。"
+
+
+def operation_label(event_type: str | None) -> str:
+    return {
+        "demo_prediction_created": "デモ参加記録",
+        "demo_prediction_replayed": "デモ参加の重複確認",
+        "demo_point_add_created": "デモポイント調整",
+        "demo_point_add_replayed": "デモポイント調整の重複確認",
+        "demo_balance_reset_created": "初期状態に戻す操作",
+        "demo_balance_reset_replayed": "初期状態操作の重複確認",
+        "settlement_paid": "参考スコア反映",
+        "settlement_loss": "結果記録",
+        "settlement_checked": "結果確認",
+        "settlement_ws_candidate_confirmed": "結果候補と参考データ一致",
+        "settlement_ws_candidate_unconfirmed": "結果候補の確認待ち",
+        "settlement_ws_candidate_conflict": "結果候補と参考データ不一致",
+        "settlement_rest_conservative": "参考データで確認",
+    }.get(event_type or "", event_type or "-")
+
+
+def history_type_label(entry_type: str | None) -> str:
+    return {
+        "initial": "初期付与",
+        "prediction": "デモ参加利用",
+        "demo_point_add": "調整",
+        "demo_balance_reset": "初期状態に戻す",
+        "settlement_win": "参考スコア反映",
+        "settlement_loss": "結果記録",
+    }.get(entry_type or "", entry_type or "-")
+
+
+def enrich_admin_rows(
+    audit_events: list[dict],
+    ledger_entries: list[dict],
+    settlements: list[dict],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    for event in audit_events:
+        event["operation_label"] = operation_label(event.get("event_type"))
+    for entry in ledger_entries:
+        entry["history_label"] = history_type_label(entry.get("entry_type"))
+    for row in settlements:
+        row["status_label"] = result_status_label(row.get("status", ""))
+    return audit_events, ledger_entries, settlements
+
+
+def admin_review_rows(conn: sqlite3.Connection, filters: dict[str, str | int]) -> tuple[list[dict], list[dict], list[dict]]:
+    reference_id = str(filters["position_id"])
+    audit_events = list_admin_audit_events(
+        conn,
+        user_id=str(filters["user_id"]) or None,
+        event_type=str(filters["event_type"]) or None,
+        reference_id=reference_id or None,
+        date_from=str(filters["date_from_sql"]) or None,
+        date_to=str(filters["date_to_sql"]) or None,
+        limit=int(filters["limit"]),
+        offset=int(filters["offset"]),
+    )
+    ledger_entries = list_admin_ledger_entries(
+        conn,
+        user_id=str(filters["user_id"]) or None,
+        market_id=str(filters["market_id"]) or None,
+        reference_id=reference_id or None,
+        date_from=str(filters["date_from_sql"]) or None,
+        date_to=str(filters["date_to_sql"]) or None,
+        limit=int(filters["limit"]),
+        offset=int(filters["offset"]),
+    )
+    settlements = list_admin_settlements(
+        conn,
+        user_id=str(filters["user_id"]) or None,
+        market_id=str(filters["market_id"]) or None,
+        position_id=str(filters["position_id"]) or None,
+        settled=str(filters["settled"]) or None,
+        date_from=str(filters["date_from_sql"]) or None,
+        date_to=str(filters["date_to_sql"]) or None,
+        limit=int(filters["limit"]),
+        offset=int(filters["offset"]),
+    )
+    return enrich_admin_rows(audit_events, ledger_entries, settlements)
+
+
+def csv_safe(value) -> str:
+    text = "" if value is None else str(value)
+    if text.startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
+
+
+def csv_response(filename: str, headers: list[str], rows: list[dict]) -> Response:
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow([csv_safe(row.get(header, "")) for header in headers])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def enrich_result_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
@@ -491,6 +704,128 @@ async def demo_wallet_page(request: Request, conn: sqlite3.Connection = Depends(
         ),
     )
     return prepare_response(response, request, user_id)
+
+
+@app.get("/admin/audit", response_class=HTMLResponse)
+async def admin_audit_page(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    if not is_admin_request(request):
+        response = templates.TemplateResponse(
+            request,
+            "admin_audit.html",
+            template_context(
+                request,
+                conn,
+                user_id,
+                authorized=False,
+                filters=admin_filters(request),
+                users=[],
+                audit_events=[],
+                ledger_entries=[],
+                settlements=[],
+                rejected_operations=[],
+            ),
+            status_code=403,
+        )
+        return prepare_response(response, request, user_id)
+
+    filters = admin_filters(request)
+    users = list_demo_user_overview(conn)
+    if filters["user_id"]:
+        users = [user for user in users if user["user_id"] == filters["user_id"]]
+    audit_events, ledger_entries, settlements = admin_review_rows(conn, filters)
+    response = templates.TemplateResponse(
+        request,
+        "admin_audit.html",
+        template_context(
+            request,
+            conn,
+            user_id,
+            authorized=True,
+            filters=filters,
+            users=users,
+            audit_events=audit_events,
+            ledger_entries=ledger_entries,
+            settlements=settlements,
+            rejected_operations=list(reversed(_operation_rejections[-50:])),
+            query_current=admin_query(filters),
+            query_prev=admin_query(filters, page_delta=-1),
+            query_next=admin_query(filters, page_delta=1),
+            export_audit_query=admin_query(filters, export_type="audit"),
+            export_ledger_query=admin_query(filters, export_type="ledger"),
+            export_settlements_query=admin_query(filters, export_type="settlements"),
+        ),
+    )
+    return prepare_response(response, request, user_id)
+
+
+@app.get("/admin/audit.csv")
+async def admin_audit_csv(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    filters = admin_filters(request)
+    audit_events, ledger_entries, settlements = admin_review_rows(conn, filters)
+    export_type = (request.query_params.get("type") or "audit").strip()
+    if export_type == "ledger":
+        headers = [
+            "created_at",
+            "user_id",
+            "market_id",
+            "history_label",
+            "amount",
+            "balance_before",
+            "balance_after",
+            "reference_type",
+            "reference_id",
+            "note",
+        ]
+        return csv_response("admin-ledger.csv", headers, ledger_entries)
+    if export_type == "settlements":
+        headers = [
+            "created_at",
+            "user_id",
+            "position_id",
+            "market_id",
+            "outcome",
+            "status_label",
+            "payout",
+            "settlement_note",
+            "settled_at",
+        ]
+        return csv_response("admin-settlements.csv", headers, settlements)
+    headers = [
+        "created_at",
+        "user_id",
+        "operation_label",
+        "route",
+        "reference_type",
+        "reference_id",
+        "note",
+    ]
+    return csv_response("admin-audit.csv", headers, audit_events)
+
+
+@app.post("/admin/audit/access")
+async def admin_audit_access(request: Request):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    body = (await request.body()).decode("utf-8")
+    form = parse_qs(body)
+    supplied = (form.get("admin_token", [""])[0] or "").strip()
+    if not settings.admin_token or not supplied or not compare_digest(settings.admin_token, supplied):
+        record_operation_rejection(request, "admin", "管理画面コード不一致")
+        return JSONResponse(status_code=403, content={"detail": "内部確認画面は利用できません。"})
+    response = RedirectResponse(url="/admin/audit", status_code=303)
+    response.set_cookie(
+        ADMIN_COOKIE,
+        supplied,
+        max_age=60 * 30,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
 
 
 @app.post("/demo-user")

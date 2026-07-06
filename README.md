@@ -131,6 +131,16 @@ This is not production authentication. It is not OAuth, email login, password lo
 
 Internal operations such as demo point adjustment, balance reset, forced result recording, and manual data refresh are protected by `DEMO_ADMIN_TOKEN`. If `DEMO_ADMIN_TOKEN` is not set, those internal operations are disabled. State-changing requests also use a lightweight cookie token check and a small in-process rate limit.
 
+## Operations Review
+
+`GET /admin/audit` provides an internal review screen for operations staff. It is not a general user flow and is not linked from the public navigation.
+
+The screen requires `DEMO_ADMIN_TOKEN`. Without a valid management code, it does not show operational records. It shows participant summaries, operation records, demo point history, result records, and recent rejected operation signals. It is read-only; it does not delete, cancel, or re-run any operation.
+
+Filters are available for participant, operation type, market ID, position ID, result state, and date range. The screen uses page/limit parameters with a capped limit so large local datasets do not overload the browser.
+
+CSV export is available from the same internal screen for operation records, demo point history, and result records. The export uses the active filters and requires the same management code. CSV cells are sanitized to reduce spreadsheet formula execution risk.
+
 ## Result Confirmation Policy
 
 Result confirmation is conservative. A result is reflected to the local Forecast Score only when the app can identify a clear outcome from stored reference data. A public result candidate alone is treated as a candidate, not a final result.

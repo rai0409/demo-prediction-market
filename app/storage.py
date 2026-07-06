@@ -455,6 +455,131 @@ def list_audit_events(conn: sqlite3.Connection, limit: int = 100) -> list[dict[s
     return [dict(row) for row in rows]
 
 
+def list_admin_audit_events(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str | None = None,
+    event_type: str | None = None,
+    reference_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    sql = "select * from demo_audit_events where 1 = 1"
+    params: list[Any] = []
+    if user_id:
+        sql += " and user_id = ?"
+        params.append(user_id)
+    if event_type:
+        sql += " and event_type = ?"
+        params.append(event_type)
+    if reference_id:
+        sql += " and reference_id = ?"
+        params.append(reference_id)
+    if date_from:
+        sql += " and created_at >= ?"
+        params.append(date_from)
+    if date_to:
+        sql += " and created_at <= ?"
+        params.append(date_to)
+    sql += " order by id desc limit ? offset ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_admin_ledger_entries(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str | None = None,
+    market_id: str | None = None,
+    reference_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    sql = "select * from demo_point_ledger where 1 = 1"
+    params: list[Any] = []
+    if user_id:
+        sql += " and user_id = ?"
+        params.append(user_id)
+    if market_id:
+        sql += " and market_id = ?"
+        params.append(market_id)
+    if reference_id:
+        sql += " and reference_id = ?"
+        params.append(reference_id)
+    if date_from:
+        sql += " and created_at >= ?"
+        params.append(date_from)
+    if date_to:
+        sql += " and created_at <= ?"
+        params.append(date_to)
+    sql += " order by id desc limit ? offset ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_admin_settlements(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str | None = None,
+    market_id: str | None = None,
+    position_id: str | None = None,
+    settled: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    sql = "select * from demo_settlements where 1 = 1"
+    params: list[Any] = []
+    if user_id:
+        sql += " and user_id = ?"
+        params.append(user_id)
+    if market_id:
+        sql += " and market_id = ?"
+        params.append(market_id)
+    if position_id:
+        sql += " and position_id = ?"
+        params.append(position_id)
+    if settled == "settled":
+        sql += " and status in ('settled_win', 'settled_loss')"
+    elif settled == "unsettled":
+        sql += " and status not in ('settled_win', 'settled_loss')"
+    if date_from:
+        sql += " and created_at >= ?"
+        params.append(date_from)
+    if date_to:
+        sql += " and created_at <= ?"
+        params.append(date_to)
+    sql += " order by id desc limit ? offset ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_demo_user_overview(conn: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        select
+            user_id,
+            balance,
+            (select count(*) from simulated_positions where simulated_positions.user_id = demo_users.user_id) as position_count,
+            (select count(*) from demo_point_ledger where demo_point_ledger.user_id = demo_users.user_id) as history_count,
+            (select count(*) from demo_settlements where demo_settlements.user_id = demo_users.user_id) as result_count
+        from demo_users
+        order by user_id
+        limit ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def ledger_summary(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> dict[str, Any]:
     rows = list_ledger(conn, user_id)
     return {

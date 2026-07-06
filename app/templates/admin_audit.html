@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}内部確認{% endblock %}
+{% block content %}
+<section class="hero compact-hero">
+  <div>
+    <h1>内部確認</h1>
+    <p class="subtitle">参加者ごとの操作、デモポイント履歴、結果記録を確認します。</p>
+  </div>
+</section>
+
+<section class="notice">デモポイントは非換金・譲渡不可・交換不可です。商品・ギフト券・Pay・株引換券・暗号資産とは交換できません。</section>
+
+{% if not authorized %}
+<section class="panel-card">
+  <h2>管理コード確認</h2>
+  <p class="muted">内部確認画面を表示するには管理コードが必要です。</p>
+  <form class="admin-access-form" action="/admin/audit/access?csrf_token={{ csrf_token }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="admin-token">管理コード</label>
+    <input id="admin-token" name="admin_token" type="password" autocomplete="off">
+    <button type="submit">確認する</button>
+  </form>
+</section>
+{% else %}
+<section class="panel-card">
+  <h2>絞り込み</h2>
+  <form class="audit-filter-form" method="get" action="/admin/audit">
+    <label for="filter-participant">参加者</label>
+    <input id="filter-participant" name="participant" type="text" value="{{ filters.user_id }}" autocomplete="off">
+    <label for="filter-event">操作種別</label>
+    <input id="filter-event" name="event_type" type="text" value="{{ filters.event_type }}" autocomplete="off">
+    <label for="filter-market">マーケットID</label>
+    <input id="filter-market" name="market_id" type="text" value="{{ filters.market_id }}" autocomplete="off">
+    <label for="filter-position">参加記録ID</label>
+    <input id="filter-position" name="position_id" type="text" value="{{ filters.position_id }}" autocomplete="off">
+    <label for="filter-settled">結果状態</label>
+    <select id="filter-settled" name="settled">
+      <option value="" {% if not filters.settled %}selected{% endif %}>すべて</option>
+      <option value="settled" {% if filters.settled == "settled" %}selected{% endif %}>確定済み</option>
+      <option value="unsettled" {% if filters.settled == "unsettled" %}selected{% endif %}>未確定</option>
+    </select>
+    <label for="filter-date-from">開始日</label>
+    <input id="filter-date-from" name="date_from" type="date" value="{{ filters.date_from }}">
+    <label for="filter-date-to">終了日</label>
+    <input id="filter-date-to" name="date_to" type="date" value="{{ filters.date_to }}">
+    <label for="filter-limit">表示件数</label>
+    <input id="filter-limit" name="limit" type="number" min="1" max="200" value="{{ filters.limit }}">
+    <input name="page" type="hidden" value="1">
+    <button type="submit">表示する</button>
+  </form>
+  <div class="hidden-summary">
+    <a href="/admin/audit.csv?{{ export_audit_query }}">操作記録CSV</a>
+    <a href="/admin/audit.csv?{{ export_ledger_query }}">デモポイント履歴CSV</a>
+    <a href="/admin/audit.csv?{{ export_settlements_query }}">結果記録CSV</a>
+  </div>
+  <p class="muted">表示件数は最大200件です。現在 {{ filters.page }} ページ目を表示しています。</p>
+</section>
+
+<nav class="hidden-summary" aria-label="内部確認ページ">
+  <a href="/admin/audit?{{ query_prev }}">前のページ</a>
+  <a href="/admin/audit?{{ query_next }}">次のページ</a>
+</nav>
+
+<section>
+  <div class="section-heading">
+    <h2>参加者概要</h2>
+    <p>残高、参加記録、履歴、結果記録の件数です。</p>
+  </div>
+  <table>
+    <thead><tr><th>参加者</th><th>マイスコア</th><th>参加記録</th><th>履歴</th><th>結果記録</th></tr></thead>
+    <tbody>
+      {% for user in users %}
+      <tr><td>{{ user.user_id }}</td><td>{{ user.balance|number }}</td><td>{{ user.position_count }}</td><td>{{ user.history_count }}</td><td>{{ user.result_count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <div class="section-heading">
+    <h2>操作記録</h2>
+    <p>内部操作、参加、結果確認などの記録です。</p>
+  </div>
+  <table>
+    <thead><tr><th>日時</th><th>参加者</th><th>操作</th><th>経路</th><th>対象</th><th>メモ</th></tr></thead>
+    <tbody>
+      {% for event in audit_events %}
+      <tr><td>{{ event.created_at|date }}</td><td>{{ event.user_id or "-" }}</td><td>{{ event.operation_label }}</td><td>{{ event.route or "-" }}</td><td>{{ event.reference_type or "-" }} {{ event.reference_id or "" }}</td><td>{{ event.note or "-" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <div class="section-heading">
+    <h2>デモポイント履歴</h2>
+    <p>非換金デモポイントの増減履歴です。</p>
+  </div>
+  <table>
+    <thead><tr><th>日時</th><th>参加者</th><th>マーケット</th><th>種別</th><th>増減</th><th>前回</th><th>現在</th><th>対象</th><th>メモ</th></tr></thead>
+    <tbody>
+      {% for entry in ledger_entries %}
+      <tr><td>{{ entry.created_at|date }}</td><td>{{ entry.user_id }}</td><td>{{ entry.market_id or "-" }}</td><td>{{ entry.history_label }}</td><td>{{ entry.amount|number }}</td><td>{{ entry.balance_before|number }}</td><td>{{ entry.balance_after|number }}</td><td>{{ entry.reference_type or "-" }} {{ entry.reference_id or "" }}</td><td>{{ entry.note }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <div class="section-heading">
+    <h2>結果記録</h2>
+    <p>結果確認と参考スコア反映の状況です。</p>
+  </div>
+  <table>
+    <thead><tr><th>作成日時</th><th>参加者</th><th>参加記録ID</th><th>マーケット</th><th>選択</th><th>状態</th><th>参考スコア</th><th>理由</th><th>確定日時</th></tr></thead>
+    <tbody>
+      {% for row in settlements %}
+      <tr><td>{{ row.created_at|date }}</td><td>{{ row.user_id }}</td><td>{{ row.position_id }}</td><td>{{ row.market_id }}</td><td>{{ row.outcome }}</td><td>{{ row.status_label }}</td><td>{{ row.payout|number }}</td><td>{{ row.settlement_note or "-" }}</td><td>{{ row.settled_at|date }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <div class="section-heading">
+    <h2>拒否・異常操作</h2>
+    <p>管理コード不一致、操作確認失敗、連続操作などの直近記録です。</p>
+  </div>
+  <table>
+    <thead><tr><th>日時</th><th>参加者</th><th>種別</th><th>理由</th><th>経路</th></tr></thead>
+    <tbody>
+      {% for item in rejected_operations %}
+      <tr><td>{{ item["時刻"] }}</td><td>{{ item["参加者"] }}</td><td>{{ item["種別"] }}</td><td>{{ item["理由"] }}</td><td>{{ item["経路"] }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}
