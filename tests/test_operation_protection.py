@@ -52,6 +52,12 @@ def test_internal_diagnostics_require_admin_token(client):
     assert candidates_response.status_code == 403
 
 
+def test_internal_diagnostics_reject_query_admin_token(client):
+    response = client.get("/api/debug/source-status?admin_token=test-admin")
+
+    assert response.status_code == 403
+
+
 def test_post_without_csrf_token_is_rejected(client, sample_markets):
     response = client.post(
         "/api/demo/predict",
@@ -80,6 +86,28 @@ def test_rendered_csrf_token_matches_cookie(client):
     assert f'data-csrf-token="{token}"' in response.text
     assert f'name="csrf_token" value="{token}"' in response.text
     assert re.search(r'action="/demo-user\?csrf_token=[^"]+"', response.text)
+
+
+def test_secure_cookie_setting_adds_secure_attribute(client, monkeypatch):
+    from dataclasses import replace
+
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", replace(main.settings, cookie_secure=True))
+
+    page = client.get("/", headers={"x-demo-user": "secure-user"})
+    token = page.cookies["demo_csrf"]
+    admin = client.post(
+        f"/admin/audit/access?csrf_token={token}",
+        data={"admin_token": "test-admin"},
+        auto_security=False,
+    )
+
+    set_cookie = "\n".join(page.headers.get_list("set-cookie") + admin.headers.get_list("set-cookie"))
+    assert "demo_csrf=" in set_cookie
+    assert "demo_user_id=secure-user" in set_cookie
+    assert "demo_admin_token=test-admin" in set_cookie
+    assert set_cookie.count("Secure") >= 3
 
 
 def test_demo_participant_code_is_normalized(client):

@@ -371,6 +371,12 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
         + client.get("/demo-results").text
     )
     combined = visible_html(raw_html)
+    neutralized_market_terms = [
+        "最良" + "買い" + "気配",
+        "最良" + "売り" + "気配",
+        "買い" + "気配",
+        "売り" + "気配",
+    ]
     for term in [
         "REST",
         "WebSocket",
@@ -389,6 +395,7 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
         "pending",
         "Demo Point Management",
         "デモポイント管理",
+        *neutralized_market_terms,
     ]:
         assert term not in combined
     assert not re.search(r"(?<![A-Za-z0-9])WS(?![A-Za-z0-9])", visible_text(raw_html))

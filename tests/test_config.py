@@ -1,4 +1,14 @@
+from pathlib import Path
+
 from app.config import get_settings
+
+
+def test_env_example_lists_limited_operation_controls():
+    text = Path(".env.example").read_text()
+
+    assert "DEMO_ADMIN_TOKEN=" in text
+    assert "DEMO_PREDICTION_MAX_DEMO_STAKE=" in text
+    assert "DEMO_COOKIE_SECURE=" in text
 
 
 def test_live_env_parsing_enabled_values(monkeypatch):
@@ -56,3 +66,11 @@ def test_websocket_config_clamps(monkeypatch):
     settings = get_settings()
     assert settings.ws_top_n == 1
     assert settings.ws_stale_seconds == 600
+
+
+def test_cookie_secure_config(monkeypatch):
+    monkeypatch.setenv("DEMO_COOKIE_SECURE", "true")
+    assert get_settings().cookie_secure is True
+
+    monkeypatch.setenv("DEMO_COOKIE_SECURE", "0")
+    assert get_settings().cookie_secure is False

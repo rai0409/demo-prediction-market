@@ -112,6 +112,14 @@ scripts/run_live.sh
 
 Open `http://127.0.0.1:8093`.
 
+## Operation settings
+
+`.env.example` lists the local operation variables. Set `DEMO_ADMIN_TOKEN` to a strong random management code before enabling internal operations. The management code is accepted by the internal header, the management-code form, or the short-lived HttpOnly admin cookie; it is not accepted from URL query parameters.
+
+Set `DEMO_COOKIE_SECURE=1` when serving over HTTPS for external collaborator checks. Keep it disabled for plain local HTTP.
+
+`DEMO_PREDICTION_MAX_DEMO_STAKE` caps one local demo participation. Demo points remain non-cash, non-transferable, and non-exchangeable regardless of this cap.
+
 ## Limited check flow
 
 1. Open `http://127.0.0.1:8093`.
@@ -237,9 +245,12 @@ Actual screenshots are not committed yet.
 ## Limitations
 
 - Local demo only.
-- No authentication.
-- No production deployment setup.
+- Participant codes are not production authentication.
+- No production deployment setup or external monitoring.
 - No real order placement.
+- No role-based administrator permissions beyond the shared management code.
+- No tamper-resistant audit log storage.
+- No correction, reversal-entry, or re-settlement workflow.
 - Public API format may change.
 - Legal/regulatory review is required before any real-money, external point, or production use.
 - Not production-ready.
@@ -247,10 +258,10 @@ Actual screenshots are not committed yet.
 ## Phase 3 TODO
 
 - Authentication and role-based access for internal operations.
-- CSRF protection for state-changing forms.
-- Rate limits for public and demo-participation endpoints.
-- Production-grade administrator permissions and audit review screens.
-- Abuse/fraud detection and operational monitoring.
+- Tamper-resistant audit log storage and retention policy.
+- Correction and reversal-entry workflow for operational mistakes.
+- Abuse/fraud detection and external operational monitoring.
+- Production deployment hardening.
 
 ## v0.7 Freshness And Results Foundation
 

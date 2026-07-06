@@ -17,6 +17,14 @@ def test_admin_audit_rejects_without_admin_code(client):
     assert "操作記録" not in response.text
 
 
+def test_admin_audit_rejects_query_admin_code(client):
+    response = client.get("/admin/audit?admin_token=test-admin")
+
+    assert response.status_code == 403
+    assert "管理コード確認" in response.text
+    assert "操作記録" not in response.text
+
+
 def test_admin_audit_renders_records_with_admin_header(client, db_conn, sample_markets):
     market_id = sample_markets[0]["market_id"]
     _join(client, "alice", market_id, stake=30)
@@ -83,6 +91,12 @@ def test_admin_audit_page_does_not_add_forbidden_terms(client):
 
 def test_admin_audit_csv_rejects_without_admin_code(client):
     response = client.get("/admin/audit.csv?type=audit")
+
+    assert response.status_code == 403
+
+
+def test_admin_audit_csv_rejects_query_admin_code(client):
+    response = client.get("/admin/audit.csv?type=audit&admin_token=test-admin")
 
     assert response.status_code == 403
 

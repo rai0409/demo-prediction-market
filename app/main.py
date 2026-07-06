@@ -168,6 +168,7 @@ def set_csrf_cookie(response, token: str):
         max_age=60 * 60 * 24,
         httponly=False,
         samesite="lax",
+        secure=settings.cookie_secure,
     )
     return response
 
@@ -180,6 +181,7 @@ def set_demo_user_cookie_if_needed(response, request: Request, user_id: str):
             max_age=60 * 60 * 24 * 30,
             httponly=True,
             samesite="lax",
+            secure=settings.cookie_secure,
         )
     return response
 
@@ -217,6 +219,7 @@ def set_lang_cookie_if_needed(response, request: Request):
             max_age=60 * 60 * 24 * 365,
             httponly=False,
             samesite="lax",
+            secure=settings.cookie_secure,
         )
     return response
 
@@ -234,7 +237,6 @@ def admin_token_from_request(request: Request) -> str | None:
     return (
         request.headers.get(ADMIN_HEADER)
         or request.cookies.get(ADMIN_COOKIE)
-        or request.query_params.get("admin_token")
     )
 
 
@@ -824,6 +826,7 @@ async def admin_audit_access(request: Request):
         max_age=60 * 30,
         httponly=True,
         samesite="lax",
+        secure=settings.cookie_secure,
     )
     return response
 
@@ -844,6 +847,7 @@ async def set_demo_user(request: Request, conn: sqlite3.Connection = Depends(get
         max_age=60 * 60 * 24 * 30,
         httponly=True,
         samesite="lax",
+        secure=settings.cookie_secure,
     )
     return response
 

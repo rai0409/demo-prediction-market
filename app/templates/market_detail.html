@@ -25,8 +25,8 @@
       <div><dt>24時間の関心度</dt><dd>{{ market.volume_24hr|number }}</dd></div>
       <div><dt>参考データ量</dt><dd>{{ market.liquidity|number }}</dd></div>
       <div><dt>終了予定</dt><dd>{{ market.end_date|date }}</dd></div>
-      <div><dt>最良買い気配</dt><dd>{{ market.best_bid|number }}</dd></div>
-      <div><dt>最良売り気配</dt><dd>{{ market.best_ask|number }}</dd></div>
+      <div><dt>参考下限レンジ</dt><dd>{{ market.best_bid|number }}</dd></div>
+      <div><dt>参考上限レンジ</dt><dd>{{ market.best_ask|number }}</dd></div>
       <div><dt>直近参考値</dt><dd>{{ market.last_trade_price|number }}</dd></div>
       <div><dt>最終更新</dt><dd>{{ market.ws_last_event_at|date }}</dd></div>
     </dl>
