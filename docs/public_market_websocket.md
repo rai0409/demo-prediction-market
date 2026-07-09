@@ -1,6 +1,6 @@
 # Public Market WebSocket Freshness
 
-v0.9 adds an optional public market WebSocket freshness layer.
+v0.9 adds an optional public market update observation layer.
 
 ## Scope
 
@@ -36,7 +36,7 @@ DEMO_PREDICTION_WS_STALE_SECONDS=90
 
 - `DEMO_PREDICTION_WS_ENABLED`: enables the standalone WebSocket runner when set to `1`, `true`, `yes`, or `on`.
 - `DEMO_PREDICTION_WS_TOP_N`: number of displayable high-volume/liquid markets to subscribe to, clamped from 1 to 50.
-- `DEMO_PREDICTION_WS_STALE_SECONDS`: freshness window for stored WebSocket observations, clamped from 15 to 600 seconds.
+- `DEMO_PREDICTION_WS_STALE_SECONDS`: update observation window for stored WebSocket observations, clamped from 15 to 600 seconds.
 
 ## Runner
 

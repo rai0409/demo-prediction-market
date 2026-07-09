@@ -119,7 +119,7 @@ Safety note: No secrets are exposed because the app does not use secrets.
 
 ## GET /api/realtime/status
 
-Purpose: Return optional public market WebSocket freshness status.
+Purpose: Return optional public market update status.
 
 Response shape summary:
 

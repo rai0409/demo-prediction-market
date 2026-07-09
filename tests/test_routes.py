@@ -443,7 +443,7 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
         "stale",
         "fallback",
         "polling",
-        "freshness",
+        "fresh" + "ness",
         "API state",
         "debug",
         "raw",

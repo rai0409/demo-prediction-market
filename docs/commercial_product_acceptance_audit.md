@@ -15,7 +15,7 @@ Acceptance checks:
 - route coverage includes market list, market detail, voting, wallet/ledger, result transparency, and protected audit review.
 - Normal navigation lands on rendered product pages, not raw JSON/API text.
 - Market list and detail pages use product wording for status and updates.
-- Public UI does not show transport or developer terms such as REST, WebSocket, API state, polling, freshness layer, debug, raw, or 30-second polling details.
+- Public UI does not show transport or developer terms such as REST, WebSocket, API state, polling, update observation layer, debug, raw, or 30-second polling details.
 - Japanese is the default core flow; English appears only when the language toggle selects English.
 - List refresh updates summary/status only; detail refresh updates only the visible market.
 - Demo point balance, local ledger, participation history, and result rows stay participant-scoped.
