@@ -16,6 +16,9 @@ class Settings:
     admin_token: str = ""
     max_demo_stake: float = 10000.0
     cookie_secure: bool = False
+    strict_participant_access: bool = False
+    participant_codes: str = ""
+    session_cookie_name: str = "demo_user_id"
 
 
 def _int_env(name: str, default: int) -> int:
@@ -54,4 +57,7 @@ def get_settings() -> Settings:
         admin_token=os.getenv("DEMO_ADMIN_TOKEN", "").strip(),
         max_demo_stake=float(max(1, _int_env("DEMO_PREDICTION_MAX_DEMO_STAKE", 10000))),
         cookie_secure=_bool_env("DEMO_COOKIE_SECURE", False),
+        strict_participant_access=_bool_env("DEMO_STRICT_PARTICIPANT_ACCESS", False),
+        participant_codes=os.getenv("DEMO_PARTICIPANT_CODES", "").strip(),
+        session_cookie_name=os.getenv("DEMO_SESSION_COOKIE_NAME", "demo_user_id").strip() or "demo_user_id",
     )

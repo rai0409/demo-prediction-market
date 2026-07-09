@@ -17,7 +17,7 @@ import sqlite3
 
 from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
-from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, wallet_snapshot
+from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, reverse_demo_ledger_entry, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response
 from app.realtime import (
     attach_realtime_updates,
@@ -52,6 +52,7 @@ from app.storage import (
     list_resolution_candidate_updates,
     list_snapshots,
     normalize_demo_user_id,
+    verify_audit_chain,
 )
 
 
@@ -124,6 +125,12 @@ class ResetDemoBalanceRequest(BaseModel):
     idempotency_key: str | None = None
 
 
+class LedgerReversalRequest(BaseModel):
+    ledger_entry_id: int
+    reason: str
+    idempotency_key: str | None = None
+
+
 async def get_conn() -> sqlite3.Connection:
     return db
 
@@ -142,11 +149,47 @@ _post_rate_events: dict[tuple[str, str], list[float]] = {}
 _operation_rejections: list[dict[str, str]] = []
 
 
+def demo_session_cookie_name() -> str:
+    return settings.session_cookie_name or DEMO_USER_COOKIE
+
+
+def allowed_participant_codes() -> set[str]:
+    return {
+        normalize_demo_user_id(code)
+        for code in settings.participant_codes.split(",")
+        if normalize_demo_user_id(code)
+    }
+
+
+def validate_strict_participant_code(raw_code: str | None) -> str | None:
+    code = normalize_demo_user_id(raw_code)
+    allowed = allowed_participant_codes()
+    if not allowed or code not in allowed:
+        return None
+    return code
+
+
 def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
+    cookie_name = demo_session_cookie_name()
+    if settings.strict_participant_access:
+        raw_override = request.query_params.get("demo_user") or request.headers.get(DEMO_USER_HEADER)
+        if raw_override:
+            user_id = validate_strict_participant_code(raw_override)
+            if user_id is None:
+                raise HTTPException(status_code=403, detail="participant code is not allowed for this demo")
+            return ensure_demo_user(conn, user_id)
+        cookie_user_id = request.cookies.get(cookie_name)
+        if cookie_user_id:
+            user_id = validate_strict_participant_code(cookie_user_id)
+            if user_id is None:
+                raise HTTPException(status_code=403, detail="participant session is not allowed for this demo")
+            return ensure_demo_user(conn, user_id)
+        return ensure_demo_user(conn, DEMO_USER_ID)
+
     user_id = (
         request.query_params.get("demo_user")
         or request.headers.get(DEMO_USER_HEADER)
-        or request.cookies.get(DEMO_USER_COOKIE)
+        or request.cookies.get(cookie_name)
         or DEMO_USER_ID
     )
     return ensure_demo_user(conn, normalize_demo_user_id(user_id))
@@ -176,7 +219,7 @@ def set_csrf_cookie(response, token: str):
 def set_demo_user_cookie_if_needed(response, request: Request, user_id: str):
     if request.query_params.get("demo_user") or request.headers.get(DEMO_USER_HEADER):
         response.set_cookie(
-            DEMO_USER_COOKIE,
+            demo_session_cookie_name(),
             user_id,
             max_age=60 * 60 * 24 * 30,
             httponly=True,
@@ -264,7 +307,7 @@ def record_operation_rejection(request: Request, category: str, reason: str) -> 
             "種別": category,
             "理由": reason,
             "経路": request.url.path,
-            "参加者": request.headers.get(DEMO_USER_HEADER) or request.cookies.get(DEMO_USER_COOKIE) or "-",
+            "参加者": request.headers.get(DEMO_USER_HEADER) or request.cookies.get(demo_session_cookie_name()) or "-",
         }
     )
     del _operation_rejections[:-100]
@@ -838,11 +881,19 @@ async def set_demo_user(request: Request, conn: sqlite3.Connection = Depends(get
         return csrf_error
     body = (await request.body()).decode("utf-8")
     form = parse_qs(body)
-    user_id = ensure_demo_user(conn, normalize_demo_user_id(form.get("demo_user", [""])[0]))
+    requested_user_id = form.get("demo_user", [""])[0]
+    if settings.strict_participant_access:
+        user_id = validate_strict_participant_code(requested_user_id)
+        if user_id is None:
+            record_operation_rejection(request, "participant", "参加者コード不一致")
+            return JSONResponse(status_code=403, content={"detail": "このデモで許可された参加者コードを入力してください。"})
+    else:
+        user_id = normalize_demo_user_id(requested_user_id)
+    user_id = ensure_demo_user(conn, user_id)
     lang = detect_lang(request)
     response = RedirectResponse(url=f"/?lang={lang}", status_code=303)
     response.set_cookie(
-        DEMO_USER_COOKIE,
+        demo_session_cookie_name(),
         user_id,
         max_age=60 * 60 * 24 * 30,
         httponly=True,
@@ -923,6 +974,14 @@ async def api_debug_source_status(request: Request, conn: sqlite3.Connection = D
     return source_status(conn, settings)
 
 
+@app.get("/api/admin/audit/integrity")
+async def api_admin_audit_integrity(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    return verify_audit_chain(conn)
+
+
 @app.get("/api/realtime/status")
 async def api_realtime_status(conn: sqlite3.Connection = Depends(get_conn)):
     return realtime_status(conn, settings)
@@ -990,6 +1049,32 @@ async def api_demo_wallet_reset(
             reason=payload.reason,
             idempotency_key=payload.idempotency_key,
             user_id=user_id,
+        )
+    except DemoWalletError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+
+@app.post("/api/demo/ledger/reversal")
+async def api_demo_ledger_reversal(
+    request: Request,
+    payload: LedgerReversalRequest,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    rate_error = rate_limit_post("admin", "demo-ledger-reversal")
+    if rate_error:
+        return rate_error
+    try:
+        return reverse_demo_ledger_entry(
+            conn,
+            ledger_entry_id=payload.ledger_entry_id,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
         )
     except DemoWalletError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})

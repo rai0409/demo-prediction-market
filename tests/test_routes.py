@@ -1,8 +1,18 @@
 import re
+from dataclasses import replace
 from pathlib import Path
 from html.parser import HTMLParser
 
-from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id, insert_realtime_update, list_ledger
+from app.storage import (
+    INITIAL_DEMO_POINTS,
+    get_balance,
+    get_ledger_entry,
+    get_settlement_by_position_id,
+    insert_audit_event,
+    insert_realtime_update,
+    list_ledger,
+    verify_audit_chain,
+)
 from app.storage import replace_markets
 
 
@@ -81,6 +91,44 @@ def test_api_markets_include_all_returns_hidden_markets(client, db_conn, sample_
     assert default_response["count"] == 1
     assert include_all_response["count"] == 2
     assert include_all_response["hidden_closed_count"] == 1
+
+
+def test_strict_participant_mode_rejects_unknown_code(client, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(
+        main,
+        "settings",
+        replace(main.settings, strict_participant_access=True, participant_codes="collab-1"),
+    )
+
+    response = client.post("/demo-user", data={"demo_user": "unknown"})
+
+    assert response.status_code == 403
+
+
+def test_strict_participant_mode_accepts_configured_code_and_sets_cookie(client, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(
+        main,
+        "settings",
+        replace(main.settings, strict_participant_access=True, participant_codes="collab-1"),
+    )
+
+    response = client.post("/demo-user", data={"demo_user": "collab-1"})
+
+    assert response.status_code == 303
+    assert response.cookies.get("demo_user_id") == "collab-1"
+    assert "httponly" in response.headers["set-cookie"].lower()
+
+
+def test_non_strict_participant_override_remains_compatible(client):
+    response = client.get("/api/demo/balance", headers={"x-demo-user": "ad-hoc-collab"})
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "ad-hoc-collab"
+    assert response.json()["balance"] == INITIAL_DEMO_POINTS
 
 
 def test_post_demo_predict(client, sample_markets):
@@ -323,6 +371,138 @@ def test_wallet_ledger_consistency_after_vote(client, db_conn, sample_markets):
     assert "75.00" in wallet
 
 
+def test_new_audit_events_receive_event_hash(db_conn):
+    event = insert_audit_event(
+        db_conn,
+        event_type="test_event",
+        user_id="participant-1",
+        route="/test",
+        after={"ok": True},
+        note="test audit event",
+    )
+
+    assert event["event_hash"]
+    assert event["previous_event_hash"] == ""
+    assert event["integrity_payload_json"]
+
+
+def test_verify_audit_chain_returns_verified_for_untampered_events(db_conn):
+    insert_audit_event(db_conn, event_type="first", user_id="participant-1", after={"step": 1})
+    insert_audit_event(db_conn, event_type="second", user_id="participant-1", after={"step": 2})
+
+    result = verify_audit_chain(db_conn)
+
+    assert result["integrity_status"] == "verified"
+    assert result["checked_count"] == 2
+    assert result["verified_count"] == 2
+    assert result["broken_count"] == 0
+
+
+def test_verify_audit_chain_returns_broken_after_audit_row_tamper(db_conn):
+    event = insert_audit_event(db_conn, event_type="tamper_test", user_id="participant-1", after={"ok": True})
+    db_conn.execute("update demo_audit_events set after_json = ? where id = ?", ('{"ok":false}', event["id"]))
+    db_conn.commit()
+
+    result = verify_audit_chain(db_conn)
+
+    assert result["integrity_status"] == "broken"
+    assert result["broken_count"] == 1
+    assert result["first_broken_event_id"] == event["id"]
+
+
+def test_admin_audit_integrity_rejects_unauthenticated_access(client):
+    response = client.get("/api/admin/audit/integrity")
+
+    assert response.status_code == 403
+
+
+def test_admin_audit_integrity_returns_status_with_admin_token(client, db_conn):
+    insert_audit_event(db_conn, event_type="integrity_api_test", user_id="participant-1")
+
+    response = client.get("/api/admin/audit/integrity", headers={"x-demo-admin-token": "test-admin"})
+
+    assert response.status_code == 200
+    assert response.json()["integrity_status"] == "verified"
+
+
+def test_ledger_reversal_creates_opposite_row_and_updates_balance(client, db_conn):
+    original = client.post(
+        "/api/demo/wallet/add-points",
+        json={"amount": 125, "reason": "local demo adjustment"},
+    ).json()["ledger_entry"]
+
+    response = client.post(
+        "/api/demo/ledger/reversal",
+        json={"ledger_entry_id": original["id"], "reason": "entered for wrong participant"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    reversal = payload["ledger_entry"]
+    assert reversal["entry_type"] == "correction_reversal"
+    assert reversal["amount"] == -original["amount"]
+    assert reversal["reference_id"] == str(original["id"])
+    assert payload["balance"] == INITIAL_DEMO_POINTS
+    assert get_balance(db_conn) == INITIAL_DEMO_POINTS
+
+
+def test_ledger_reversal_does_not_mutate_original_row(client, db_conn):
+    original = client.post(
+        "/api/demo/wallet/add-points",
+        json={"amount": 75, "reason": "local demo adjustment"},
+    ).json()["ledger_entry"]
+    before = get_ledger_entry(db_conn, original["id"])
+
+    client.post(
+        "/api/demo/ledger/reversal",
+        json={"ledger_entry_id": original["id"], "reason": "entered for wrong participant"},
+    )
+
+    assert get_ledger_entry(db_conn, original["id"]) == before
+
+
+def test_ledger_reversal_idempotency_replay_does_not_double_apply(client, db_conn):
+    original = client.post(
+        "/api/demo/wallet/add-points",
+        json={"amount": 50, "reason": "local demo adjustment"},
+    ).json()["ledger_entry"]
+
+    first = client.post(
+        "/api/demo/ledger/reversal",
+        json={"ledger_entry_id": original["id"], "reason": "duplicate form submit", "idempotency_key": "rev-1"},
+    )
+    second = client.post(
+        "/api/demo/ledger/reversal",
+        json={"ledger_entry_id": original["id"], "reason": "duplicate form submit", "idempotency_key": "rev-1"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["idempotent_replay"] is True
+    assert second.json()["ledger_entry"]["id"] == first.json()["ledger_entry"]["id"]
+    assert get_balance(db_conn) == INITIAL_DEMO_POINTS
+    reversal_rows = [entry for entry in list_ledger(db_conn) if entry["entry_type"] == "correction_reversal"]
+    assert len(reversal_rows) == 1
+
+
+def test_reversing_reversal_entry_is_rejected(client):
+    original = client.post(
+        "/api/demo/wallet/add-points",
+        json={"amount": 25, "reason": "local demo adjustment"},
+    ).json()["ledger_entry"]
+    reversal = client.post(
+        "/api/demo/ledger/reversal",
+        json={"ledger_entry_id": original["id"], "reason": "entered for wrong participant"},
+    ).json()["ledger_entry"]
+
+    response = client.post(
+        "/api/demo/ledger/reversal",
+        json={"ledger_entry_id": reversal["id"], "reason": "not allowed"},
+    )
+
+    assert response.status_code == 400
+
+
 def test_demo_results_page_renders(client, sample_markets):
     client.post(
         "/api/demo/predict",
@@ -393,6 +573,10 @@ def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
         "sell",
         "profit",
         "earn money",
+        "real money",
+        "investment",
+        "gambling",
+        "cash out",
         "Bet now",
         "place bet",
     ]:

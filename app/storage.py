@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -87,6 +89,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             before_json text,
             after_json text,
             note text,
+            previous_event_hash text,
+            event_hash text,
+            integrity_payload_json text,
             created_at text not null default current_timestamp
         );
         create table if not exists simulated_orders (
@@ -136,6 +141,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "demo_point_ledger", "reference_id", "text")
     _ensure_column(conn, "demo_point_ledger", "idempotency_key", "text")
     _ensure_column(conn, "demo_point_ledger", "request_id", "text")
+    _ensure_column(conn, "demo_audit_events", "previous_event_hash", "text")
+    _ensure_column(conn, "demo_audit_events", "event_hash", "text")
+    _ensure_column(conn, "demo_audit_events", "integrity_payload_json", "text")
     _ensure_column(conn, "simulated_orders", "idempotency_key", "text")
     _ensure_column(conn, "simulated_orders", "request_id", "text")
     _ensure_column(conn, "simulated_positions", "idempotency_key", "text")
@@ -393,6 +401,11 @@ def insert_ledger_entry(
     return dict(row)
 
 
+def get_ledger_entry(conn: sqlite3.Connection, ledger_entry_id: int) -> dict[str, Any] | None:
+    row = conn.execute("select * from demo_point_ledger where id = ?", (ledger_entry_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def find_ledger_by_idempotency_key(
     conn: sqlite3.Connection,
     *,
@@ -411,6 +424,52 @@ def find_ledger_by_idempotency_key(
     return dict(row) if row else None
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _latest_audit_event_hash(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        """
+        select event_hash from demo_audit_events
+        where event_hash is not null and event_hash != ''
+        order by id desc limit 1
+        """
+    ).fetchone()
+    return str(row["event_hash"]) if row else ""
+
+
+def _audit_integrity_payload(
+    *,
+    event_type: str,
+    user_id: str | None,
+    route: str | None,
+    request_id: str | None,
+    reference_type: str | None,
+    reference_id: str | None,
+    before_json: str | None,
+    after_json: str | None,
+    note: str | None,
+    created_at: str,
+) -> dict[str, Any]:
+    return {
+        "after_json": after_json,
+        "before_json": before_json,
+        "created_at": created_at,
+        "event_type": event_type,
+        "note": note,
+        "reference_id": reference_id,
+        "reference_type": reference_type,
+        "request_id": request_id,
+        "route": route,
+        "user_id": user_id,
+    }
+
+
+def _audit_event_hash(previous_event_hash: str, integrity_payload_json: str) -> str:
+    return hashlib.sha256((previous_event_hash + integrity_payload_json).encode("utf-8")).hexdigest()
+
+
 def insert_audit_event(
     conn: sqlite3.Connection,
     *,
@@ -424,12 +483,33 @@ def insert_audit_event(
     after: Any = None,
     note: str | None = None,
 ) -> dict[str, Any]:
+    reference_id_text = str(reference_id) if reference_id is not None else None
+    before_json = json.dumps(before, ensure_ascii=False) if before is not None else None
+    after_json = json.dumps(after, ensure_ascii=False) if after is not None else None
+    created_at = datetime.now(timezone.utc).isoformat()
+    previous_event_hash = _latest_audit_event_hash(conn)
+    integrity_payload_json = _canonical_json(
+        _audit_integrity_payload(
+            event_type=event_type,
+            user_id=user_id,
+            route=route,
+            request_id=request_id,
+            reference_type=reference_type,
+            reference_id=reference_id_text,
+            before_json=before_json,
+            after_json=after_json,
+            note=note,
+            created_at=created_at,
+        )
+    )
+    event_hash = _audit_event_hash(previous_event_hash, integrity_payload_json)
     cursor = conn.execute(
         """
         insert into demo_audit_events(
             event_type, user_id, route, request_id, reference_type, reference_id,
-            before_json, after_json, note
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            before_json, after_json, note, previous_event_hash, event_hash,
+            integrity_payload_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             event_type,
@@ -437,14 +517,82 @@ def insert_audit_event(
             route,
             request_id,
             reference_type,
-            str(reference_id) if reference_id is not None else None,
-            json.dumps(before, ensure_ascii=False) if before is not None else None,
-            json.dumps(after, ensure_ascii=False) if after is not None else None,
+            reference_id_text,
+            before_json,
+            after_json,
             note,
+            previous_event_hash,
+            event_hash,
+            integrity_payload_json,
+            created_at,
         ),
     )
     row = conn.execute("select * from demo_audit_events where id = ?", (cursor.lastrowid,)).fetchone()
     return dict(row)
+
+
+def verify_audit_chain(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute("select * from demo_audit_events order by id asc").fetchall()
+    checked_count = len(rows)
+    verified_count = 0
+    missing_hash_count = 0
+    broken_count = 0
+    first_broken_event_id: int | None = None
+    expected_previous_hash = ""
+
+    for row in rows:
+        event_hash = row["event_hash"]
+        previous_event_hash = row["previous_event_hash"]
+        integrity_payload_json = row["integrity_payload_json"]
+        if not event_hash or not integrity_payload_json:
+            missing_hash_count += 1
+            continue
+
+        reference_id = str(row["reference_id"]) if row["reference_id"] is not None else None
+        expected_payload_json = _canonical_json(
+            _audit_integrity_payload(
+                event_type=row["event_type"],
+                user_id=row["user_id"],
+                route=row["route"],
+                request_id=row["request_id"],
+                reference_type=row["reference_type"],
+                reference_id=reference_id,
+                before_json=row["before_json"],
+                after_json=row["after_json"],
+                note=row["note"],
+                created_at=row["created_at"],
+            )
+        )
+        expected_event_hash = _audit_event_hash(previous_event_hash or "", integrity_payload_json)
+        valid = (
+            integrity_payload_json == expected_payload_json
+            and (previous_event_hash or "") == expected_previous_hash
+            and event_hash == expected_event_hash
+        )
+        if valid:
+            verified_count += 1
+            expected_previous_hash = event_hash
+            continue
+        broken_count += 1
+        if first_broken_event_id is None:
+            first_broken_event_id = int(row["id"])
+
+    if checked_count == 0:
+        integrity_status = "empty"
+    elif broken_count:
+        integrity_status = "broken"
+    elif missing_hash_count:
+        integrity_status = "partial_legacy_rows"
+    else:
+        integrity_status = "verified"
+    return {
+        "checked_count": checked_count,
+        "verified_count": verified_count,
+        "missing_hash_count": missing_hash_count,
+        "broken_count": broken_count,
+        "first_broken_event_id": first_broken_event_id,
+        "integrity_status": integrity_status,
+    }
 
 
 def list_audit_events(conn: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:

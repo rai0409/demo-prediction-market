@@ -70,6 +70,7 @@ def client(db_conn, monkeypatch):
                 if method.upper() == "POST" and auto_admin and endpoint in {
                     "/api/demo/wallet/add-points",
                     "/api/demo/wallet/reset",
+                    "/api/demo/ledger/reversal",
                     "/api/demo/settle",
                     "/api/refresh",
                 }:

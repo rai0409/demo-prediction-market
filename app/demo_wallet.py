@@ -9,6 +9,7 @@ from app.storage import (
     INITIAL_DEMO_POINTS,
     find_ledger_by_idempotency_key,
     get_balance,
+    get_ledger_entry,
     insert_audit_event,
     insert_ledger_entry,
     ledger_summary,
@@ -170,3 +171,119 @@ def reset_demo_balance(
             note=note,
         )
     return {"balance": balance_after, "ledger_entry": ledger_entry, "idempotent_replay": False}
+
+
+def reverse_demo_ledger_entry(
+    conn: sqlite3.Connection,
+    *,
+    ledger_entry_id: int,
+    reason: str,
+    idempotency_key: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    request_id = request_id or str(uuid4())
+    original = get_ledger_entry(conn, ledger_entry_id)
+    if original is None:
+        raise DemoWalletError("demo ledger entry was not found", status_code=404)
+    if original["entry_type"] == "correction_reversal":
+        raise DemoWalletError("correction reversal entries cannot be reversed", status_code=400)
+
+    user_id = str(original["user_id"])
+    if idempotency_key:
+        existing = find_ledger_by_idempotency_key(
+            conn,
+            user_id=user_id,
+            entry_type="correction_reversal",
+            idempotency_key=idempotency_key,
+        )
+        if existing:
+            if str(existing["reference_id"]) != str(ledger_entry_id):
+                raise DemoWalletError("idempotency key was already used for another correction reversal", status_code=409)
+            insert_audit_event(
+                conn,
+                event_type="correction_reversal_replayed",
+                user_id=user_id,
+                route="/api/demo/ledger/reversal",
+                request_id=request_id,
+                reference_type="demo_point_ledger",
+                reference_id=existing["id"],
+                after={
+                    "ledger_id": existing["id"],
+                    "original_ledger_entry_id": ledger_entry_id,
+                    "idempotency_key": idempotency_key,
+                },
+                note="idempotent local demo correction replay",
+            )
+            conn.commit()
+            return {
+                "balance": get_balance(conn, user_id),
+                "ledger_entry": existing,
+                "original_ledger_entry": original,
+                "idempotent_replay": True,
+            }
+
+    duplicate = conn.execute(
+        """
+        select * from demo_point_ledger
+        where entry_type = 'correction_reversal'
+          and reference_type = 'demo_point_ledger'
+          and reference_id = ?
+        order by id desc limit 1
+        """,
+        (str(ledger_entry_id),),
+    ).fetchone()
+    if duplicate:
+        raise DemoWalletError("demo ledger entry already has a correction reversal", status_code=409)
+
+    note = (reason or "").strip()
+    if not note:
+        raise DemoWalletError("reason is required")
+    note = f"Local demo correction reversal: {note[:160]}"
+    reversal_amount = round(-float(original["amount"]), 2)
+    balance_before = get_balance(conn, user_id)
+    balance_after = round(balance_before + reversal_amount, 2)
+    with conn:
+        conn.execute("update demo_users set balance = ? where user_id = ?", (balance_after, user_id))
+        ledger_entry = insert_ledger_entry(
+            conn,
+            user_id=user_id,
+            market_id=original["market_id"],
+            amount=reversal_amount,
+            balance_before=balance_before,
+            balance_after=balance_after,
+            entry_type="correction_reversal",
+            note=note,
+            reference_type="demo_point_ledger",
+            reference_id=ledger_entry_id,
+            idempotency_key=idempotency_key,
+            request_id=request_id,
+        )
+        insert_audit_event(
+            conn,
+            event_type="correction_reversal_created",
+            user_id=user_id,
+            route="/api/demo/ledger/reversal",
+            request_id=request_id,
+            reference_type="demo_point_ledger",
+            reference_id=ledger_entry["id"],
+            before={
+                "balance": balance_before,
+                "original_ledger_entry": {
+                    "id": original["id"],
+                    "amount": original["amount"],
+                    "entry_type": original["entry_type"],
+                },
+            },
+            after={
+                "balance": balance_after,
+                "amount": reversal_amount,
+                "original_ledger_entry_id": ledger_entry_id,
+            },
+            note=note,
+        )
+    return {
+        "balance": balance_after,
+        "ledger_entry": ledger_entry,
+        "original_ledger_entry": original,
+        "idempotent_replay": False,
+    }
