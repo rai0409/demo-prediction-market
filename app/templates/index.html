@@ -8,6 +8,7 @@
     <h1>{{ t("app.title") }}</h1>
     <p class="subtitle">{{ t("app.subtitle") }}</p>
   </div>
+  <a class="action-link" href="/?lang={{ lang }}#market-list">{% if lang == "en" %}View all markets{% else %}全マーケットを見る{% endif %}</a>
 </section>
 
 <section class="disclaimer" aria-label="{{ t('safety.local_only') }}">
@@ -50,8 +51,8 @@
 
   <div class="summary-card">
     <span>{{ t("market.last_fetch") }}</span>
-    <strong id="freshness">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
-    <span>{% if lang == "en" %}Auto-updates the latest information{% else %}最新情報を自動更新{% endif %}</span>
+    <strong id="latest-update">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
+    <span>{% if lang == "en" %}Updates quietly while you view this page{% else %}表示中に静かに更新します{% endif %}</span>
   </div>
 
   <div class="summary-card">

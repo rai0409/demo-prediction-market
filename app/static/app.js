@@ -120,7 +120,7 @@ function realtimeStatusLabel(status) {
       var data = await response.json();
       if (!data.markets || !data.markets.length) return;
       document.getElementById("data-status").textContent = statusBadge(data.markets[0].data_source_status);
-      document.getElementById("freshness").textContent = formatMinute(data.markets[0].fetched_at);
+      document.getElementById("latest-update").textContent = formatMinute(data.markets[0].fetched_at);
       var displayed = document.getElementById("displayed-count");
       var total = document.getElementById("total-count");
       if (displayed) displayed.textContent = data.count;
@@ -128,6 +128,23 @@ function realtimeStatusLabel(status) {
     } catch (error) {
       var status = document.getElementById("data-status");
       if (status) status.textContent = "更新確認中";
+    }
+  }
+
+  async function pollVisibleMarket() {
+    var detail = document.querySelector("[data-detail-market-id]");
+    if (!detail) return;
+    try {
+      var response = await fetch("/api/markets/" + encodeURIComponent(detail.dataset.detailMarketId));
+      if (!response.ok) return;
+      var data = await response.json();
+      var updated = document.getElementById("detail-updated-at");
+      if (updated) updated.textContent = formatMinute(data.fetched_at || data.ws_last_event_at);
+      var status = document.getElementById("detail-update-status");
+      if (status) status.textContent = realtimeStatusLabel(data.realtime_status);
+    } catch (error) {
+      var statusNode = document.getElementById("detail-update-status");
+      if (statusNode) statusNode.textContent = "更新確認中";
     }
   }
 
@@ -278,10 +295,13 @@ function realtimeStatusLabel(status) {
   attachSettlementCheck();
   attachDemoPointManagement();
   pollMarkets();
+  pollVisibleMarket();
   pollRealtimeStatus();
-  var seconds = Number(document.body.dataset.pollSeconds || "30");
+  var seconds = Number(document.body.dataset.pollSeconds || "5");
+  if (!Number.isFinite(seconds) || seconds <= 0) seconds = 5;
   window.setInterval(function () {
     pollMarkets();
+    pollVisibleMarket();
     pollRealtimeStatus();
-  }, Math.max(15, Math.min(30, seconds)) * 1000);
+  }, Math.max(3, Math.min(5, seconds)) * 1000);
 })();

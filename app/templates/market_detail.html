@@ -8,12 +8,13 @@
 </section>
 
 <section class="detail-layout">
-  <article class="market-detail">
-    <p class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ source_status_label(market.data_source_status) }}</span><span>最終更新: {{ market.fetched_at|date }}</span></p>
+  <article class="market-detail" data-detail-market-id="{{ market.market_id }}">
+    <p class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ source_status_label(market.data_source_status) }}</span><span>最終更新: <span id="detail-updated-at">{{ market.fetched_at|date }}</span></span></p>
     <h1>{{ market.title }}</h1>
     <h2>{{ market.question }}</h2>
-    <p class="status-label">{{ market.display_status }} / 更新状態:
+    <p class="status-label">{{ market.display_status }} / 更新状態: <span id="detail-update-status">
       {% if market.realtime_status == "ws_live" %}最新情報を自動更新{% elif market.realtime_status == "ws_stale" %}更新確認中{% else %}参考データ{% endif %}
+    </span>
     </p>
     {% if market.demo_participation_allowed %}
     <p class="notice">このマーケットはデモ参加できます。</p>

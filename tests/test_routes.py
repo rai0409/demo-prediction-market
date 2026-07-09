@@ -1,7 +1,8 @@
 import re
+from pathlib import Path
 from html.parser import HTMLParser
 
-from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id, insert_realtime_update
+from app.storage import INITIAL_DEMO_POINTS, get_settlement_by_position_id, insert_realtime_update, list_ledger
 from app.storage import replace_markets
 
 
@@ -233,6 +234,24 @@ def test_dashboard_renders_status_metadata(client):
     assert "マーケット一覧へ戻る" in html
 
 
+def test_view_all_markets_link_targets_product_ui_not_api(client):
+    html = client.get("/").text
+    assert "全マーケットを見る" in html
+    assert 'href="/?lang=ja#market-list"' in html
+    assert ">全マーケットを見る</a>" in html
+    assert 'href="/api/markets' not in visible_html(html)
+
+
+def test_market_list_page_is_product_ui_not_raw_json(client):
+    response = client.get("/")
+    text = visible_text(response.text)
+    assert response.headers["content-type"].startswith("text/html")
+    assert "マーケット" in text
+    assert "デモ参加" in text
+    assert '"markets":' not in response.text
+    assert '{"' not in visible_html(response.text)
+
+
 def test_market_card_includes_predict_for_eligible_market(client):
     html = client.get("/").text
     assert "予想する" in html
@@ -255,6 +274,16 @@ def test_market_detail_renders_demo_panel_for_eligible_market(client):
     assert "id=\"prediction-form\"" in html
     assert "デモ参加する" in html
     assert "現在のマイスコア" in html
+    assert "Join demo" not in visible_text(html)
+    assert "Demo participation" not in visible_text(html)
+
+
+def test_market_detail_page_is_product_ui_not_raw_json(client):
+    response = client.get("/markets/sample-market-tokyo-rain")
+    assert response.headers["content-type"].startswith("text/html")
+    assert "予想する" in visible_text(response.text)
+    assert '"market_id":' not in response.text
+    assert '{"' not in visible_html(response.text)
 
 
 def test_demo_positions_page_renders_empty_state(client):
@@ -273,6 +302,25 @@ def test_demo_positions_page_renders_positions(client, sample_markets):
     assert "結果待ち" in html
     assert "simulated" not in html
     assert "予想履歴" in html
+
+
+def test_wallet_ledger_consistency_after_vote(client, db_conn, sample_markets):
+    market_id = sample_markets[0]["market_id"]
+    response = client.post(
+        "/api/demo/predict",
+        json={"market_id": market_id, "outcome": "YES", "stake": 75},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["balance"] == INITIAL_DEMO_POINTS - 75
+    ledger = list_ledger(db_conn)
+    prediction_entries = [entry for entry in ledger if entry["entry_type"] == "prediction"]
+    assert len(prediction_entries) == 1
+    assert prediction_entries[0]["balance_before"] == INITIAL_DEMO_POINTS
+    assert prediction_entries[0]["balance_after"] == INITIAL_DEMO_POINTS - 75
+    wallet = client.get("/demo-wallet").text
+    assert "デモ参加利用" in wallet
+    assert "75.00" in wallet
 
 
 def test_demo_results_page_renders(client, sample_markets):
@@ -362,6 +410,18 @@ def test_public_pages_do_not_link_directly_to_include_all_api(client):
     assert "/api/markets?include_all=true" not in combined
 
 
+def test_public_pages_do_not_link_to_protected_audit_review(client):
+    combined = (
+        client.get("/").text
+        + client.get("/markets/sample-market-tokyo-rain").text
+        + client.get("/demo-wallet").text
+        + client.get("/demo-positions").text
+        + client.get("/demo-results").text
+    )
+    assert 'href="/admin/audit' not in combined
+    assert 'href="/admin/audit.csv' not in combined
+
+
 def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
     raw_html = (
         client.get("/").text
@@ -383,6 +443,12 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
         "stale",
         "fallback",
         "polling",
+        "freshness",
+        "API state",
+        "debug",
+        "raw",
+        "stream",
+        "internal",
         "Near-real-time",
         "30秒ごと",
         "処理ID",
@@ -401,6 +467,41 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
     assert not re.search(r"(?<![A-Za-z0-9])WS(?![A-Za-z0-9])", visible_text(raw_html))
 
 
+def test_refresh_copy_is_user_friendly_and_interval_hidden(client):
+    html = client.get("/").text
+    text = visible_text(html)
+    assert "表示中に静かに更新します" in text
+    assert "30秒" not in text
+    assert "poll" not in text.lower()
+    script = Path("app/static/app.js").read_text(encoding="utf-8")
+    assert 'fetch("/api/markets")' in script
+    assert 'fetch("/api/markets?include_all=true")' not in script
+    assert "pollVisibleMarket" in script
+
+
+def test_result_transparency_text_is_product_safe(client, sample_markets):
+    client.post(
+        "/api/demo/predict",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 20},
+    )
+    html = client.get("/demo-results").text
+    text = visible_text(html)
+    assert "明確な結果が確認できる場合だけ、参考スコアへ反映します。" in text
+    assert "settlement" not in text.lower()
+    assert "payout" not in text.lower()
+
+
+def test_commercial_acceptance_audit_document_exists():
+    audit = Path("docs/commercial_product_acceptance_audit.md").read_text(encoding="utf-8")
+    for phrase in [
+        "route coverage",
+        "Normal navigation lands on rendered product pages",
+        "Japanese is the default core flow",
+        "Protected audit review remains unlinked",
+    ]:
+        assert phrase in audit
+
+
 def test_demo_wallet_page_shows_non_cashable_non_transferable_non_exchangeable_notice(client):
     html = client.get("/demo-wallet").text
     assert "マイスコア" in html
@@ -413,6 +514,6 @@ def test_demo_wallet_page_shows_non_cashable_non_transferable_non_exchangeable_n
 
 def test_last_updated_rendering_is_not_raw_iso(client):
     html = client.get("/").text
-    assert "T" not in html.split('id="freshness">', 1)[1].split("</strong>", 1)[0]
+    assert "T" not in html.split('id="latest-update">', 1)[1].split("</strong>", 1)[0]
     assert "+00:00" not in html
     assert "最終取得" in html
