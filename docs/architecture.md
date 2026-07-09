@@ -2,7 +2,7 @@
 
 ## Overview
 
-Demo Prediction Market Viewer is a local FastAPI MVP. It fetches public Polymarket-style market data, normalizes the data, persists snapshots in SQLite, filters active/displayable markets, and allows local-only demo participation with simulation-only demo points.
+Demo Prediction Market Viewer is a local FastAPI product validation app. It fetches public Polymarket-style market data, normalizes the data, persists snapshots in SQLite, filters active/displayable markets, and allows local-only demo participation with simulation-only demo points.
 
 The app is intentionally not a trading app. It has no wallet connection, no private credentials, and no order placement.
 
@@ -24,7 +24,7 @@ The app is intentionally not a trading app. It has no wallet connection, no priv
 1. `GET /` ensures markets exist in SQLite.
 2. Stored markets are classified by `app/market_display.py`.
 3. Displayable markets are rendered as dashboard cards.
-4. Browser JavaScript polls `GET /api/markets` for freshness/status metadata.
+4. Browser JavaScript polls `GET /api/markets` for update/status metadata.
 
 ## Live Fetch Flow
 

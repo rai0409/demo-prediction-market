@@ -29,7 +29,7 @@ FastAPIベースのローカル検証プロダクトです。外部予測市場�
 - server-side eligibility guard
 - local demo point history
 - local demo point adjustment for internal checks
-- optional public market freshness observations
+- optional public market update observations
 - dashboard/detail/positions UI
 - diagnostics endpoints
 - automated tests
@@ -67,7 +67,7 @@ Live API results depend on the public Gamma API response at runtime, so counts m
 6. Server-side guard checks eligibility on `POST /api/demo/predict`.
 7. Store local simulated orders, simulated positions, and demo point history entries.
 8. Expose diagnostics through runtime files and `/api/debug/source-status`.
-9. Optionally collect public market freshness observations and display them separately from the main reference data.
+9. Optionally collect public market update observations and display them separately from the main reference data.
 10. Track demo point balance changes for internal verification.
 
 ## Setup
@@ -120,6 +120,21 @@ Set `DEMO_COOKIE_SECURE=1` when serving over HTTPS for external collaborator che
 
 `DEMO_PREDICTION_MAX_DEMO_STAKE` caps one local demo participation. Demo points remain non-cash, non-transferable, and non-exchangeable regardless of this cap.
 
+## External collaborator demo operations
+
+Use [docs/external_collaborator_demo_checklist.md](docs/external_collaborator_demo_checklist.md) before each external collaborator session.
+
+1. Run local checks first: `python -m compileall app` and `PYTHONPATH=. python -m pytest -q`.
+2. Configure `DEMO_ADMIN_TOKEN`, `DEMO_COOKIE_SECURE`, `DEMO_PREDICTION_MAX_DEMO_STAKE`, and `DEMO_PREDICTION_DB`.
+3. Start on `8093`; use `8094`, `8095`, or `8096` only if `8093` is unavailable.
+4. Pre-distribute participant codes and explain that the code separates demo records but is not production authentication.
+5. Do not share `/admin/audit` or `/admin/audit.csv` with general participants.
+6. Back up the SQLite database before the session.
+7. Confirm result rows before and after management-code result confirmation.
+8. Export operation records, demo point history, and result records from the internal audit screen.
+9. Decide and record the post-demo data deletion or retention policy.
+10. Confirm the non-cash, non-transferable, non-exchangeable demo point explanation is visible before inviting collaborators.
+
 ## Limited check flow
 
 1. Open `http://127.0.0.1:8093`.
@@ -149,6 +164,8 @@ Filters are available for participant, operation type, market ID, position ID, r
 
 CSV export is available from the same internal screen for operation records, demo point history, and result records. The export uses the active filters and requires the same management code. CSV cells are sanitized to reduce spreadsheet formula execution risk.
 
+Before an external collaborator session, verify that `/admin/audit` and `/admin/audit.csv` reject requests without the management code. After the session, export CSV files with participant and date range filters and store them according to the agreed internal retention policy.
+
 ## Result Confirmation Policy
 
 Result confirmation is conservative. A result is reflected to the local Forecast Score only when the app can identify a clear outcome from stored reference data. A public result candidate alone is treated as a candidate, not a final result.
@@ -168,7 +185,7 @@ curl -s 'http://127.0.0.1:8093/api/markets?include_all=true' | python -m json.to
 curl -s http://127.0.0.1:8093/api/debug/source-status | python -m json.tool
 ```
 
-Optional public market WebSocket freshness mode is off by default and is not required for the app.
+Optional public market update-check mode is off by default and is not required for the app.
 
 ```bash
 DEMO_PREDICTION_LIVE=1 DEMO_PREDICTION_WS_ENABLED=1 python scripts/run_market_ws.py
@@ -220,7 +237,7 @@ JSON:
 - `GET /api/markets/{market_id}`: one enriched market.
 - `GET /api/markets/{market_id}/snapshots`: recent stored snapshots.
 - `GET /api/debug/source-status`: live/sample/filter diagnostics.
-- `GET /api/realtime/status`: optional public WebSocket freshness diagnostics.
+- `GET /api/realtime/status`: optional public update-status diagnostics.
 - `GET /api/demo/balance`: local demo balance.
 - `GET /api/demo/wallet`: local demo point history/internal record summary.
 - `POST /api/demo/wallet/add-points`: local `デモポイント追加`.

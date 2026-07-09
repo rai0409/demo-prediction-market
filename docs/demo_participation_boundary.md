@@ -1,6 +1,6 @@
 # Demo Participation Boundary
 
-This app is a technical MVP and local simulation only.
+This app is a commercial-product-standard local simulation only.
 
 ## Local Demo User
 

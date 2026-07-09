@@ -1,6 +1,6 @@
 # Legal And Safety Notes
 
-This repository is a technical MVP for a local demo prediction market viewer.
+This repository is a commercial-product-standard local demo prediction market viewer.
 
 It is not:
 

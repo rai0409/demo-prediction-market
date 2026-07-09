@@ -3,14 +3,14 @@
 ## Sample Mode Walkthrough
 
 1. Install dependencies.
-2. Run `DEMO_PREDICTION_LIVE=0 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092`.
-3. Open `http://127.0.0.1:8092`.
+2. Run `DEMO_PREDICTION_LIVE=0 python -m uvicorn app.main:app --host 127.0.0.1 --port 8093`.
+3. Open `http://127.0.0.1:8093`.
 4. The dashboard uses `data/sample_events.json`.
 5. Open a market detail page and use `デモ参加する` to create a local simulated position.
 
 ## Live Mode Walkthrough
 
-1. Run `DEMO_PREDICTION_LIVE=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8092`.
+1. Run `DEMO_PREDICTION_LIVE=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8093`.
 2. The app attempts a public Polymarket Gamma API fetch.
 3. If successful, source is `polymarket` and `data_source_status` is `live`.
 4. If fetch fails, bundled sample data is used and the fallback status is shown.
@@ -65,7 +65,7 @@ Open `/demo-positions` to review:
 Run:
 
 ```bash
-curl -s http://127.0.0.1:8092/api/debug/source-status | python -m json.tool
+curl -s http://127.0.0.1:8093/api/debug/source-status | python -m json.tool
 ```
 
 Expected successful live indicators:
