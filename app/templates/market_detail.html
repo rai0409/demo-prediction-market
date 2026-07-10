@@ -9,13 +9,9 @@
 
 <section class="detail-layout">
   <article class="market-detail" data-detail-market-id="{{ market.market_id }}">
-    <p class="card-meta"><span class="badge subtle">{{ market.source }}</span><span>{{ source_status_label(market.data_source_status) }}</span><span>最終更新: <span id="detail-updated-at">{{ market.fetched_at|date }}</span></span></p>
+    <p class="card-meta"><span class="badge subtle">{{ t("market.live") }}</span><span>{{ t("market.updated") }}: <span id="detail-updated-at" data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span></p>
     <h1>{{ market.title }}</h1>
     <h2>{{ market.question }}</h2>
-    <p class="status-label">{{ market.display_status }} / 更新状態: <span id="detail-update-status">
-      {% if market.realtime_status == "ws_live" %}最新情報を自動更新{% elif market.realtime_status == "ws_stale" %}更新確認中{% else %}参考データ{% endif %}
-    </span>
-    </p>
     {% if market.demo_participation_allowed %}
     <p class="notice">このマーケットはデモ参加できます。</p>
     {% else %}
@@ -23,21 +19,20 @@
     {% endif %}
     <dl class="metrics detail-metrics">
       <div><dt>関心度</dt><dd>{{ market.volume|number }}</dd></div>
-      <div><dt>24時間の関心度</dt><dd>{{ market.volume_24hr|number }}</dd></div>
-      <div><dt>参考データ量</dt><dd>{{ market.liquidity|number }}</dd></div>
+      <div><dt>24時間の関心度</dt><dd data-live-field="volume_24hr">{{ market.volume_24hr|number }}</dd></div>
+      <div><dt>参考データ量</dt><dd data-live-field="liquidity">{{ market.liquidity|number }}</dd></div>
       <div><dt>終了予定</dt><dd>{{ market.end_date|date }}</dd></div>
-      <div><dt>参考下限レンジ</dt><dd>{{ market.best_bid|number }}</dd></div>
-      <div><dt>参考上限レンジ</dt><dd>{{ market.best_ask|number }}</dd></div>
-      <div><dt>直近参考値</dt><dd>{{ market.last_trade_price|number }}</dd></div>
-      <div><dt>最終更新</dt><dd>{{ market.ws_last_event_at|date }}</dd></div>
+      <div><dt>参考下限レンジ</dt><dd data-live-field="best_bid">{{ market.best_bid|number }}</dd></div>
+      <div><dt>参考上限レンジ</dt><dd data-live-field="best_ask">{{ market.best_ask|number }}</dd></div>
+      <div><dt>直近参考値</dt><dd data-live-field="last_trade_price">{{ market.last_trade_price|number }}</dd></div>
     </dl>
     <div class="outcome-stack outcome-cards">
       {% for outcome in market.outcomes %}
       <div>
         <span>{{ outcome }}</span>
-        <strong>{{ market.probabilities[outcome]|percent }}</strong>
+        <strong data-live-probability="{{ outcome }}">{{ market.probabilities[outcome]|percent }}</strong>
         <div class="probability-bar" aria-label="{{ outcome }} probability">
-          <span style="width: {{ market.probabilities[outcome] * 100 }}%"></span>
+          <span data-live-probability-bar="{{ outcome }}" style="width: {{ market.probabilities[outcome] * 100 }}%"></span>
         </div>
       </div>
       {% endfor %}
@@ -83,7 +78,7 @@
       <label for="outcome">参加内容を確認</label>
       <select id="outcome" name="outcome">
         {% for outcome in market.outcomes %}
-        <option value="{{ outcome }}" data-probability="{{ market.probabilities[outcome] }}">{{ outcome }} · {{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</option>
+        <option value="{{ outcome }}" data-live-option="{{ outcome }}" data-probability="{{ market.probabilities[outcome] }}">{{ outcome }} · {{ "%.1f"|format(market.probabilities[outcome] * 100) }}%</option>
         {% endfor %}
       </select>
       <label for="stake">デモポイント</label>

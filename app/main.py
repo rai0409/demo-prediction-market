@@ -242,6 +242,8 @@ def template_context(request: Request, conn: sqlite3.Connection, user_id: str, *
         "request": request,
         "disclaimer": DISCLAIMER,
         "poll_seconds": settings.poll_seconds,
+        "quick_refresh_seconds": settings.quick_refresh_seconds,
+        "detail_refresh_seconds": settings.detail_refresh_seconds,
         "ws_enabled": settings.ws_enabled,
         "demo_user_id": user_id,
         "demo_balance": get_balance(conn, user_id),

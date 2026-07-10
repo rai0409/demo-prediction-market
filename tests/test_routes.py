@@ -744,9 +744,51 @@ def test_refresh_copy_is_user_friendly_and_interval_hidden(client):
     assert "30秒" not in text
     assert "poll" not in text.lower()
     script = Path("app/static/app.js").read_text(encoding="utf-8")
-    assert 'fetch("/api/markets")' in script
+    assert 'fetch("/api/markets")' not in script
     assert 'fetch("/api/markets?include_all=true")' not in script
-    assert "pollVisibleMarket" in script
+    assert "pollVisibleMarketCards" in script
+
+
+def test_live_refresh_intervals_are_data_only_and_not_visible_copy(client, sample_markets):
+    index_html = client.get("/").text
+    detail_html = client.get(f"/markets/{sample_markets[0]['market_id']}").text
+    assert 'data-quick-refresh-seconds="5"' in index_html
+    assert 'data-detail-refresh-seconds="3"' in index_html
+    assert 'data-quick-refresh-seconds="5"' in detail_html
+    assert 'data-detail-refresh-seconds="3"' in detail_html
+    assert "5秒" not in visible_text(index_html + detail_html)
+    assert "3秒" not in visible_text(index_html + detail_html)
+
+
+def test_market_live_update_targets_are_rendered(client, sample_markets):
+    index_html = client.get("/").text
+    detail_html = client.get(f"/markets/{sample_markets[0]['market_id']}").text
+    for attribute in [
+        'data-live-probability=',
+        'data-live-probability-bar=',
+        'data-live-field="volume_24hr"',
+        'data-live-field="liquidity"',
+        'data-live-field="best_bid"',
+        'data-live-field="best_ask"',
+        'data-live-field="last_trade_price"',
+        'data-live-field="updated_at"',
+    ]:
+        assert attribute in index_html
+        assert attribute in detail_html
+
+
+def test_live_update_script_uses_targeted_endpoints_and_failure_guards():
+    script = Path("app/static/app.js").read_text(encoding="utf-8")
+    assert 'fetch("/api/markets/updates?ids="' in script
+    assert '+ "/live"' in script
+    assert 'fetch("/api/markets")' not in script
+    assert "applyLiveMarketUpdate" in script
+    assert "document.hidden" in script
+    assert "AbortController" in script
+    assert "cardsInFlight" in script
+    assert "detailInFlight" in script
+    assert 'data_source_status' not in script
+    assert 'realtime_status' not in script
 
 
 def test_result_transparency_text_is_product_safe(client, sample_markets):

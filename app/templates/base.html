@@ -10,7 +10,7 @@
       window.I18N = {{ js_i18n | default({}) | tojson }};
     </script>
   </head>
-  <body data-poll-seconds="{{ poll_seconds }}" data-csrf-token="{{ csrf_token }}">
+  <body data-quick-refresh-seconds="{{ quick_refresh_seconds }}" data-detail-refresh-seconds="{{ detail_refresh_seconds }}" data-csrf-token="{{ csrf_token }}">
     <header class="topbar">
       <a class="brand" href="/?lang={{ lang | default('ja') }}">
         <span>{{ t("app.title") }}</span>

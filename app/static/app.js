@@ -13,10 +13,6 @@ function confirmationStatusLabel(status) {
   return t(`confirmation.${status}`, status || t("common.none", "None"));
 }
 
-function realtimeStatusLabel(status) {
-  return t(`realtime.${status}`, status || t("realtime.rest_only", "参考データ"));
-}
-
 (function () {
   function csrfToken() {
     return document.body.dataset.csrfToken || "";
@@ -88,15 +84,6 @@ function realtimeStatusLabel(status) {
     updateEstimator();
   }
 
-  function statusBadge(status) {
-    if (status === "live") return "外部参考データ";
-    if (status === "sample_fallback") return "参考データ";
-    if (status === "live_failed_sample_fallback" || status === "live_empty_sample_fallback") {
-      return "参考データ";
-    }
-    return "参考データ";
-  }
-
   function formatMinute(value) {
     if (!value) return "-";
     var parsed = new Date(value);
@@ -111,61 +98,100 @@ function realtimeStatusLabel(status) {
     return String(value).replace("T", " ").slice(0, 16);
   }
 
-  async function pollMarkets() {
-    var list = document.getElementById("market-list");
-    if (!list) return;
+  function formatNumber(value) {
+    var number = Number(value);
+    if (value === null || value === "" || !Number.isFinite(number)) return "-";
+    if (Math.abs(number) >= 1000000) return (number / 1000000).toFixed(2) + "M";
+    if (Math.abs(number) >= 1000) return (number / 1000).toFixed(1) + "K";
+    return number.toFixed(2);
+  }
+
+  function matchingNodes(root, attribute, value) {
+    return Array.from(root.querySelectorAll("[" + attribute + "]")).filter(function (node) {
+      return node.getAttribute(attribute) === value;
+    });
+  }
+
+  function applyLiveMarketUpdate(root, market) {
+    var probabilities = market.probabilities || {};
+    Object.keys(probabilities).forEach(function (outcome) {
+      var probability = Number(probabilities[outcome]);
+      if (!Number.isFinite(probability)) return;
+      matchingNodes(root, "data-live-probability", outcome).forEach(function (node) {
+        node.textContent = (probability * 100).toFixed(1) + "%";
+      });
+      matchingNodes(root, "data-live-probability-bar", outcome).forEach(function (node) {
+        node.style.width = Math.max(0, Math.min(100, probability * 100)) + "%";
+      });
+      matchingNodes(root, "data-live-option", outcome).forEach(function (node) {
+        node.dataset.probability = String(probability);
+        node.textContent = outcome + " · " + (probability * 100).toFixed(1) + "%";
+      });
+    });
+    ["volume_24hr", "liquidity", "best_bid", "best_ask", "last_trade_price"].forEach(function (field) {
+      root.querySelectorAll('[data-live-field="' + field + '"]').forEach(function (node) {
+        node.textContent = formatNumber(market[field]);
+      });
+    });
+    if (market.updated_at) {
+      root.querySelectorAll('[data-live-field="updated_at"]').forEach(function (node) {
+        node.textContent = formatMinute(market.updated_at);
+      });
+    }
+    if (root.matches("[data-detail-market-id]")) updateEstimator();
+  }
+
+  var cardsInFlight = false;
+  var cardsController = null;
+  var detailInFlight = false;
+  var detailController = null;
+
+  async function pollVisibleMarketCards() {
+    if (document.hidden || cardsInFlight) return;
+    var cards = Array.from(document.querySelectorAll(".market-card[data-market-id]"));
+    if (!cards.length) return;
+    var ids = cards.slice(0, 50).map(function (card) { return card.dataset.marketId; });
+    cardsInFlight = true;
+    cardsController = new AbortController();
     try {
-      var response = await fetch("/api/markets");
+      var response = await fetch("/api/markets/updates?ids=" + encodeURIComponent(ids.join(",")), {
+        signal: cardsController.signal
+      });
       if (!response.ok) return;
       var data = await response.json();
-      if (!data.markets || !data.markets.length) return;
-      document.getElementById("data-status").textContent = statusBadge(data.markets[0].data_source_status);
-      document.getElementById("latest-update").textContent = formatMinute(data.markets[0].fetched_at);
-      var displayed = document.getElementById("displayed-count");
-      var total = document.getElementById("total-count");
-      if (displayed) displayed.textContent = data.count;
-      if (total) total.textContent = data.total_market_count;
+      (data.markets || []).forEach(function (market) {
+        cards.filter(function (card) { return card.dataset.marketId === market.market_id; }).forEach(function (card) {
+          applyLiveMarketUpdate(card, market);
+        });
+      });
+      var updatedValues = (data.markets || []).map(function (market) { return market.updated_at; }).filter(Boolean);
+      var latest = document.getElementById("latest-update");
+      if (latest && updatedValues.length) latest.textContent = formatMinute(updatedValues.sort().pop());
     } catch (error) {
-      var status = document.getElementById("data-status");
-      if (status) status.textContent = "更新確認中";
+      if (error.name !== "AbortError") return;
+    } finally {
+      cardsInFlight = false;
+      cardsController = null;
     }
   }
 
-  async function pollVisibleMarket() {
+  async function pollDetailMarket() {
+    if (document.hidden || detailInFlight) return;
     var detail = document.querySelector("[data-detail-market-id]");
     if (!detail) return;
+    detailInFlight = true;
+    detailController = new AbortController();
     try {
-      var response = await fetch("/api/markets/" + encodeURIComponent(detail.dataset.detailMarketId));
+      var response = await fetch("/api/markets/" + encodeURIComponent(detail.dataset.detailMarketId) + "/live", {
+        signal: detailController.signal
+      });
       if (!response.ok) return;
-      var data = await response.json();
-      var updated = document.getElementById("detail-updated-at");
-      if (updated) updated.textContent = formatMinute(data.fetched_at || data.ws_last_event_at);
-      var status = document.getElementById("detail-update-status");
-      if (status) status.textContent = realtimeStatusLabel(data.realtime_status);
+      applyLiveMarketUpdate(detail, await response.json());
     } catch (error) {
-      var statusNode = document.getElementById("detail-update-status");
-      if (statusNode) statusNode.textContent = "更新確認中";
-    }
-  }
-
-  async function pollRealtimeStatus() {
-    var summary = document.getElementById("realtime-summary");
-    if (!summary) return;
-    try {
-      var response = await fetch("/api/realtime/status");
-      if (!response.ok) return;
-      var data = await response.json();
-      if (!data.ws_enabled) {
-        summary.textContent = "参考データ";
-      } else if (data.live_market_update_count > 0) {
-        summary.textContent = "最新情報を自動更新";
-      } else if (data.stale_market_update_count > 0) {
-        summary.textContent = "更新確認中";
-      } else {
-        summary.textContent = "参考データ";
-      }
-    } catch (error) {
-      summary.textContent = "参考データ";
+      if (error.name !== "AbortError") return;
+    } finally {
+      detailInFlight = false;
+      detailController = null;
     }
   }
 
@@ -294,14 +320,23 @@ function realtimeStatusLabel(status) {
   attachPredictionForm();
   attachSettlementCheck();
   attachDemoPointManagement();
-  pollMarkets();
-  pollVisibleMarket();
-  pollRealtimeStatus();
-  var seconds = Number(document.body.dataset.pollSeconds || "5");
-  if (!Number.isFinite(seconds) || seconds <= 0) seconds = 5;
-  window.setInterval(function () {
-    pollMarkets();
-    pollVisibleMarket();
-    pollRealtimeStatus();
-  }, Math.max(3, Math.min(5, seconds)) * 1000);
+  pollVisibleMarketCards();
+  pollDetailMarket();
+  var quickSeconds = Number(document.body.dataset.quickRefreshSeconds || "5");
+  var detailSeconds = Number(document.body.dataset.detailRefreshSeconds || "3");
+  if (!Number.isFinite(quickSeconds)) quickSeconds = 5;
+  if (!Number.isFinite(detailSeconds)) detailSeconds = 3;
+  quickSeconds = Math.max(3, Math.min(30, quickSeconds));
+  detailSeconds = Math.max(2, Math.min(15, detailSeconds));
+  window.setInterval(pollVisibleMarketCards, quickSeconds * 1000);
+  window.setInterval(pollDetailMarket, detailSeconds * 1000);
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      if (cardsController) cardsController.abort();
+      if (detailController) detailController.abort();
+      return;
+    }
+    pollVisibleMarketCards();
+    pollDetailMarket();
+  });
 })();

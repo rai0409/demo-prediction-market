@@ -75,7 +75,7 @@
         {% else %}
           <span class="badge subtle">{% if lang == "en" %}Not eligible{% else %}デモ参加対象外{% endif %}</span>
         {% endif %}
-        <span>{{ t("market.updated") }}: {{ (market.ws_last_event_at or market.fetched_at)|date }}</span>
+        <span>{{ t("market.updated") }}: <span data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>
       </div>
 
       <h3>{{ market.title }}</h3>
@@ -85,21 +85,21 @@
       {% set first = market.outcomes[0] %}
       {% set second = market.outcomes[1] %}
       <div class="outcome-row two">
-        <span><strong>{{ first }}</strong>{{ market.probabilities[first]|percent }}</span>
-        <span><strong>{{ second }}</strong>{{ market.probabilities[second]|percent }}</span>
+        <span><strong>{{ first }}</strong><span data-live-probability="{{ first }}">{{ market.probabilities[first]|percent }}</span></span>
+        <span><strong>{{ second }}</strong><span data-live-probability="{{ second }}">{{ market.probabilities[second]|percent }}</span></span>
       </div>
       <div class="probability-bar split" aria-label="probability bar">
-        <span style="width: {{ market.probabilities[first] * 100 }}%"></span>
+        <span data-live-probability-bar="{{ first }}" style="width: {{ market.probabilities[first] * 100 }}%"></span>
       </div>
       {% endif %}
 
       <dl class="metrics">
         <div><dt>{{ t("market.volume") }}</dt><dd>{{ market.volume|number }}</dd></div>
-        <div><dt>{{ t("market.volume_24h") }}</dt><dd>{{ market.volume_24hr|number }}</dd></div>
-        <div><dt>{{ t("market.liquidity") }}</dt><dd>{{ market.liquidity|number }}</dd></div>
-        <div><dt>{{ t("realtime.best_bid") }}</dt><dd>{{ market.best_bid|number }}</dd></div>
-        <div><dt>{{ t("realtime.best_ask") }}</dt><dd>{{ market.best_ask|number }}</dd></div>
-        <div><dt>{{ t("realtime.last_trade") }}</dt><dd>{{ market.last_trade_price|number }}</dd></div>
+        <div><dt>{{ t("market.volume_24h") }}</dt><dd data-live-field="volume_24hr">{{ market.volume_24hr|number }}</dd></div>
+        <div><dt>{{ t("market.liquidity") }}</dt><dd data-live-field="liquidity">{{ market.liquidity|number }}</dd></div>
+        <div><dt>{{ t("realtime.best_bid") }}</dt><dd data-live-field="best_bid">{{ market.best_bid|number }}</dd></div>
+        <div><dt>{{ t("realtime.best_ask") }}</dt><dd data-live-field="best_ask">{{ market.best_ask|number }}</dd></div>
+        <div><dt>{{ t("realtime.last_trade") }}</dt><dd data-live-field="last_trade_price">{{ market.last_trade_price|number }}</dd></div>
       </dl>
 
       <p class="end-date">{{ t("market.end_date") }}: {{ market.end_date|date }}</p>
