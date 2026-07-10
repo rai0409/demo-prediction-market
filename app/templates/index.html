@@ -32,9 +32,9 @@
   </div>
 
   <div class="summary-card">
-    <span>{{ t("market.data_status") }}</span>
-    <strong id="data-status" class="badge">{{ data_status_badge }}</strong>
-    <span>{% if lang == "en" %}Public reference data{% else %}外部予測市場の公開参考データ{% endif %}</span>
+    <span>{{ t("market.data") }}</span>
+    <strong id="data-status" class="badge">{{ t("market.live") }}</strong>
+    <span>{{ t("market.updated") }} <span id="latest-update">{{ (markets[0].fetched_at if markets else "")|date }}</span></span>
   </div>
 
   <div class="summary-card">
@@ -49,17 +49,6 @@
     <span>{% if lang == "en" %}Closed, expired, or filtered{% else %}終了済み・期限切れなど{% endif %}</span>
   </div>
 
-  <div class="summary-card">
-    <span>{{ t("market.last_fetch") }}</span>
-    <strong id="latest-update">{{ (markets[0].fetched_at if markets else "")|date }}</strong>
-    <span>{% if lang == "en" %}Updates quietly while you view this page{% else %}表示中に静かに更新します{% endif %}</span>
-  </div>
-
-  <div class="summary-card">
-    <span>{{ t("realtime.status") }}</span>
-    <strong id="realtime-summary">{{ t("realtime.rest_only") }}</strong>
-    <span>{% if lang == "en" %}Reference data check{% else %}参考データの更新確認{% endif %}</span>
-  </div>
 </section>
 
 <section class="hidden-summary">
@@ -81,28 +70,16 @@
     {% for market in markets %}
     <article class="market-card" data-market-id="{{ market.market_id }}">
       <div class="card-meta">
-        <span class="badge subtle">{{ market.source }}</span>
-        <span>{{ source_status_label(market.data_source_status) }}</span>
+        {% if market.demo_participation_allowed %}
+          <span class="badge subtle">{% if lang == "en" %}Demo eligible{% else %}デモ参加可{% endif %}</span>
+        {% else %}
+          <span class="badge subtle">{% if lang == "en" %}Not eligible{% else %}デモ参加対象外{% endif %}</span>
+        {% endif %}
+        <span>{{ t("market.updated") }}: {{ (market.ws_last_event_at or market.fetched_at)|date }}</span>
       </div>
 
       <h3>{{ market.title }}</h3>
       <p>{{ market.question }}</p>
-
-      <p class="status-label">
-        {% if market.demo_participation_allowed %}
-          {% if lang == "en" %}Demo eligible{% else %}デモ参加可{% endif %}
-        {% else %}
-          {% if lang == "en" %}Not eligible{% else %}デモ参加対象外{% endif %}
-        {% endif %}
-        / {{ t("realtime.status") }}:
-        {% if market.realtime_status == "ws_live" %}
-          {{ t("realtime.ws_live") }}
-        {% elif market.realtime_status == "ws_stale" %}
-          {{ t("realtime.ws_stale") }}
-        {% else %}
-          {{ t("realtime.rest_only") }}
-        {% endif %}
-      </p>
 
       {% if market.outcomes|length >= 2 %}
       {% set first = market.outcomes[0] %}
@@ -125,7 +102,6 @@
         <div><dt>{{ t("realtime.last_trade") }}</dt><dd>{{ market.last_trade_price|number }}</dd></div>
       </dl>
 
-      <p class="end-date">{{ t("realtime.last_event") }}: {{ market.ws_last_event_at|date }}</p>
       <p class="end-date">{{ t("market.end_date") }}: {{ market.end_date|date }}</p>
 
       {% if market.demo_participation_allowed %}
@@ -147,4 +123,6 @@
     {% endfor %}
   </div>
 </section>
+
+<p class="end-date">{{ t("market.public_data_note") }}</p>
 {% endblock %}

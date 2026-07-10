@@ -25,6 +25,12 @@ def test_translation_ja_en():
     assert t("en", "result.check") == "Check results"
     assert t("ja", "nav.demo_wallet") == "マイスコア"
     assert t("en", "nav.demo_wallet") == "My Score"
+    assert t("ja", "market.data") == "市場データ"
+    assert t("en", "market.data") == "Market data"
+    assert t("ja", "market.live") == "ライブ"
+    assert t("en", "market.live") == "Live"
+    assert t("ja", "market.updated") == "最終更新"
+    assert t("en", "market.updated") == "Updated"
 
 
 def test_missing_translation_returns_key_or_default():

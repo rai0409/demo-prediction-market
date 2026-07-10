@@ -275,7 +275,7 @@ def test_dashboard_renders_status_metadata(client):
     response = client.get("/")
     assert response.status_code == 200
     html = response.text
-    assert "データ状態" in html
+    assert "市場データ" in html
     assert "表示中" in html
     assert "取得合計" in html
     assert "非表示" in html
@@ -654,7 +654,12 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
 def test_refresh_copy_is_user_friendly_and_interval_hidden(client):
     html = client.get("/").text
     text = visible_text(html)
-    assert "表示中に静かに更新します" in text
+    assert "市場データ" in text
+    assert "ライブ" in text
+    assert "最終更新" in text
+    assert "表示中に静かに更新します" not in text
+    assert "参考データの更新確認" not in text
+    assert "リアルタイム状態" not in text
     assert "30秒" not in text
     assert "poll" not in text.lower()
     script = Path("app/static/app.js").read_text(encoding="utf-8")
@@ -700,4 +705,19 @@ def test_last_updated_rendering_is_not_raw_iso(client):
     html = client.get("/").text
     assert "T" not in html.split('id="latest-update">', 1)[1].split("</strong>", 1)[0]
     assert "+00:00" not in html
-    assert "最終取得" in html
+    assert "最終更新" in html
+
+
+def test_market_cards_hide_internal_transport_status(client):
+    html = client.get("/").text
+    text = visible_text(html)
+    assert "デモ参加可" in text
+    assert "外部の公開データを参照しています" in text
+    for phrase in [
+        "外部予測市場の公開参考データ",
+        "RESTのみ",
+        "WebSocket更新中",
+        "WebSocket最終更新",
+        "リアルタイム状態",
+    ]:
+        assert phrase not in text

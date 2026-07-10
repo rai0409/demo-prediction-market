@@ -11,7 +11,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "ja": {
         # App / navigation
         "app.title": "Demo Prediction Market Viewer",
-        "app.subtitle": "外部予測市場の公開参考データを使うローカル・デモ予想アプリ",
+        "app.subtitle": "ローカル・デモ予想アプリ",
         "nav.markets": "マーケット",
         "nav.demo_wallet": "マイスコア",
         "nav.positions": "デモポジション",
@@ -39,6 +39,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # Market
         "market.title": "マーケット",
         "market.data_status": "データ状態",
+        "market.data": "市場データ",
+        "market.live": "ライブ",
+        "market.updated": "最終更新",
+        "market.public_data_note": "市場情報は外部の公開データを参照しています。",
         "market.volume": "出来高",
         "market.volume_24h": "24時間出来高",
         "market.liquidity": "流動性",
@@ -158,7 +162,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
         # App / navigation
         "app.title": "Demo Prediction Market Viewer",
-        "app.subtitle": "A local demo app using public reference data from external prediction markets",
+        "app.subtitle": "A local demo prediction app",
         "nav.markets": "Markets",
         "nav.demo_wallet": "My Score",
         "nav.positions": "Demo Positions",
@@ -186,6 +190,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # Market
         "market.title": "Market",
         "market.data_status": "Data status",
+        "market.data": "Market data",
+        "market.live": "Live",
+        "market.updated": "Updated",
+        "market.public_data_note": "Market information references external public data.",
         "market.volume": "Volume",
         "market.volume_24h": "24h volume",
         "market.liquidity": "Liquidity",
