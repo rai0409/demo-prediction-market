@@ -31,16 +31,31 @@ def test_live_env_default_disabled(monkeypatch):
 def test_auto_refresh_config_defaults(monkeypatch):
     monkeypatch.delenv("DEMO_PREDICTION_AUTO_REFRESH", raising=False)
     monkeypatch.delenv("DEMO_PREDICTION_REFRESH_SECONDS", raising=False)
+    monkeypatch.delenv("DEMO_PREDICTION_QUICK_REFRESH_SECONDS", raising=False)
+    monkeypatch.delenv("DEMO_PREDICTION_DETAIL_REFRESH_SECONDS", raising=False)
     settings = get_settings()
     assert settings.auto_refresh is False
-    assert settings.refresh_seconds == 30
+    assert settings.refresh_seconds == 60
+    assert settings.quick_refresh_seconds == 5
+    assert settings.detail_refresh_seconds == 3
 
 
 def test_refresh_seconds_clamp(monkeypatch):
     monkeypatch.setenv("DEMO_PREDICTION_REFRESH_SECONDS", "5")
-    assert get_settings().refresh_seconds == 15
+    assert get_settings().refresh_seconds == 30
     monkeypatch.setenv("DEMO_PREDICTION_REFRESH_SECONDS", "999")
     assert get_settings().refresh_seconds == 300
+
+
+def test_live_refresh_seconds_clamp(monkeypatch):
+    monkeypatch.setenv("DEMO_PREDICTION_QUICK_REFRESH_SECONDS", "1")
+    monkeypatch.setenv("DEMO_PREDICTION_DETAIL_REFRESH_SECONDS", "1")
+    assert get_settings().quick_refresh_seconds == 3
+    assert get_settings().detail_refresh_seconds == 2
+    monkeypatch.setenv("DEMO_PREDICTION_QUICK_REFRESH_SECONDS", "99")
+    monkeypatch.setenv("DEMO_PREDICTION_DETAIL_REFRESH_SECONDS", "99")
+    assert get_settings().quick_refresh_seconds == 30
+    assert get_settings().detail_refresh_seconds == 15
 
 
 def test_websocket_config_defaults(monkeypatch):

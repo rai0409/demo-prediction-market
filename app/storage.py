@@ -230,6 +230,18 @@ def get_market(conn: sqlite3.Connection, market_id: str) -> dict[str, Any] | Non
     return json.loads(row["payload"]) if row else None
 
 
+def list_markets_by_ids(conn: sqlite3.Connection, market_ids: list[str]) -> list[dict[str, Any]]:
+    if not market_ids:
+        return []
+    placeholders = ", ".join("?" for _ in market_ids)
+    rows = conn.execute(
+        f"select market_id, payload from markets where market_id in ({placeholders})",
+        market_ids,
+    ).fetchall()
+    by_id = {str(row["market_id"]): json.loads(row["payload"]) for row in rows}
+    return [by_id[market_id] for market_id in market_ids if market_id in by_id]
+
+
 def list_snapshots(conn: sqlite3.Connection, market_id: str, limit: int = 20) -> list[dict[str, Any]]:
     rows = conn.execute(
         "select payload, fetched_at from market_snapshots where market_id = ? order by id desc limit ?",

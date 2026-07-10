@@ -47,6 +47,7 @@ from app.storage import (
     list_ledger,
     list_demo_results,
     list_markets,
+    list_markets_by_ids,
     list_orders,
     list_positions,
     list_resolution_candidate_updates,
@@ -929,6 +930,54 @@ async def api_markets(
         include_inactive=include_inactive,
         include_all=include_all,
     )
+
+
+LIVE_MARKET_FIELDS = (
+    "market_id",
+    "probabilities",
+    "volume_24hr",
+    "liquidity",
+    "best_bid",
+    "best_ask",
+    "last_trade_price",
+    "realtime_spread",
+    "updated_at",
+    "live",
+    "demo_participation_allowed",
+)
+
+
+def live_market_payload(market: dict) -> dict:
+    enriched = enrich_market_for_display(market)
+    updated_at = enriched.get("ws_last_event_at") or enriched.get("fetched_at")
+    values = {
+        **enriched,
+        "updated_at": updated_at,
+        "live": bool(enriched.get("active")) and not bool(enriched.get("closed")),
+    }
+    return {field: values.get(field) for field in LIVE_MARKET_FIELDS}
+
+
+@app.get("/api/markets/updates")
+async def api_market_updates(ids: str = "", conn: sqlite3.Connection = Depends(get_conn)):
+    requested_ids = [part.strip() for part in ids.split(",") if part.strip()]
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="at least one market id is required")
+    if len(requested_ids) > 50:
+        raise HTTPException(status_code=400, detail="at most 50 market ids are allowed")
+    market_ids = list(dict.fromkeys(requested_ids))
+    markets = list_markets_by_ids(conn, market_ids)
+    enriched = attach_realtime_updates(conn, markets, settings)
+    return {"markets": [live_market_payload(market) for market in enriched]}
+
+
+@app.get("/api/markets/{market_id}/live")
+async def api_market_live(market_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    market = get_market(conn, market_id)
+    if market is None:
+        raise HTTPException(status_code=404, detail="market not found")
+    enriched = attach_realtime_updates(conn, [market], settings)[0]
+    return live_market_payload(enriched)
 
 
 @app.get("/api/markets/{market_id}")

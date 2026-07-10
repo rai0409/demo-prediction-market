@@ -9,7 +9,9 @@ class Settings:
     limit: int
     db_path: str
     auto_refresh: bool = False
-    refresh_seconds: int = 30
+    refresh_seconds: int = 60
+    quick_refresh_seconds: int = 5
+    detail_refresh_seconds: int = 3
     ws_enabled: bool = False
     ws_top_n: int = 10
     ws_stale_seconds: int = 90
@@ -50,7 +52,9 @@ def get_settings() -> Settings:
         limit=max(1, _int_env("DEMO_PREDICTION_LIMIT", 50)),
         db_path=os.getenv("DEMO_PREDICTION_DB", "data/demo_prediction.sqlite3"),
         auto_refresh=_bool_env("DEMO_PREDICTION_AUTO_REFRESH", False),
-        refresh_seconds=max(15, min(300, _int_env("DEMO_PREDICTION_REFRESH_SECONDS", 30))),
+        refresh_seconds=max(30, min(300, _int_env("DEMO_PREDICTION_REFRESH_SECONDS", 60))),
+        quick_refresh_seconds=max(3, min(30, _int_env("DEMO_PREDICTION_QUICK_REFRESH_SECONDS", 5))),
+        detail_refresh_seconds=max(2, min(15, _int_env("DEMO_PREDICTION_DETAIL_REFRESH_SECONDS", 3))),
         ws_enabled=_bool_env("DEMO_PREDICTION_WS_ENABLED", False),
         ws_top_n=max(1, min(50, _int_env("DEMO_PREDICTION_WS_TOP_N", 10))),
         ws_stale_seconds=max(15, min(600, _int_env("DEMO_PREDICTION_WS_STALE_SECONDS", 90))),

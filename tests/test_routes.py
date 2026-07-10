@@ -60,6 +60,87 @@ def test_api_markets(client):
     assert "last_trade_price" in payload["markets"][0]
 
 
+LIVE_MARKET_FIELDS = {
+    "market_id",
+    "probabilities",
+    "volume_24hr",
+    "liquidity",
+    "best_bid",
+    "best_ask",
+    "last_trade_price",
+    "realtime_spread",
+    "updated_at",
+    "live",
+    "demo_participation_allowed",
+}
+
+
+def test_api_market_updates_returns_only_requested_lightweight_fields(client, sample_markets):
+    market_ids = [sample_markets[1]["market_id"], sample_markets[0]["market_id"]]
+    response = client.get("/api/markets/updates?ids=" + ",".join(market_ids))
+    assert response.status_code == 200
+    payload = response.json()
+    assert [market["market_id"] for market in payload["markets"]] == market_ids
+    assert all(set(market) == LIVE_MARKET_FIELDS for market in payload["markets"])
+    assert all("token" not in key.lower() and "credential" not in key.lower() for market in payload["markets"] for key in market)
+
+
+def test_api_market_updates_rejects_empty_and_more_than_fifty_ids(client):
+    assert client.get("/api/markets/updates").status_code == 400
+    assert client.get("/api/markets/updates?ids=,%20,%20").status_code == 400
+    too_many = ",".join(f"market-{index}" for index in range(51))
+    assert client.get("/api/markets/updates?ids=" + too_many).status_code == 400
+
+
+def test_api_market_updates_ignores_unknown_ids(client, sample_markets):
+    known_id = sample_markets[0]["market_id"]
+    response = client.get(f"/api/markets/updates?ids=missing,{known_id}")
+    assert response.status_code == 200
+    assert [market["market_id"] for market in response.json()["markets"]] == [known_id]
+
+
+def test_api_market_updates_never_triggers_external_refresh(client, monkeypatch, sample_markets):
+    def fail_refresh(*args, **kwargs):
+        raise AssertionError("lightweight endpoint must not refresh external market data")
+
+    monkeypatch.setattr("app.main.ensure_fresh_markets", fail_refresh)
+    market_id = sample_markets[0]["market_id"]
+    assert client.get(f"/api/markets/updates?ids={market_id}").status_code == 200
+    assert client.get(f"/api/markets/{market_id}/live").status_code == 200
+
+
+def test_api_market_live_returns_lightweight_fields_and_404(client, sample_markets):
+    response = client.get(f"/api/markets/{sample_markets[0]['market_id']}/live")
+    assert response.status_code == 200
+    assert set(response.json()) == LIVE_MARKET_FIELDS
+    assert client.get("/api/markets/not-found/live").status_code == 404
+
+
+def test_api_market_live_prefers_realtime_values(client, db_conn, sample_markets):
+    market_id = sample_markets[0]["market_id"]
+    insert_realtime_update(
+        db_conn,
+        {
+            "market_id": market_id,
+            "asset_id": "asset-yes",
+            "event_type": "best_bid_ask",
+            "best_bid": 0.41,
+            "best_ask": 0.43,
+            "last_trade_price": 0.42,
+            "spread": 0.02,
+            "raw_event_json": "{}",
+            "event_timestamp": "2099-01-01T00:00:00+00:00",
+        },
+    )
+    db_conn.commit()
+    payload = client.get(f"/api/markets/{market_id}/live").json()
+    assert payload["best_bid"] == 0.41
+    assert payload["best_ask"] == 0.43
+    assert payload["last_trade_price"] == 0.42
+    assert payload["realtime_spread"] == 0.02
+    assert payload["updated_at"] == "2099-01-01T00:00:00+00:00"
+
+
 def test_api_realtime_status_renders_json(client):
     response = client.get("/api/realtime/status")
     assert response.status_code == 200
