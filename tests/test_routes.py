@@ -376,7 +376,7 @@ def test_dashboard_renders_status_metadata(client):
 def test_view_all_markets_link_targets_product_ui_not_api(client):
     html = client.get("/").text
     assert "全マーケットを見る" in html
-    assert 'href="/?lang=ja#market-list"' in html
+    assert 'href="/markets?lang=ja"' in html
     assert ">全マーケットを見る</a>" in html
     assert 'href="/api/markets' not in visible_html(html)
 

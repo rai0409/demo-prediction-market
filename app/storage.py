@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -218,6 +219,73 @@ def replace_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> 
 def list_markets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("select payload from markets order by json_extract(payload, '$.volume_24hr') desc").fetchall()
     return [json.loads(row["payload"]) for row in rows]
+
+
+CATALOG_SORT_SQL = {
+    "volume_24h": "cast(coalesce(json_extract(payload, '$.volume_24hr'), 0) as real)",
+    "liquidity": "cast(coalesce(json_extract(payload, '$.liquidity'), 0) as real)",
+    "end_date": "coalesce(datetime(json_extract(payload, '$.end_date')), '')",
+    "probability": "cast(coalesce((select value from json_each(markets.payload, '$.probabilities') where key = json_extract(markets.payload, '$.outcomes[0]') limit 1), 0) as real)",
+    "updated": "updated_at",
+}
+
+
+def _catalog_like_query(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped.lower()}%"
+
+
+def list_market_catalog(
+    conn: sqlite3.Connection,
+    query: str,
+    status: str,
+    sort: str,
+    order: str,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    """Return one user-facing market catalog page with SQL-side filtering and paging."""
+    normalized_status = status if status in {"active", "closed", "all"} else "active"
+    sort_sql = CATALOG_SORT_SQL.get(sort, CATALOG_SORT_SQL["volume_24h"])
+    order_sql = "asc" if order == "asc" else "desc"
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
+
+    active_sql = """
+        coalesce(json_extract(payload, '$.active'), 0) = 1
+        and coalesce(json_extract(payload, '$.closed'), 0) = 0
+        and (json_extract(payload, '$.end_date') is null
+             or datetime(json_extract(payload, '$.end_date')) > datetime('now'))
+    """
+    closed_sql = f"not ({active_sql})"
+    where: list[str] = []
+    params: list[Any] = []
+    if normalized_status == "active":
+        where.append(active_sql)
+    elif normalized_status == "closed":
+        where.append(closed_sql)
+    if query:
+        where.append(
+            "("
+            "lower(coalesce(json_extract(payload, '$.title'), '')) like ? escape '\\' "
+            "or lower(coalesce(json_extract(payload, '$.question'), '')) like ? escape '\\' "
+            "or lower(coalesce(json_extract(payload, '$.slug'), '')) like ? escape '\\'"
+            ")"
+        )
+        like_query = _catalog_like_query(query)
+        params.extend([like_query, like_query, like_query])
+
+    where_sql = f" where {' and '.join(where)}" if where else ""
+    total_count = int(conn.execute(f"select count(*) as count from markets{where_sql}", params).fetchone()["count"])
+    rows = conn.execute(
+        f"select payload from markets{where_sql} order by {sort_sql} {order_sql}, market_id asc limit ? offset ?",
+        [*params, limit, offset],
+    ).fetchall()
+    return {
+        "markets": [json.loads(row["payload"]) for row in rows],
+        "total_count": total_count,
+        "total_pages": math.ceil(total_count / limit) if total_count else 0,
+    }
 
 
 def get_last_fetch_run(conn: sqlite3.Connection) -> dict[str, Any] | None:

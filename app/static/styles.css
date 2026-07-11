@@ -193,6 +193,101 @@ h1, h2, h3 {
   grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
 }
 
+.catalog-heading {
+  margin-bottom: 18px;
+}
+
+.catalog-count {
+  color: #627d98;
+  font-weight: 700;
+}
+
+.catalog-controls {
+  background: #ffffff;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  margin-bottom: 22px;
+  padding: 16px;
+}
+
+.catalog-form {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(200px, 2fr) repeat(4, minmax(120px, 1fr)) auto auto;
+}
+
+.catalog-form label {
+  color: #334e68;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.catalog-form input,
+.catalog-form select {
+  min-width: 0;
+}
+
+.catalog-form button,
+.catalog-clear {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.catalog-clear {
+  padding: 10px 0;
+}
+
+.catalog-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.catalog-filters a {
+  border: 1px solid #bcccdc;
+  border-radius: 999px;
+  color: #334e68;
+  font-size: 14px;
+  padding: 7px 12px;
+  text-decoration: none;
+}
+
+.catalog-filters a.active {
+  background: #e6f6ff;
+  border-color: #0b7285;
+  color: #075985;
+  font-weight: 700;
+}
+
+.catalog-question {
+  color: #52606d;
+  margin: 0;
+}
+
+.pagination {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.pagination-disabled {
+  color: #829ab1;
+  cursor: not-allowed;
+  font-weight: 700;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #52b7c6;
+  outline-offset: 2px;
+}
+
 .market-card, .market-detail, .participation-panel {
   background: #ffffff;
   border: 1px solid #d8dee8;
@@ -505,6 +600,10 @@ th {
   .market-grid {
     grid-template-columns: 1fr;
   }
+
+  .catalog-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 .lang-switch {
@@ -528,7 +627,6 @@ th {
 .lang-switch span {
   opacity: 0.45;
 }
-
 
 
 

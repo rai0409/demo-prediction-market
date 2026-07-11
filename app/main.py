@@ -45,6 +45,7 @@ from app.storage import (
     list_demo_user_overview,
     list_markets_with_resolution_candidates,
     list_ledger,
+    list_market_catalog,
     list_demo_results,
     list_markets,
     list_markets_by_ids,
@@ -423,6 +424,60 @@ def admin_query(filters: dict[str, str | int], *, page_delta: int = 0, export_ty
     return urlencode({key: value for key, value in values.items() if value not in ("", None)})
 
 
+CATALOG_QUERY_MAX_LENGTH = 120
+CATALOG_STATUSES = {"active", "closed", "all"}
+CATALOG_SORTS = {"volume_24h", "liquidity", "end_date", "probability", "updated"}
+CATALOG_PAGE_SIZES = {10, 20, 50}
+
+
+def catalog_filters(request: Request) -> dict[str, str | int]:
+    query = (request.query_params.get("q") or "").strip()[:CATALOG_QUERY_MAX_LENGTH]
+    status = (request.query_params.get("status") or "active").strip().lower()
+    sort = (request.query_params.get("sort") or "volume_24h").strip().lower()
+    order = (request.query_params.get("order") or "desc").strip().lower()
+    try:
+        page_size_raw = int(request.query_params.get("page_size") or "20")
+    except ValueError:
+        page_size_raw = 20
+    return {
+        "q": query,
+        "status": status if status in CATALOG_STATUSES else "active",
+        "sort": sort if sort in CATALOG_SORTS else "volume_24h",
+        "order": order if order in {"asc", "desc"} else "desc",
+        "page": _positive_int(request.query_params.get("page"), 1),
+        "page_size": page_size_raw if page_size_raw in CATALOG_PAGE_SIZES else 20,
+    }
+
+
+def catalog_url(filters: dict[str, str | int], *, page: int | None = None, **changes: str | int | None) -> str:
+    values = dict(filters)
+    values.update(changes)
+    if page is not None:
+        values["page"] = page
+    values["lang"] = values.get("lang") or "ja"
+    return "/markets?" + urlencode({key: value for key, value in values.items() if value not in ("", None)})
+
+
+def catalog_market_is_active(market: dict) -> bool:
+    if not market.get("active") or market.get("closed"):
+        return False
+    value = market.get("end_date")
+    if not value:
+        return True
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed > datetime.now(timezone.utc)
+    except ValueError:
+        return True
+
+
+def catalog_question(value: str | None, maximum: int = 220) -> str:
+    text = (value or "").strip()
+    return text if len(text) <= maximum else f"{text[:maximum - 1].rstrip()}…"
+
+
 def data_status_badge(markets: list[dict]) -> str:
     status = markets[0].get("data_source_status") if markets else "sample_fallback"
     if status == "live":
@@ -688,6 +743,73 @@ async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
             market_meta=market_response,
             data_status_badge=data_status_badge(all_markets),
             hidden_market_count=hidden_market_count(market_response),
+        ),
+    )
+    return prepare_response(response, request, user_id)
+
+
+@app.get("/markets", response_class=HTMLResponse)
+async def market_catalog(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    filters = catalog_filters(request)
+    filters["lang"] = detect_lang(request)
+    ensure_fresh_markets(conn, settings)
+    page = int(filters["page"])
+    page_size = int(filters["page_size"])
+    catalog = list_market_catalog(
+        conn,
+        str(filters["q"]),
+        str(filters["status"]),
+        str(filters["sort"]),
+        str(filters["order"]),
+        page_size,
+        (page - 1) * page_size,
+    )
+    total_pages = int(catalog["total_pages"])
+    if total_pages and page > total_pages:
+        page = total_pages
+        catalog = list_market_catalog(
+            conn,
+            str(filters["q"]),
+            str(filters["status"]),
+            str(filters["sort"]),
+            str(filters["order"]),
+            page_size,
+            (page - 1) * page_size,
+        )
+    markets = attach_realtime_updates(conn, catalog["markets"], settings)
+    rendered_markets = []
+    for market in markets:
+        item = enrich_market_for_display(market)
+        item["catalog_status"] = "active" if catalog_market_is_active(item) else "closed"
+        item["catalog_question"] = catalog_question(item.get("question"))
+        rendered_markets.append(item)
+    filters["page"] = page
+    filter_urls = {status: catalog_url(filters, page=1, status=status) for status in ("active", "closed", "all")}
+    sort_urls = {sort: catalog_url(filters, page=1, sort=sort) for sort in CATALOG_SORTS}
+    response = templates.TemplateResponse(
+        request,
+        "markets.html",
+        template_context(
+            request,
+            conn,
+            user_id,
+            markets=rendered_markets,
+            q=filters["q"],
+            status=filters["status"],
+            sort=filters["sort"],
+            order=filters["order"],
+            page=page,
+            page_size=page_size,
+            total_count=catalog["total_count"],
+            total_pages=total_pages,
+            has_previous=page > 1,
+            has_next=bool(total_pages and page < total_pages),
+            previous_url=catalog_url(filters, page=page - 1),
+            next_url=catalog_url(filters, page=page + 1),
+            filter_urls=filter_urls,
+            sort_urls=sort_urls,
+            clear_filters_url=catalog_url({"lang": filters["lang"]}, page=1),
         ),
     )
     return prepare_response(response, request, user_id)

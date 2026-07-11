@@ -8,7 +8,7 @@
     <h1>{{ t("app.title") }}</h1>
     <p class="subtitle">{{ t("app.subtitle") }}</p>
   </div>
-  <a class="action-link" href="/?lang={{ lang }}#market-list">{% if lang == "en" %}View all markets{% else %}全マーケットを見る{% endif %}</a>
+  <a class="action-link" href="/markets?lang={{ lang }}">{% if lang == "en" %}View all markets{% else %}全マーケットを見る{% endif %}</a>
 </section>
 
 <section class="disclaimer" aria-label="{{ t('safety.local_only') }}">
