@@ -60,6 +60,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             status text not null,
             market_count integer not null
         );
+        create table if not exists market_translations (
+            market_id text not null,
+            language text not null,
+            translated_title text,
+            translated_question text,
+            translated_description text,
+            source_title_hash text not null,
+            source_question_hash text not null,
+            source_description_hash text not null,
+            translation_provider text not null,
+            translation_model text not null,
+            translation_status text not null,
+            translated_at text not null,
+            error_message text,
+            primary key (market_id, language)
+        );
         create table if not exists demo_users (
             user_id text primary key,
             balance real not null
@@ -218,6 +234,17 @@ def replace_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> 
 
 def list_markets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("select payload from markets order by json_extract(payload, '$.volume_24hr') desc").fetchall()
+    return [json.loads(row["payload"]) for row in rows]
+
+
+def list_markets_for_translation(conn: sqlite3.Connection, limit: int, market_id: str | None = None) -> list[dict[str, Any]]:
+    if market_id:
+        market = get_market(conn, market_id)
+        return [market] if market else []
+    rows = conn.execute(
+        "select payload from markets order by updated_at desc, market_id asc limit ?",
+        (max(1, min(int(limit), 50)),),
+    ).fetchall()
     return [json.loads(row["payload"]) for row in rows]
 
 

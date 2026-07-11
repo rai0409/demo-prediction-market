@@ -83,6 +83,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "pagination.next": "次へ",
         "pagination.page_of": "{page} / {total} ページ",
 
+        # Translation display
+        "translation.japanese": "日本語",
+        "translation.original": "原文",
+        "translation.machine_notice": "この日本語文は機械翻訳です。正式な判定条件は原文をご確認ください。",
+        "translation.unavailable": "翻訳はありません。",
+        "translation.show_original": "原文を表示",
+        "translation.show_japanese": "日本語を表示",
+
         # Demo participation
         "demo.join": "デモ参加",
         "demo.join_action": "予想する",
@@ -260,6 +268,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "pagination.previous": "Previous",
         "pagination.next": "Next",
         "pagination.page_of": "Page {page} of {total}",
+
+        # Translation display
+        "translation.japanese": "Japanese",
+        "translation.original": "Original",
+        "translation.machine_notice": "This Japanese text is machine translated. Please refer to the original text for the official resolution criteria.",
+        "translation.unavailable": "No translation is available.",
+        "translation.show_original": "Show original",
+        "translation.show_japanese": "Show Japanese",
 
         # Demo participation
         "demo.join": "Demo participation",

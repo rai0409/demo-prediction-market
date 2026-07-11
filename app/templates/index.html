@@ -78,8 +78,8 @@
         <span>{{ t("market.updated") }}: <span data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>
       </div>
 
-      <h3>{{ market.title }}</h3>
-      <p>{{ market.question }}</p>
+      <h3>{{ market.display_title }}</h3>
+      <p>{{ market.display_question }}</p>
 
       {% if market.outcomes|length >= 2 %}
       {% set first = market.outcomes[0] %}

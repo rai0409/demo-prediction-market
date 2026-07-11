@@ -23,6 +23,10 @@ class Settings:
     session_cookie_name: str = "demo_user_id"
     participant_switch_enabled: bool = False
     allow_demo_user_header: bool = False
+    translation_enabled: bool = False
+    translation_provider: str = "noop"
+    translation_target_language: str = "ja"
+    translation_max_chars: int = 4000
 
 
 def _int_env(name: str, default: int) -> int:
@@ -68,4 +72,8 @@ def get_settings() -> Settings:
         session_cookie_name=os.getenv("DEMO_SESSION_COOKIE_NAME", "demo_user_id").strip() or "demo_user_id",
         participant_switch_enabled=_bool_env("DEMO_PARTICIPANT_SWITCH_ENABLED", False),
         allow_demo_user_header=_bool_env("DEMO_ALLOW_USER_HEADER", False),
+        translation_enabled=_bool_env("DEMO_TRANSLATION_ENABLED", False),
+        translation_provider=os.getenv("DEMO_TRANSLATION_PROVIDER", "noop").strip().lower() or "noop",
+        translation_target_language=os.getenv("DEMO_TRANSLATION_TARGET_LANGUAGE", "ja").strip().lower() or "ja",
+        translation_max_chars=max(200, min(20000, _int_env("DEMO_TRANSLATION_MAX_CHARS", 4000))),
     )

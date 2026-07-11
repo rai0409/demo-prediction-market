@@ -89,3 +89,22 @@ def test_cookie_secure_config(monkeypatch):
 
     monkeypatch.setenv("DEMO_COOKIE_SECURE", "0")
     assert get_settings().cookie_secure is False
+
+
+def test_translation_config_defaults_and_bounds(monkeypatch):
+    for name in [
+        "DEMO_TRANSLATION_ENABLED",
+        "DEMO_TRANSLATION_PROVIDER",
+        "DEMO_TRANSLATION_TARGET_LANGUAGE",
+        "DEMO_TRANSLATION_MAX_CHARS",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    settings = get_settings()
+    assert settings.translation_enabled is False
+    assert settings.translation_provider == "noop"
+    assert settings.translation_target_language == "ja"
+    assert settings.translation_max_chars == 4000
+    monkeypatch.setenv("DEMO_TRANSLATION_MAX_CHARS", "1")
+    assert get_settings().translation_max_chars == 200
+    monkeypatch.setenv("DEMO_TRANSLATION_MAX_CHARS", "999999")
+    assert get_settings().translation_max_chars == 20000

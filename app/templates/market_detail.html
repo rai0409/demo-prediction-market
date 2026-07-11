@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ market.title }}{% endblock %}
+{% block title %}{{ market.display_title }}{% endblock %}
 {% block content %}
 <section class="disclaimer" aria-label="重要な注意事項">
   {% for line in disclaimer.split('\n') %}
@@ -10,8 +10,46 @@
 <section class="detail-layout">
   <article class="market-detail" data-detail-market-id="{{ market.market_id }}">
     <p class="card-meta"><span class="badge subtle">{{ t("market.live") }}</span><span>{{ t("market.updated") }}: <span id="detail-updated-at" data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span></p>
-    <h1>{{ market.title }}</h1>
-    <h2>{{ market.question }}</h2>
+    {% if market.translation_available %}
+    <div class="translation-tabs" data-translation-switch>
+      <div role="tablist" aria-label="{{ t('translation.japanese') }} / {{ t('translation.original') }}">
+        <button id="translation-tab-ja" type="button" role="tab" aria-selected="true" aria-controls="translation-panel-ja" data-translation-tab="ja">{{ t("translation.japanese") }}</button>
+        <button id="translation-tab-original" type="button" role="tab" aria-selected="false" aria-controls="translation-panel-original" data-translation-tab="original" tabindex="-1">{{ t("translation.original") }}</button>
+      </div>
+      <section id="translation-panel-ja" role="tabpanel" aria-labelledby="translation-tab-ja" data-translation-panel="ja">
+        <h1>{{ market.display_title }}</h1>
+        <h2>{{ market.display_question }}</h2>
+        <p class="translation-notice">{{ t("translation.machine_notice") }}</p>
+        <div class="description-block">
+          <h3>{{ t("market.description") }}</h3>
+          <p>{{ market.display_description or t("translation.unavailable") }}</p>
+        </div>
+      </section>
+      <section id="translation-panel-original" role="tabpanel" aria-labelledby="translation-tab-original" data-translation-panel="original" hidden>
+        <h1>{{ market.original_title }}</h1>
+        <h2>{{ market.original_question }}</h2>
+        <div class="description-block">
+          <h3>{{ t("market.original_text") }}</h3>
+          <p>{{ market.original_description or t("translation.unavailable") }}</p>
+        </div>
+      </section>
+      <noscript>
+        <section class="translation-original-noscript">
+          <h3>{{ t("translation.original") }}</h3>
+          <p>{{ market.original_title }}</p>
+          <p>{{ market.original_question }}</p>
+          <p>{{ market.original_description }}</p>
+        </section>
+      </noscript>
+    </div>
+    {% else %}
+    <h1>{{ market.display_title }}</h1>
+    <h2>{{ market.display_question }}</h2>
+    <section class="description-block">
+      <h3>{{ t("market.description") }}</h3>
+      <p>{{ market.display_description or t("translation.unavailable") }}</p>
+    </section>
+    {% endif %}
     {% if market.demo_participation_allowed %}
     <p class="notice">このマーケットはデモ参加できます。</p>
     {% else %}
@@ -37,10 +75,6 @@
       </div>
       {% endfor %}
     </div>
-    <section class="description-block">
-      <h3>説明 / 結果条件</h3>
-      <p>{{ market.description or "説明はありません。" }}</p>
-    </section>
     <section>
       <h3>参考データの推移</h3>
       {% if snapshots %}

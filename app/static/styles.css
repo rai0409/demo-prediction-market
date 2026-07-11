@@ -470,6 +470,40 @@ meter {
   padding-top: 18px;
 }
 
+.translation-tabs [role="tablist"] {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.translation-tabs [role="tab"] {
+  background: #ffffff;
+  border: 1px solid #bcccdc;
+  color: #334e68;
+  margin-top: 0;
+}
+
+.translation-tabs [role="tab"][aria-selected="true"] {
+  background: #e6f6ff;
+  border-color: #0b7285;
+  color: #075985;
+}
+
+.translation-notice {
+  background: #fff8e6;
+  border-left: 4px solid #f0c36d;
+  color: #52606d;
+  font-size: 13px;
+  margin: 12px 0;
+  padding: 10px 12px;
+}
+
+.translation-original-noscript {
+  border-top: 1px solid #d8dee8;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
 .participation-panel form {
   display: grid;
   gap: 10px;
@@ -627,6 +661,5 @@ th {
 .lang-switch span {
   opacity: 0.45;
 }
-
 
 

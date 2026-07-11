@@ -30,6 +30,7 @@ from app.realtime import (
 from app.safety import DISCLAIMER
 from app.i18n import detect_lang, template_i18n_context
 from app.settlement import compare_candidate_with_rest_resolution, settle_pending_positions
+from app.translation import add_translation_display, add_translation_displays
 from app.storage import (
     DEMO_USER_ID,
     count_resolution_candidates,
@@ -731,6 +732,12 @@ def resolution_candidates_payload(conn: sqlite3.Connection, user_id: str) -> dic
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     user_id = current_demo_user_id(request, conn)
     all_markets = attach_realtime_updates(conn, ensure_fresh_markets(conn, settings), settings)
+    all_markets = add_translation_displays(
+        conn,
+        all_markets,
+        language=detect_lang(request),
+        enabled=settings.translation_enabled,
+    )
     market_response = filtered_market_response(all_markets)
     response = templates.TemplateResponse(
         request,
@@ -778,11 +785,17 @@ async def market_catalog(request: Request, conn: sqlite3.Connection = Depends(ge
             (page - 1) * page_size,
         )
     markets = attach_realtime_updates(conn, catalog["markets"], settings)
+    markets = add_translation_displays(
+        conn,
+        markets,
+        language=detect_lang(request),
+        enabled=settings.translation_enabled,
+    )
     rendered_markets = []
     for market in markets:
         item = enrich_market_for_display(market)
         item["catalog_status"] = "active" if catalog_market_is_active(item) else "closed"
-        item["catalog_question"] = catalog_question(item.get("question"))
+        item["catalog_question"] = catalog_question(item.get("display_question"))
         rendered_markets.append(item)
     filters["page"] = page
     filter_urls = {status: catalog_url(filters, page=1, status=status) for status in ("active", "closed", "all")}
@@ -824,6 +837,12 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
         raise HTTPException(status_code=404, detail="market not found")
     market = attach_realtime_updates(conn, [market], settings)[0]
     market = enrich_market_for_display(market)
+    market = add_translation_display(
+        conn,
+        market,
+        language=detect_lang(request),
+        enabled=settings.translation_enabled,
+    )
     snapshots = list_snapshots(conn, market_id, limit=12)
     response = templates.TemplateResponse(
         request,

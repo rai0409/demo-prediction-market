@@ -84,6 +84,35 @@ function confirmationStatusLabel(status) {
     updateEstimator();
   }
 
+  function attachTranslationSwitch() {
+    var root = document.querySelector("[data-translation-switch]");
+    if (!root) return;
+    var tabs = Array.from(root.querySelectorAll("[data-translation-tab]"));
+    var panels = Array.from(root.querySelectorAll("[data-translation-panel]"));
+    function selectTab(language) {
+      tabs.forEach(function (tab) {
+        var selected = tab.dataset.translationTab === language;
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      });
+      panels.forEach(function (panel) {
+        panel.hidden = panel.dataset.translationPanel !== language;
+      });
+    }
+    tabs.forEach(function (tab, index) {
+      tab.addEventListener("click", function () {
+        selectTab(tab.dataset.translationTab);
+      });
+      tab.addEventListener("keydown", function (event) {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        var nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        tabs[nextIndex].focus();
+        selectTab(tabs[nextIndex].dataset.translationTab);
+      });
+    });
+  }
+
   function formatMinute(value) {
     if (!value) return "-";
     var parsed = new Date(value);
@@ -318,6 +347,7 @@ function confirmationStatusLabel(status) {
   }
 
   attachPredictionForm();
+  attachTranslationSwitch();
   attachSettlementCheck();
   attachDemoPointManagement();
   pollVisibleMarketCards();

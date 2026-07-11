@@ -66,7 +66,7 @@
       <span class="badge subtle">{% if market.demo_participation_allowed %}{{ t("market.demo_eligible") }}{% else %}{{ t("market.not_eligible") }}{% endif %}</span>
       <span>{{ t("market.updated") }}: <span data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>
     </div>
-    <h2>{{ market.title }}</h2>
+    <h2>{{ market.display_title }}</h2>
     <p class="catalog-question">{{ market.catalog_question }}</p>
     {% if market.outcomes|length >= 2 %}
     {% set first = market.outcomes[0] %}
