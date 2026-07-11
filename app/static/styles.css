@@ -529,26 +529,6 @@ th {
   opacity: 0.45;
 }
 
-.demo-user-switch {
-  align-items: center;
-  display: inline-flex;
-  gap: 8px;
-  white-space: nowrap;
-}
 
-.demo-user-switch label {
-  color: #627d98;
-  font-size: 12px;
-  font-weight: 700;
-}
 
-.demo-user-switch input {
-  font-size: 14px;
-  max-width: 150px;
-  padding: 7px 9px;
-}
 
-.demo-user-switch button {
-  margin-top: 0;
-  padding: 8px 10px;
-}

@@ -180,7 +180,12 @@ def test_strict_participant_mode_rejects_unknown_code(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "settings",
-        replace(main.settings, strict_participant_access=True, participant_codes="collab-1"),
+        replace(
+            main.settings,
+            strict_participant_access=True,
+            participant_codes="collab-1",
+            participant_switch_enabled=True,
+        ),
     )
 
     response = client.post("/demo-user", data={"demo_user": "unknown"})
@@ -194,7 +199,12 @@ def test_strict_participant_mode_accepts_configured_code_and_sets_cookie(client,
     monkeypatch.setattr(
         main,
         "settings",
-        replace(main.settings, strict_participant_access=True, participant_codes="collab-1"),
+        replace(
+            main.settings,
+            strict_participant_access=True,
+            participant_codes="collab-1",
+            participant_switch_enabled=True,
+        ),
     )
 
     response = client.post("/demo-user", data={"demo_user": "collab-1"})

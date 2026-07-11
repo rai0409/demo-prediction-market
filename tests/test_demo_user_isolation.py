@@ -56,10 +56,20 @@ def test_demo_settlement_only_updates_current_user(client, sample_markets):
     assert bob_results["results"][0]["stake"] == 200
 
 
-def test_demo_user_query_sets_cookie_and_uses_scoped_balance(client):
+def test_demo_user_query_does_not_override_identity(client):
+    baseline = client.get("/api/demo/balance")
     response = client.get("/?demo_user=limited-user")
+    queried = client.get("/api/demo/balance?demo_user=limited-user")
 
+    assert baseline.status_code == 200
     assert response.status_code == 200
-    assert "demo_user_id=limited-user" in response.headers["set-cookie"]
-    assert "参加者" in response.text
-    assert 'value="limited-user"' in response.text
+    assert queried.status_code == 200
+
+    # Query parameters are no longer an accepted identity source.
+    assert "demo_user_id=limited-user" not in response.headers.get(
+        "set-cookie",
+        "",
+    )
+    assert queried.json()["user_id"] == baseline.json()["user_id"]
+
+

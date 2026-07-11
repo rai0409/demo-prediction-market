@@ -172,24 +172,40 @@ def validate_strict_participant_code(raw_code: str | None) -> str | None:
 
 def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
     cookie_name = demo_session_cookie_name()
+
+    # Development/test-only participant override. Disabled by default.
+    raw_header_override = (
+        request.headers.get(DEMO_USER_HEADER)
+        if settings.allow_demo_user_header
+        else None
+    )
+
     if settings.strict_participant_access:
-        raw_override = request.query_params.get("demo_user") or request.headers.get(DEMO_USER_HEADER)
-        if raw_override:
-            user_id = validate_strict_participant_code(raw_override)
+        if raw_header_override:
+            user_id = validate_strict_participant_code(raw_header_override)
             if user_id is None:
-                raise HTTPException(status_code=403, detail="participant code is not allowed for this demo")
+                raise HTTPException(
+                    status_code=403,
+                    detail="participant code is not allowed for this demo",
+                )
             return ensure_demo_user(conn, user_id)
+
         cookie_user_id = request.cookies.get(cookie_name)
         if cookie_user_id:
             user_id = validate_strict_participant_code(cookie_user_id)
             if user_id is None:
-                raise HTTPException(status_code=403, detail="participant session is not allowed for this demo")
+                raise HTTPException(
+                    status_code=403,
+                    detail="participant session is not allowed for this demo",
+                )
             return ensure_demo_user(conn, user_id)
+
         return ensure_demo_user(conn, DEMO_USER_ID)
 
+    # Normal product requests do not accept participant identity from query
+    # parameters. Identity comes from the existing participant cookie/session.
     user_id = (
-        request.query_params.get("demo_user")
-        or request.headers.get(DEMO_USER_HEADER)
+        raw_header_override
         or request.cookies.get(cookie_name)
         or DEMO_USER_ID
     )
@@ -218,7 +234,7 @@ def set_csrf_cookie(response, token: str):
 
 
 def set_demo_user_cookie_if_needed(response, request: Request, user_id: str):
-    if request.query_params.get("demo_user") or request.headers.get(DEMO_USER_HEADER):
+    if settings.allow_demo_user_header and request.headers.get(DEMO_USER_HEADER):
         response.set_cookie(
             demo_session_cookie_name(),
             user_id,
@@ -304,13 +320,18 @@ def require_admin(request: Request) -> JSONResponse | None:
 
 
 def record_operation_rejection(request: Request, category: str, reason: str) -> None:
+    participant = request.cookies.get(demo_session_cookie_name()) or "-"
+
+    if settings.allow_demo_user_header:
+        participant = request.headers.get(DEMO_USER_HEADER) or participant
+
     _operation_rejections.append(
         {
             "時刻": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
             "種別": category,
             "理由": reason,
             "経路": request.url.path,
-            "参加者": request.headers.get(DEMO_USER_HEADER) or request.cookies.get(demo_session_cookie_name()) or "-",
+            "参加者": participant,
         }
     )
     del _operation_rejections[:-100]
@@ -879,6 +900,10 @@ async def admin_audit_access(request: Request):
 
 @app.post("/demo-user")
 async def set_demo_user(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    if not settings.participant_switch_enabled:
+        record_operation_rejection(request, "participant", "参加者切替無効")
+        raise HTTPException(status_code=404, detail="not found")
+
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error

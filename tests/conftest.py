@@ -30,7 +30,15 @@ def client(db_conn, monkeypatch):
     monkeypatch.setattr(
         main,
         "settings",
-        Settings(live=False, poll_seconds=30, limit=50, db_path=":memory:", admin_token="test-admin"),
+        Settings(
+            live=False,
+            poll_seconds=30,
+            limit=50,
+            db_path=":memory:",
+            admin_token="test-admin",
+            participant_switch_enabled=True,
+            allow_demo_user_header=True,
+        ),
     )
     main._post_rate_events.clear()
     async def override_conn():

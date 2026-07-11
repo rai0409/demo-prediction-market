@@ -21,6 +21,8 @@ class Settings:
     strict_participant_access: bool = False
     participant_codes: str = ""
     session_cookie_name: str = "demo_user_id"
+    participant_switch_enabled: bool = False
+    allow_demo_user_header: bool = False
 
 
 def _int_env(name: str, default: int) -> int:
@@ -64,4 +66,6 @@ def get_settings() -> Settings:
         strict_participant_access=_bool_env("DEMO_STRICT_PARTICIPANT_ACCESS", False),
         participant_codes=os.getenv("DEMO_PARTICIPANT_CODES", "").strip(),
         session_cookie_name=os.getenv("DEMO_SESSION_COOKIE_NAME", "demo_user_id").strip() or "demo_user_id",
+        participant_switch_enabled=_bool_env("DEMO_PARTICIPANT_SWITCH_ENABLED", False),
+        allow_demo_user_header=_bool_env("DEMO_ALLOW_USER_HEADER", False),
     )

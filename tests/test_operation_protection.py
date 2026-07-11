@@ -84,8 +84,7 @@ def test_rendered_csrf_token_matches_cookie(client):
     token = response.cookies["demo_csrf"]
 
     assert f'data-csrf-token="{token}"' in response.text
-    assert f'name="csrf_token" value="{token}"' in response.text
-    assert re.search(r'action="/demo-user\?csrf_token=[^"]+"', response.text)
+    assert 'action="/demo-user' not in response.text
 
 
 def test_secure_cookie_setting_adds_secure_attribute(client, monkeypatch):
@@ -93,7 +92,11 @@ def test_secure_cookie_setting_adds_secure_attribute(client, monkeypatch):
 
     import app.main as main
 
-    monkeypatch.setattr(main, "settings", replace(main.settings, cookie_secure=True))
+    monkeypatch.setattr(main, "settings", replace(
+            main.settings,
+            cookie_secure=True,
+            allow_demo_user_header=True,
+        ))
 
     page = client.get("/", headers={"x-demo-user": "secure-user"})
     token = page.cookies["demo_csrf"]
