@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 from typing import Any, Protocol
+import unicodedata
 from uuid import uuid4
 
 import httpx
@@ -17,6 +18,79 @@ from app.config import Settings
 
 TRANSLATION_SUCCESS = "success"
 TRANSLATION_FAILED = "failed"
+
+
+def _normalize_logic_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).lower()
+    normalized = normalized.replace("、", " ").replace("。", " ")
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, value) for pattern in patterns)
+
+
+def translation_logic_issues(source: str, translated: str) -> list[str]:
+    """Detect whether prediction-market boundary and logical operators survived translation."""
+    english = _normalize_logic_text(source)
+    japanese = _normalize_logic_text(translated)
+    issues: list[str] = []
+
+    has_on_or_before = bool(re.search(r"\bon or before\b", english))
+    has_on_or_after = bool(re.search(r"\bon or after\b", english))
+    has_no_more_than = bool(re.search(r"\bno more than\b", english))
+
+    if has_on_or_before:
+        if not _matches_any(japanese, (r"以前", r"までに", r"当日.*(?:以前|まで)", r"以下の日付まで")) or "より前" in japanese:
+            issues.append("logic_on_or_before_not_preserved")
+    else:
+        if re.search(r"\bbefore\b", english) and not _matches_any(japanese, (r"より前", r"以前", r"前まで")):
+            issues.append("logic_before_not_preserved")
+        if re.search(r"\bby\b", english):
+            if not _matches_any(japanese, (r"までに", r"期限まで", r"期日まで")) or "より前" in japanese:
+                issues.append("logic_by_not_preserved")
+
+    if has_on_or_after:
+        if not _matches_any(japanese, (r"以降", r"当日.*以降", r"当日またはそれ以降")) or "より後" in japanese:
+            issues.append("logic_on_or_after_not_preserved")
+    elif re.search(r"\bafter\b", english) and (not _matches_any(japanese, (r"より後", r"後に")) or "以降" in japanese):
+        issues.append("logic_after_not_preserved")
+
+    if re.search(r"\bat least\b", english):
+        if not _matches_any(japanese, (r"少なくとも", r"以上")) or _matches_any(japanese, (r"未満", r"以下")):
+            issues.append("logic_at_least_not_preserved")
+    if has_no_more_than:
+        if not _matches_any(japanese, (r"以下", r"多くても", r"超えない")) or "未満" in japanese:
+            issues.append("logic_no_more_than_not_preserved")
+    elif re.search(r"\bmore than\b", english):
+        if not _matches_any(japanese, (r"超える", r"より多い")) or "以上" in japanese:
+            issues.append("logic_more_than_not_preserved")
+    if re.search(r"\bless than\b", english):
+        if not _matches_any(japanese, (r"未満", r"より少ない")) or "以下" in japanese:
+            issues.append("logic_less_than_not_preserved")
+
+    if re.search(r"\bonly if\b", english):
+        if not _matches_any(japanese, (r"場合に限り", r"場合にのみ", r"のときだけ", r"場合だけ")):
+            issues.append("logic_only_if_not_preserved")
+
+    negation_source = bool(re.search(r"\bnot\b", english) or re.search(r"\bwithout\b", english))
+    negation_source = negation_source or bool(re.search(r"\bno\b", english) and not has_no_more_than)
+    if negation_source and not _matches_any(japanese, (r"ない", r"ではない", r"せず", r"なし", r"除く", r"得ず")):
+        issues.append("logic_negation_not_preserved")
+
+    if re.search(r"\bbetween\b.+\band\b", english):
+        if not _matches_any(japanese, (r"から.+(?:まで|の間)", r"と.+の間", r"以上.+以下")):
+            issues.append("logic_between_not_preserved")
+    if re.search(r"\bexactly\b", english):
+        if not _matches_any(japanese, (r"ちょうど", r"正確に", r"のみ")) or _matches_any(japanese, (r"少なくとも", r"以上", r"以下")):
+            issues.append("logic_exactly_not_preserved")
+    if re.search(r"\beither\b.+\bor\b", english):
+        if not _matches_any(japanese, (r"または", r"又は", r"いずれか", r"か")) or _matches_any(japanese, (r"両方", r"どちらも", r"および")):
+            issues.append("logic_either_or_not_preserved")
+    if re.search(r"\bboth\b.+\band\b", english):
+        if not _matches_any(japanese, (r"両方", r"および", r"かつ")) or _matches_any(japanese, (r"または", r"又は", r"いずれか")):
+            issues.append("logic_both_and_not_preserved")
+    return issues
 
 
 def translation_quality_issues(source: str, translated: str) -> list[str]:
@@ -60,6 +134,7 @@ def translation_quality_issues(source: str, translated: str) -> list[str]:
     for condition, expected in required_conditions.items():
         if condition in lowered and not re.search(expected, translated):
             issues.append(f"condition:{condition}")
+    issues.extend(translation_logic_issues(source, translated))
     return issues
 
 
