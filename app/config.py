@@ -27,6 +27,19 @@ class Settings:
     translation_provider: str = "noop"
     translation_target_language: str = "ja"
     translation_max_chars: int = 4000
+    translation_model: str = "Helsinki-NLP/opus-mt-en-jap"
+    translation_device: str = "auto"
+    translation_batch_size: int = 4
+    translation_local_files_only: bool = False
+    azure_translator_key: str = ""
+    azure_translator_endpoint: str = "https://api.cognitive.microsofttranslator.com"
+    azure_translator_region: str = ""
+    azure_translator_api_version: str = "3.0"
+    azure_translator_source_language: str = "en"
+    azure_translator_target_language: str = "ja"
+    azure_translator_timeout_seconds: int = 15
+    azure_translator_max_retries: int = 3
+    azure_translator_batch_size: int = 20
 
 
 def _int_env(name: str, default: int) -> int:
@@ -76,4 +89,17 @@ def get_settings() -> Settings:
         translation_provider=os.getenv("DEMO_TRANSLATION_PROVIDER", "noop").strip().lower() or "noop",
         translation_target_language=os.getenv("DEMO_TRANSLATION_TARGET_LANGUAGE", "ja").strip().lower() or "ja",
         translation_max_chars=max(200, min(20000, _int_env("DEMO_TRANSLATION_MAX_CHARS", 4000))),
+        translation_model=os.getenv("DEMO_TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-en-jap").strip() or "Helsinki-NLP/opus-mt-en-jap",
+        translation_device=(os.getenv("DEMO_TRANSLATION_DEVICE", "auto").strip().lower() or "auto"),
+        translation_batch_size=max(1, min(32, _int_env("DEMO_TRANSLATION_BATCH_SIZE", 4))),
+        translation_local_files_only=_bool_env("DEMO_TRANSLATION_LOCAL_FILES_ONLY", False),
+        azure_translator_key=os.getenv("AZURE_TRANSLATOR_KEY", "").strip(),
+        azure_translator_endpoint=(os.getenv("AZURE_TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com").strip() or "https://api.cognitive.microsofttranslator.com"),
+        azure_translator_region=os.getenv("AZURE_TRANSLATOR_REGION", "").strip(),
+        azure_translator_api_version=(os.getenv("AZURE_TRANSLATOR_API_VERSION", "3.0").strip() or "3.0"),
+        azure_translator_source_language=(os.getenv("AZURE_TRANSLATOR_SOURCE_LANGUAGE", "en").strip().lower() or "en"),
+        azure_translator_target_language=(os.getenv("AZURE_TRANSLATOR_TARGET_LANGUAGE", "ja").strip().lower() or "ja"),
+        azure_translator_timeout_seconds=max(1, min(120, _int_env("AZURE_TRANSLATOR_TIMEOUT_SECONDS", 15))),
+        azure_translator_max_retries=max(0, min(10, _int_env("AZURE_TRANSLATOR_MAX_RETRIES", 3))),
+        azure_translator_batch_size=max(1, min(100, _int_env("AZURE_TRANSLATOR_BATCH_SIZE", 20))),
     )

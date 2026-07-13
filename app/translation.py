@@ -2,16 +2,65 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import re
 import sqlite3
+import time
 from typing import Any, Protocol
+from uuid import uuid4
+
+import httpx
 
 from app.config import Settings
 
 
 TRANSLATION_SUCCESS = "success"
 TRANSLATION_FAILED = "failed"
+
+
+def translation_quality_issues(source: str, translated: str) -> list[str]:
+    """Return conservative, machine-detectable fidelity failures for saved translations."""
+    source = normalize_source_text(source)
+    translated = normalize_source_text(translated)
+    issues: list[str] = []
+    if not translated:
+        return ["empty"]
+    if translated == source:
+        issues.append("unchanged")
+
+    source_numbers = re.findall(r"(?<![\w.])\d+(?:,\d{3})*(?:\.\d+)?", source)
+    normalized_translation = translated.replace(",", "").replace("，", "")
+    for number in source_numbers:
+        if number.replace(",", "") not in normalized_translation:
+            issues.append(f"number:{number}")
+
+    for url in re.findall(r"https?://\S+", source):
+        if url not in translated:
+            issues.append("url")
+    protected_names = re.findall(
+        r"\b(?:NATO|Bitcoin|Federal Reserve|United Nations|Japan|Alice|Bob|Kraken)\b",
+        source,
+    )
+    for name in protected_names:
+        if name not in translated:
+            issues.append(f"name:{name}")
+
+    required_conditions = {
+        "at least": r"少なくとも|以上",
+        "no more than": r"以下|を超えない",
+        "more than": r"より多|超える|以上",
+        "less than": r"未満|より少な",
+        "on or before": r"までに|以前|まで",
+        "before": r"前|以前|までに",
+        "after": r"後|以降",
+        "not ": r"ない|ません|ず",
+    }
+    lowered = source.lower()
+    for condition, expected in required_conditions.items():
+        if condition in lowered and not re.search(expected, translated):
+            issues.append(f"condition:{condition}")
+    return issues
 
 
 class TranslationUnavailableError(RuntimeError):
@@ -53,8 +102,360 @@ class NoopTranslator:
         raise TranslationUnavailableError("no translation provider is configured")
 
 
+class AzureTranslatorError(TranslationUnavailableError):
+    """Raised when Azure Translator cannot return a valid translation response."""
+
+
+class AzureTranslator:
+    """Azure Translator REST provider with bounded retries for transient failures."""
+
+    provider = "azure"
+    _retry_statuses = {408, 429, 500, 502, 503, 504}
+
+    def __init__(
+        self,
+        *,
+        key: str,
+        endpoint: str = "https://api.cognitive.microsofttranslator.com",
+        region: str = "",
+        api_version: str = "3.0",
+        source_language: str = "en",
+        target_language: str = "ja",
+        timeout_seconds: int = 15,
+        max_retries: int = 3,
+        batch_size: int = 20,
+        http_client: Any | None = None,
+        sleep: Any = time.sleep,
+    ) -> None:
+        self.key = key
+        self.endpoint = endpoint.rstrip("/")
+        self.region = region
+        self.api_version = api_version
+        self.source_language = source_language
+        self.target_language = target_language
+        self.timeout_seconds = max(1, int(timeout_seconds))
+        self.max_retries = max(0, int(max_retries))
+        self.batch_size = max(1, int(batch_size))
+        self.model = f"azure-translator-{api_version}"
+        self._http_client = http_client
+        self._sleep = sleep
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Ocp-Apim-Subscription-Key": self.key,
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-ClientTraceId": str(uuid4()),
+        }
+        if self.region:
+            headers["Ocp-Apim-Subscription-Region"] = self.region
+        return headers
+
+    @staticmethod
+    def _retry_after_seconds(headers: Any) -> float | None:
+        value = headers.get("Retry-After") if headers else None
+        if not value:
+            return None
+        try:
+            return min(30.0, max(0.0, float(value)))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(value)
+            except (TypeError, ValueError, IndexError):
+                return None
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return min(30.0, max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
+
+    def _wait_before_retry(self, attempt: int, headers: Any = None) -> None:
+        delay = self._retry_after_seconds(headers)
+        if delay is None:
+            delay = min(5.0, 0.25 * (2 ** attempt))
+        self._sleep(delay)
+
+    def _post(self, texts: list[str], target_language: str) -> list[str]:
+        if not self.key:
+            raise AzureTranslatorError("Azure Translator key is not configured")
+        client = self._http_client or httpx.Client()
+        close_client = self._http_client is None
+        try:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    response = client.post(
+                        f"{self.endpoint}/translate",
+                        params={
+                            "api-version": self.api_version,
+                            "from": self.source_language,
+                            "to": target_language,
+                            "textType": "plain",
+                        },
+                        headers=self._headers(),
+                        json=[{"Text": text} for text in texts],
+                        timeout=self.timeout_seconds,
+                    )
+                except httpx.TimeoutException:
+                    if attempt < self.max_retries:
+                        self._wait_before_retry(attempt)
+                        continue
+                    raise AzureTranslatorError("Azure Translator request timed out after retries") from None
+                except httpx.RequestError:
+                    if attempt < self.max_retries:
+                        self._wait_before_retry(attempt)
+                        continue
+                    raise AzureTranslatorError("Azure Translator request failed after retries") from None
+
+                if response.status_code in self._retry_statuses:
+                    if attempt < self.max_retries:
+                        self._wait_before_retry(attempt, response.headers)
+                        continue
+                    raise AzureTranslatorError(f"Azure Translator returned HTTP {response.status_code} after retries")
+                if response.status_code >= 400:
+                    raise AzureTranslatorError(f"Azure Translator returned HTTP {response.status_code}")
+                return self._parse_response(response, len(texts))
+        finally:
+            if close_client:
+                client.close()
+        raise AzureTranslatorError("Azure Translator request failed")
+
+    @staticmethod
+    def _parse_response(response: Any, expected_count: int) -> list[str]:
+        try:
+            payload = response.json()
+        except Exception:
+            raise AzureTranslatorError("Azure Translator returned an invalid response") from None
+        if not isinstance(payload, list) or len(payload) != expected_count:
+            raise AzureTranslatorError("Azure Translator response count did not match request")
+        results: list[str] = []
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("translations"), list) or not item["translations"]:
+                raise AzureTranslatorError("Azure Translator response is missing translations")
+            translation = item["translations"][0]
+            if not isinstance(translation, dict) or not isinstance(translation.get("text"), str) or not translation["text"]:
+                raise AzureTranslatorError("Azure Translator response is missing translated text")
+            if not isinstance(translation.get("to"), str) or not translation["to"]:
+                raise AzureTranslatorError("Azure Translator response is missing target language")
+            results.append(translation["text"])
+        return results
+
+    def _translate_texts(self, values: list[str], target_language: str) -> list[str]:
+        results = ["" for _ in values]
+        positions = [index for index, value in enumerate(values) if value]
+        for start in range(0, len(positions), self.batch_size):
+            indexes = positions[start:start + self.batch_size]
+            for index, translated in zip(indexes, self._post([values[index] for index in indexes], target_language)):
+                results[index] = translated
+        return results
+
+    def translate_batch(self, requests: list[tuple[str, str, str, str]]) -> list[TranslationPayload]:
+        target_language = requests[0][3] if requests else self.target_language
+        titles = self._translate_texts([title for title, _, _, _ in requests], target_language)
+        questions = self._translate_texts([question for _, question, _, _ in requests], target_language)
+        descriptions = self._translate_texts([description for _, _, description, _ in requests], target_language)
+        return [
+            TranslationPayload(title=title, question=question, description=description or None, provider=self.provider, model=self.model)
+            for title, question, description in zip(titles, questions, descriptions)
+        ]
+
+    def translate(self, *, title: str, question: str, description: str, target_language: str) -> TranslationPayload:
+        return self.translate_batch([(title, question, description, target_language or self.target_language)])[0]
+
+
+class LocalMarianTranslator:
+    """Lazy, reusable local Marian translator used only by translation CLI jobs."""
+
+    provider = "local_marian"
+
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        device: str = "auto",
+        batch_size: int = 4,
+        local_files_only: bool = False,
+        max_input_length: int = 256,
+        torch_module: Any | None = None,
+        tokenizer_class: Any | None = None,
+        model_class: Any | None = None,
+    ) -> None:
+        self.model_id = model_id
+        self.model = model_id
+        self.requested_device = device if device in {"auto", "cpu", "cuda"} else "auto"
+        self.batch_size = max(1, min(int(batch_size), 32))
+        self.local_files_only = local_files_only
+        self.max_input_length = max(16, min(int(max_input_length), 512))
+        self._torch = torch_module
+        self._tokenizer_class = tokenizer_class
+        self._model_class = model_class
+        self._tokenizer: Any | None = None
+        self._model: Any | None = None
+        self.device_used: str | None = None
+        self.cpu_fallback_used = False
+
+    def _dependencies(self) -> tuple[Any, Any, Any]:
+        if self._torch is not None and self._tokenizer_class is not None and self._model_class is not None:
+            return self._torch, self._tokenizer_class, self._model_class
+        try:
+            import torch
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        except ImportError as exc:
+            raise TranslationUnavailableError(
+                "local_marian requires translation dependencies; install with "
+                "python -m pip install -r requirements-translation.txt"
+            ) from exc
+        self._torch = torch
+        self._tokenizer_class = AutoTokenizer
+        self._model_class = AutoModelForSeq2SeqLM
+        return torch, AutoTokenizer, AutoModelForSeq2SeqLM
+
+    def _preferred_device(self, torch: Any) -> str:
+        if self.requested_device == "cpu":
+            return "cpu"
+        if self.requested_device == "cuda":
+            return "cuda"
+        return "cuda" if bool(torch.cuda.is_available()) else "cpu"
+
+    def _load(self, device: str) -> None:
+        _, tokenizer_class, model_class = self._dependencies()
+        tokenizer = tokenizer_class.from_pretrained(self.model_id, local_files_only=self.local_files_only)
+        model = model_class.from_pretrained(self.model_id, local_files_only=self.local_files_only)
+        model.to(device)
+        model.eval()
+        self._tokenizer = tokenizer
+        self._model = model
+        self.device_used = device
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None and self._tokenizer is not None:
+            return
+        torch, _, _ = self._dependencies()
+        device = self._preferred_device(torch)
+        try:
+            self._load(device)
+        except Exception as exc:
+            self._model = self._tokenizer = None
+            if device != "cuda":
+                if isinstance(exc, TranslationUnavailableError):
+                    raise
+                raise TranslationUnavailableError("local Marian model could not be loaded") from exc
+            self.cpu_fallback_used = True
+            try:
+                self._load("cpu")
+            except Exception as cpu_exc:
+                self._model = self._tokenizer = None
+                raise TranslationUnavailableError("local Marian model could not be loaded on CUDA or CPU") from cpu_exc
+
+    def _translate_texts(self, values: list[str]) -> list[str]:
+        results = ["" for _ in values]
+        positions = [index for index, value in enumerate(values) if value]
+        if not positions:
+            return results
+        self._ensure_loaded()
+        for start in range(0, len(positions), self.batch_size):
+            indexes = positions[start:start + self.batch_size]
+            texts = [values[index] for index in indexes]
+            translated = self._generate(texts)
+            if len(translated) != len(texts) or any(not value.strip() for value in translated):
+                raise TranslationUnavailableError("local Marian produced an empty translation")
+            for index, value in zip(indexes, translated):
+                results[index] = value.strip()
+        return results
+
+    def _generate(self, texts: list[str]) -> list[str]:
+        torch, _, _ = self._dependencies()
+        assert self._tokenizer is not None and self._model is not None and self.device_used is not None
+        try:
+            encoded = self._tokenizer(
+                texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.max_input_length,
+            )
+            encoded = {key: value.to(self.device_used) for key, value in encoded.items()}
+            with torch.inference_mode():
+                generated = self._model.generate(**encoded)
+            return list(self._tokenizer.batch_decode(generated, skip_special_tokens=True))
+        except Exception as exc:
+            if self.device_used != "cuda" or self.cpu_fallback_used:
+                raise TranslationUnavailableError("local Marian inference failed") from exc
+            self.cpu_fallback_used = True
+            self._model = self._tokenizer = None
+            try:
+                self._load("cpu")
+            except Exception as cpu_exc:
+                raise TranslationUnavailableError("local Marian inference failed on CUDA and CPU") from cpu_exc
+            return self._generate(texts)
+
+    def translate_batch(
+        self,
+        requests: list[tuple[str, str, str, str]],
+    ) -> list[TranslationPayload]:
+        titles = self._translate_texts([title for title, _, _, _ in requests])
+        questions = self._translate_texts([question for _, question, _, _ in requests])
+        descriptions = self._translate_texts([description for _, _, description, _ in requests])
+        return [
+            TranslationPayload(
+                title=title,
+                question=question,
+                description=description or None,
+                provider=self.provider,
+                model=self.model_id,
+            )
+            for title, question, description in zip(titles, questions, descriptions)
+        ]
+
+    def translate(
+        self,
+        *,
+        title: str,
+        question: str,
+        description: str,
+        target_language: str,
+    ) -> TranslationPayload:
+        return self.translate_batch([(title, question, description, target_language)])[0]
+
+    def validate_payload(
+        self,
+        *,
+        title: str,
+        question: str,
+        description: str,
+        payload: TranslationPayload,
+    ) -> list[str]:
+        issues = translation_quality_issues(title, payload.title)
+        issues.extend(f"question.{issue}" for issue in translation_quality_issues(question, payload.question))
+        if description:
+            issues.extend(f"description.{issue}" for issue in translation_quality_issues(description, payload.description or ""))
+        return issues
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "model": self.model_id,
+            "device": self.device_used or "not_loaded",
+            "cpu_fallback": self.cpu_fallback_used,
+        }
+
+
 def get_translator(settings: Settings) -> Translator:
-    # This release intentionally ships no external provider or model dependency.
+    if settings.translation_provider == "azure":
+        return AzureTranslator(
+            key=settings.azure_translator_key,
+            endpoint=settings.azure_translator_endpoint,
+            region=settings.azure_translator_region,
+            api_version=settings.azure_translator_api_version,
+            source_language=settings.azure_translator_source_language,
+            target_language=settings.azure_translator_target_language,
+            timeout_seconds=settings.azure_translator_timeout_seconds,
+            max_retries=settings.azure_translator_max_retries,
+            batch_size=settings.azure_translator_batch_size,
+        )
+    if settings.translation_provider == "local_marian":
+        return LocalMarianTranslator(
+            model_id=settings.translation_model,
+            device=settings.translation_device,
+            batch_size=settings.translation_batch_size,
+            local_files_only=settings.translation_local_files_only,
+        )
     return NoopTranslator()
 
 
