@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.translation import AzureTranslator, AzureTranslatorError, LogicProtectionError, get_translator, protect_translation_logic, restore_translation_logic
+from app.translation import AzureTranslator, AzureTranslatorError, LogicProtectionError, get_translator, protect_translation_logic, restore_translation_logic, translation_quality_issues
 
 
 class FakeResponse:
@@ -175,3 +175,34 @@ def test_logic_markers_reject_missing_duplicate_and_unresolved_markers():
         restore_translation_logic(f"DPMLOGIC{marker}X DPMLOGIC{marker}X", spans)
     with pytest.raises(LogicProtectionError):
         restore_translation_logic("DPMLOGICOTHER0000X", spans)
+
+
+@pytest.mark.parametrize(
+    ("source", "operators", "required"),
+    [
+        ("Taylor Swift pregnant by...?", ["by"], "までに"),
+        ("Taylor Swift pregnant by...?", ["by"], "までに"),
+        ("Taylor Swift pregnant before 2027?", ["before"], "より前"),
+        ("Ukraine recognizes Russian sovereignty over its territory by...?", ["by"], "までに"),
+        (
+            "A deal is reached by December 31, 2026, 11:59 PM ET. "
+            "If it is reached before the resolution date, this market resolves to Yes.",
+            ["by", "before"],
+            "までに",
+        ),
+    ],
+)
+def test_real_market_logic_spans_are_protected_restored_and_quality_safe(source, operators, required):
+    protected, spans = protect_translation_logic(source, "REAL")
+    assert [span.operator for span in spans] == operators
+    assert all(span.source_text for span in spans)
+    assert "DPMLOGICREAL" in protected
+    for span in spans:
+        assert span.source_text not in protected
+    translator = _translator([_success(protected)], logic_marker_seed_factory=lambda: "REAL")
+    restored = translator._translate_texts([source], "ja")[0]
+    assert "DPMLOGIC" not in restored
+    assert required in restored
+    if "before" in operators:
+        assert "より前" in restored or "以前" in restored
+    assert not translation_quality_issues(source, restored)

@@ -165,17 +165,20 @@ class ProtectedLogicSpan:
     end: int
 
 
+_LOGIC_DATE_TARGET = r"(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2}(?!\d)|Q[1-4]\s+\d{4}|\d{4}|the\s+resolution\s+date)"
+
+
 _LOGIC_PATTERNS = (
-    ("on_or_before", re.compile(r"\bon or before\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
-    ("on_or_after", re.compile(r"\bon or after\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("on_or_before", re.compile(rf"\bon or before\s+(?P<target>{_LOGIC_DATE_TARGET})", re.I)),
+    ("on_or_after", re.compile(rf"\bon or after\s+(?P<target>{_LOGIC_DATE_TARGET})", re.I)),
     ("no_more_than", re.compile(r"\bno more than\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
     ("at_least", re.compile(r"\bat least\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
     ("more_than", re.compile(r"\bmore than\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
     ("less_than", re.compile(r"\bless than\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
     ("exactly", re.compile(r"\bexactly\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
-    ("before", re.compile(r"\bbefore\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
-    ("after", re.compile(r"\bafter\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
-    ("by", re.compile(r"\bby\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("before", re.compile(rf"\bbefore\s+(?P<target>{_LOGIC_DATE_TARGET})", re.I)),
+    ("after", re.compile(rf"\bafter\s+(?P<target>{_LOGIC_DATE_TARGET})", re.I)),
+    ("by", re.compile(rf"\bby\s*(?P<target>{_LOGIC_DATE_TARGET}|\.\.\.)", re.I)),
     ("only_if", re.compile(r"\bonly if\s+(?P<target>[^,.;?!]+)", re.I)),
 )
 
@@ -215,7 +218,10 @@ def restore_translation_logic(translated: str, spans: list[ProtectedLogicSpan]) 
         if restored.count(token) != 1:
             raise LogicProtectionError("Azure Translator logic marker count mismatch")
         target = _logic_target_japanese(span.target_text)
-        restored = restored.replace(token, templates[span.operator].format(target=target))
+        replacement = templates[span.operator].format(target=target)
+        if span.operator == "before" and span.target_text.lower() == "the resolution date":
+            replacement = f"{target}以前"
+        restored = restored.replace(token, replacement)
     if "DPMLOGIC" in restored:
         raise LogicProtectionError("Azure Translator returned an unresolved logic marker")
     return restored
@@ -237,7 +243,11 @@ def _logic_target_japanese(target: str) -> str:
     converted = re.sub(r"\s*countries?\b", "か国", converted, flags=re.I)
     converted = re.sub(r"\s*votes\b", "票", converted, flags=re.I)
     converted = re.sub(r"^\$([\d,]+)$", r"\1ドル", converted)
-    return {"audited": "監査を受けた", "the event occurs": "イベントが発生する"}.get(converted.lower(), converted)
+    return {
+        "audited": "監査を受けた",
+        "the event occurs": "イベントが発生する",
+        "the resolution date": "解決日",
+    }.get(converted.lower(), converted)
 
 
 class Translator(Protocol):
