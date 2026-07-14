@@ -12,10 +12,13 @@ from app.storage import (
     get_market,
     insert_audit_event,
     insert_ledger_entry,
+    insert_settlement_evidence,
     list_pending_settlements,
     settlement_ledger_entry_exists,
     update_demo_settlement,
 )
+from app.polymarket_gamma import fetch_market_detail_for_settlement
+from app.settlement_evidence import evidence_hash, normalize_rest_evidence, validate_settlement_evidence
 
 PENDING_STATUSES = {"pending", "settlement_pending", "settlement_unknown"}
 SETTLED_STATUSES = {"settled_win", "settled_loss"}
@@ -249,42 +252,59 @@ def _classify_settlement_with_candidate(
     }
 
 
-def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
+def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fetcher=None) -> dict[str, Any]:
+    """Settle only after an independent, just-in-time REST confirmation.
+
+    The network request deliberately occurs before ``BEGIN IMMEDIATE``; all evidence,
+    financial writes and audit entries then share the same SQLite transaction.
+    """
     settlement = get_demo_settlement(conn, settlement_id)
     if settlement is None:
         raise ValueError("demo settlement missing")
     if settlement["status"] in SETTLED_STATUSES:
         return settlement
+    detail = (market_detail_fetcher or fetch_market_detail_for_settlement)(str(settlement["market_id"]))
+    if detail.ok and detail.payload is not None:
+        evidence = normalize_rest_evidence(str(settlement["market_id"]), detail.payload, fetched_at=detail.fetched_at)
+        validation = validate_settlement_evidence(evidence)
+    else:
+        evidence = {
+            "requested_market_id": str(settlement["market_id"]), "external_market_id": str(settlement["market_id"]),
+            "source_type": "polymarket_gamma_market_detail", "fetched_at": detail.fetched_at,
+            "upstream_updated_at": None, "fetch_status": detail.status,
+        }
+        validation = {"status": "unavailable", "winning_outcome": None, "winning_token_id": None,
+                      "failure_codes": ["upstream_unavailable"], "details": {}}
+    current_hash = evidence_hash(evidence)
 
-    market = get_market(conn, settlement["market_id"])
-    if market is None:
-        with conn:
-            return update_demo_settlement(
-                conn,
-                settlement_id,
-                status="settlement_unknown",
-                winning_outcome=None,
-                payout=0.0,
-                settlement_source="local_storage",
-                settlement_note="保存済みマーケットが見つからないため、判定不明です。",
-                settled_at=None,
-            )
-
-    classified = _classify_settlement_with_candidate(conn, settlement, market)
-    status = classified["status"]
-    confirmation = classified["confirmation"]
-    settled_at = datetime.now(timezone.utc).isoformat() if status in SETTLED_STATUSES else None
-    marker = f"settlement_id={settlement_id}"
-
-    with conn:
+    # BEGIN IMMEDIATE serializes competing workers after their short REST calls.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
         current = get_demo_settlement(conn, settlement_id)
         if current is None:
             raise ValueError("demo settlement missing")
         if current["status"] in SETTLED_STATUSES:
+            conn.rollback()
             return current
+        insert_settlement_evidence(conn, market_id=current["market_id"], settlement_id=settlement_id,
+                                   evidence=evidence, evidence_hash=current_hash, validation=validation)
+        if validation["status"] != "confirmed":
+            mapped_status = "settlement_unknown" if validation["status"] in {"conflict", "invalid"} else "settlement_pending"
+            updated = update_demo_settlement(conn, settlement_id, status=mapped_status, winning_outcome=None, payout=0.0,
+                                             settlement_source="fresh_rest_evidence", settlement_note=validation["status"], settled_at=None)
+            insert_audit_event(conn, event_type="settlement_evidence_not_confirmed", user_id=current["user_id"],
+                               route="/api/demo/settle", reference_type="demo_settlement", reference_id=settlement_id,
+                               after={"market_id": current["market_id"], "evidence_hash": current_hash, "fetched_at": evidence["fetched_at"],
+                                      "status": validation["status"], "failure_codes": validation["failure_codes"]}, note="fresh REST evidence did not confirm settlement")
+            conn.commit()
+            updated.update({"evidence_status": validation["status"], "failure_codes": validation["failure_codes"], "evidence_hash": current_hash})
+            return updated
 
+        winner = str(validation["winning_outcome"])
+        status = "settled_win" if str(current["outcome"]) == winner else "settled_loss"
+        payout = float(current["estimated_return"]) if status == "settled_win" else 0.0
+        marker = f"settlement_id={settlement_id}"
         if status == "settled_win":
-            payout = float(classified["payout"])
             if not settlement_ledger_entry_exists(conn, settlement_id):
                 balance_before = get_balance(conn, current["user_id"])
                 balance_after = round(balance_before + payout, 2)
@@ -312,7 +332,7 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
                     after={"balance": balance_after, "payout": payout},
                     note="デモ精算",
                 )
-        elif status == "settled_loss" and not settlement_ledger_entry_exists(conn, settlement_id):
+        elif not settlement_ledger_entry_exists(conn, settlement_id):
             balance_before = get_balance(conn, current["user_id"])
             insert_ledger_entry(
                 conn,
@@ -338,33 +358,9 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
                 note="デモ精算",
             )
 
-        updated = update_demo_settlement(
-            conn,
-            settlement_id,
-            status=status,
-            winning_outcome=classified["winning_outcome"],
-            payout=float(classified["payout"]),
-            settlement_source=classified["settlement_source"],
-            settlement_note=classified["settlement_note"],
-            settled_at=settled_at,
-        )
-        event_type = {
-            "confirmed_match": "settlement_ws_candidate_confirmed",
-            "candidate_only_unconfirmed": "settlement_ws_candidate_unconfirmed",
-            "conflict": "settlement_ws_candidate_conflict",
-            "rest_clear_without_candidate": "settlement_rest_conservative",
-        }.get(confirmation["confirmation_status"], "settlement_checked")
-        if event_type != "settlement_checked":
-            insert_audit_event(
-                conn,
-                event_type=event_type,
-                user_id=current["user_id"],
-                route="/api/demo/settle",
-                reference_type="demo_settlement",
-                reference_id=settlement_id,
-                after=confirmation,
-                note=confirmation["note"],
-            )
+        updated = update_demo_settlement(conn, settlement_id, status=status, winning_outcome=winner, payout=payout,
+                                         settlement_source="rest_conservative", settlement_note="fresh REST evidence confirmed",
+                                         settled_at=datetime.now(timezone.utc).isoformat())
         insert_audit_event(
             conn,
             event_type="settlement_checked",
@@ -372,14 +368,18 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int) -> dict[str, Any]:
             route="/api/demo/settle",
             reference_type="demo_settlement",
             reference_id=settlement_id,
-            after={"status": status, "winning_outcome": classified["winning_outcome"]},
-            note=classified["settlement_note"],
+            after={"market_id": current["market_id"], "status": status, "winning_outcome": winner,
+                   "winning_token_id": validation["winning_token_id"], "evidence_hash": current_hash,
+                   "fetched_at": evidence["fetched_at"]},
+            note="fresh REST evidence confirmed settlement",
         )
-        updated["confirmation_status"] = confirmation["confirmation_status"]
-        updated["candidate_winning_outcome"] = confirmation["candidate_winning_outcome"]
-        updated["candidate_winning_asset_id"] = confirmation["candidate_winning_asset_id"]
-        updated["rest_winning_outcome"] = confirmation["rest_winning_outcome"]
+        conn.commit()
+        updated.update({"evidence_status": "confirmed", "evidence_hash": current_hash,
+                        "winning_token_id": validation["winning_token_id"]})
         return updated
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> dict[str, Any]:

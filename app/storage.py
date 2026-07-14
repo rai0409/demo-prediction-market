@@ -177,6 +177,26 @@ def init_db(conn: sqlite3.Connection) -> None:
             settled_at text,
             created_at text not null default current_timestamp
         );
+        create table if not exists settlement_evidence (
+            id integer primary key autoincrement,
+            market_id text not null,
+            settlement_id integer,
+            source_type text not null,
+            fetched_at text not null,
+            upstream_updated_at text,
+            evidence_hash text not null,
+            normalized_evidence_json text not null,
+            resolution_status text not null,
+            winning_outcome text,
+            winning_token_id text,
+            validation_status text not null,
+            validation_failure_codes_json text not null,
+            created_at text not null
+        );
+        create index if not exists idx_settlement_evidence_market_hash
+            on settlement_evidence(market_id, evidence_hash);
+        create index if not exists idx_settlement_evidence_settlement_id
+            on settlement_evidence(settlement_id, id desc);
         """
     )
     _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
@@ -1282,6 +1302,41 @@ def settlement_ledger_entry_exists(conn: sqlite3.Connection, settlement_id: int)
         (f"%{marker}%",),
     ).fetchone()
     return row is not None
+
+
+def insert_settlement_evidence(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str,
+    settlement_id: int | None,
+    evidence: dict[str, Any],
+    evidence_hash: str,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    """Append a canonical, credential-free evidence record without committing."""
+    normalized_json = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    failure_json = json.dumps(validation["failure_codes"], ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        """
+        insert into settlement_evidence(
+            market_id, settlement_id, source_type, fetched_at, upstream_updated_at,
+            evidence_hash, normalized_evidence_json, resolution_status, winning_outcome,
+            winning_token_id, validation_status, validation_failure_codes_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            market_id, settlement_id, str(evidence.get("source_type") or "unknown"), evidence.get("fetched_at"),
+            evidence.get("upstream_updated_at"), evidence_hash, normalized_json, validation["status"],
+            validation.get("winning_outcome"), validation.get("winning_token_id"), validation["status"], failure_json, timestamp,
+        ),
+    )
+    return dict(conn.execute("select * from settlement_evidence where id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def list_settlement_evidence(conn: sqlite3.Connection, market_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute("select * from settlement_evidence where market_id = ? order by id asc", (market_id,)).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_orders(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
