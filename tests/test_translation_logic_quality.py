@@ -73,3 +73,8 @@ def test_compound_operator_does_not_duplicate_after_or_negation_checks():
 
 def test_logic_normalizes_case_full_width_spaces_and_punctuation():
     assert translation_logic_issues("BEFORE September 2026", "２０２６年９月　以前。") == []
+
+
+def test_logic_accepts_conditional_negation_and_both_countries_forms():
+    assert translation_logic_issues("This market resolves to No if neither condition is met.", "いずれも満たされなければNoです") == []
+    assert translation_logic_issues("Will both France and Germany approve?", "フランスとドイツの両国が承認しますか？") == []

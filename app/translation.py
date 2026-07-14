@@ -75,7 +75,7 @@ def translation_logic_issues(source: str, translated: str) -> list[str]:
 
     negation_source = bool(re.search(r"\bnot\b", english) or re.search(r"\bwithout\b", english))
     negation_source = negation_source or bool(re.search(r"\bno\b", english) and not has_no_more_than)
-    if negation_source and not _matches_any(japanese, (r"ない", r"ではない", r"せず", r"なし", r"除く", r"得ず")):
+    if negation_source and not _matches_any(japanese, (r"ない", r"ではない", r"せず", r"なし", r"除く", r"得ず", r"なければ")):
         issues.append("logic_negation_not_preserved")
 
     if re.search(r"\bbetween\b.+\band\b", english):
@@ -88,7 +88,7 @@ def translation_logic_issues(source: str, translated: str) -> list[str]:
         if not _matches_any(japanese, (r"または", r"又は", r"いずれか", r"か")) or _matches_any(japanese, (r"両方", r"どちらも", r"および")):
             issues.append("logic_either_or_not_preserved")
     if re.search(r"\bboth\b.+\band\b", english):
-        if not _matches_any(japanese, (r"両方", r"および", r"かつ")) or _matches_any(japanese, (r"または", r"又は", r"いずれか")):
+        if not _matches_any(japanese, (r"両方", r"両国", r"および", r"かつ")) or _matches_any(japanese, (r"または", r"又は", r"いずれか")):
             issues.append("logic_both_and_not_preserved")
     return issues
 
@@ -186,6 +186,8 @@ class AzureTranslator:
 
     provider = "azure"
     _retry_statuses = {408, 429, 500, 502, 503, 504}
+    _outcome_pattern = re.compile(r"(?<![A-Za-z0-9_])(Yes|No)(?![A-Za-z0-9_])")
+    _outcome_placeholder_pattern = re.compile(r"__AZURE_OUTCOME_(?:YES|NO)_\d+_A19F__")
 
     def __init__(
         self,
@@ -316,9 +318,39 @@ class AzureTranslator:
         positions = [index for index, value in enumerate(values) if value]
         for start in range(0, len(positions), self.batch_size):
             indexes = positions[start:start + self.batch_size]
-            for index, translated in zip(indexes, self._post([values[index] for index in indexes], target_language)):
-                results[index] = translated
+            protected_texts: list[str] = []
+            replacements: list[dict[str, str]] = []
+            for index in indexes:
+                protected, mapping = self._protect_outcomes(values[index])
+                protected_texts.append(protected)
+                replacements.append(mapping)
+            translated_batch = self._post(protected_texts, target_language)
+            for index, translated, mapping in zip(indexes, translated_batch, replacements):
+                results[index] = self._restore_outcomes(translated, mapping)
         return results
+
+    @classmethod
+    def _protect_outcomes(cls, text: str) -> tuple[str, dict[str, str]]:
+        replacements: dict[str, str] = {}
+
+        def replace(match: re.Match[str]) -> str:
+            outcome = match.group(1)
+            token = f"__AZURE_OUTCOME_{outcome.upper()}_{len(replacements)}_A19F__"
+            while token in text or token in replacements:
+                token = f"__AZURE_OUTCOME_{outcome.upper()}_{len(replacements) + 1}_A19F__"
+            replacements[token] = outcome
+            return token
+
+        return cls._outcome_pattern.sub(replace, text), replacements
+
+    @classmethod
+    def _restore_outcomes(cls, translated: str, replacements: dict[str, str]) -> str:
+        restored = translated
+        for token, outcome in replacements.items():
+            restored = restored.replace(token, outcome)
+        if cls._outcome_placeholder_pattern.search(restored):
+            raise AzureTranslatorError("Azure Translator returned an unresolved outcome placeholder")
+        return restored
 
     def translate_batch(self, requests: list[tuple[str, str, str, str]]) -> list[TranslationPayload]:
         target_language = requests[0][3] if requests else self.target_language

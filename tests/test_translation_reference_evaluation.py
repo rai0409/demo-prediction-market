@@ -45,6 +45,7 @@ def test_fixture_uses_shared_logic_gate_and_equivalences():
     cases = {case["id"]: case for case in load_fixture(FIXTURE_PATH)}
     assert "logic_before_not_preserved" in evaluate_case(cases["before-fed-001"], "連邦準備制度理事会は2026年9月までに利下げを行いますか？")
     assert evaluate_case(cases["currency-bitcoin-001"], cases["currency-bitcoin-001"]["candidate_translation"]) == []
+    assert evaluate_case(cases["less-than-rate-001"], "失業率は5%未満になりますか？") == []
     assert cases["multiple-inflation-001"]["expected_logic_operators"] == ["less_than", "more_than"]
 
 
@@ -68,7 +69,12 @@ def test_fixture_validation_rejects_duplicate_id_and_empty_source(tmp_path):
 def test_cli_fixture_default_filters_json_and_limit(capsys):
     script = _script()
     assert script.run(["--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["provider"] == "fixture"
+    default_output = json.loads(capsys.readouterr().out)
+    assert default_output["provider"] == "fixture"
+    assert "source" not in default_output["cases"][0]
+    assert script.run(["--json", "--include-text", "--case-id", "before-fed-001"]) == 0
+    diagnostic = json.loads(capsys.readouterr().out)["cases"][0]
+    assert {"source", "reference_translation", "candidate_translation"}.issubset(diagnostic)
     assert script.run(["--case-id", "before-fed-001", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["total"] == 1
     assert script.run(["--category", "before", "--limit", "1", "--json"]) == 0

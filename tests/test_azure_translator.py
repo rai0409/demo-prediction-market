@@ -124,3 +124,22 @@ def test_azure_rejects_response_count_mismatch():
     translator = _translator([_success("only one")])
     with pytest.raises(AzureTranslatorError, match="count"):
         translator._translate_texts(["one", "two"], "ja")
+
+
+def test_azure_preserves_yes_no_outcome_labels_without_replacing_normal_words():
+    translator = _translator([
+        _success("__AZURE_OUTCOME_YES_0_A19F__ / __AZURE_OUTCOME_NO_1_A19F__"),
+        _success("question"),
+    ])
+    result = translator.translate(title="Will Yes or No win?", question="question", description="", target_language="ja")
+    assert result.title == "Yes / No"
+    sent = translator._http_client.calls[0][1]["json"][0]["Text"]
+    assert "__AZURE_OUTCOME_YES_0_A19F__" in sent
+    assert "__AZURE_OUTCOME_NO_1_A19F__" in sent
+    assert AzureTranslator._protect_outcomes("yesterday is not Yes")[0].startswith("yesterday is not __AZURE_OUTCOME_YES")
+
+
+def test_azure_rejects_unresolved_outcome_placeholder():
+    translator = _translator([_success("__AZURE_OUTCOME_NO_99_A19F__")])
+    with pytest.raises(AzureTranslatorError, match="unresolved outcome placeholder"):
+        translator._translate_texts(["Yes"], "ja")

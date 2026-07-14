@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--include-text", action="store_true", help="Include source, reference, and candidate text in JSON diagnostics.")
     parser.add_argument("--fail-on-quality-error", action="store_true")
     return parser
 
@@ -68,6 +69,11 @@ def run(argv: list[str] | None = None, *, translator: Any | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     summary["provider"] = args.provider
+    if args.include_text:
+        for result, case, candidate in zip(summary["cases"], cases, translations):
+            result["source"] = case["source"]
+            result["reference_translation"] = case["reference_translation"]
+            result["candidate_translation"] = candidate
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     else:

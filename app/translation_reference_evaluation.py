@@ -57,6 +57,12 @@ def load_fixture(path: str | Path) -> list[dict[str, Any]]:
             for key, values in case["protected_terms"].items()
         ):
             raise FixtureValidationError("fixture case has invalid protected_terms")
+        accepted_terms = case.get("accepted_terms", {})
+        if not isinstance(accepted_terms, dict) or not all(
+            isinstance(key, str) and isinstance(values, list) and all(isinstance(value, str) for value in values)
+            for key, values in accepted_terms.items()
+        ):
+            raise FixtureValidationError("fixture case has invalid accepted_terms")
         if not isinstance(case.get("candidate_translation"), str) or not case["candidate_translation"].strip():
             raise FixtureValidationError("fixture case is missing evaluation translation")
     return payload
@@ -95,7 +101,8 @@ def evaluate_case(case: dict[str, Any], translated: str) -> list[str]:
         if not _number_present(number, translated):
             filtered_issues.append(f"number:{number}")
     for term in case["required_terms"]:
-        if term not in translated:
+        accepted = case.get("accepted_terms", {}).get(term, [term])
+        if not any(value in translated for value in accepted):
             filtered_issues.append(f"term:{term}")
     for term, accepted in protected_terms.items():
         if not any(value in translated for value in accepted):
