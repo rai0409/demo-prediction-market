@@ -76,6 +76,32 @@ def init_db(conn: sqlite3.Connection) -> None:
             error_message text,
             primary key (market_id, language)
         );
+        create table if not exists market_translation_attempts (
+            id integer primary key autoincrement,
+            market_id text not null,
+            target_language text not null,
+            translation_provider text not null,
+            translation_model text not null,
+            source_title_hash text not null,
+            source_question_hash text not null,
+            source_description_hash text not null,
+            translated_title text,
+            translated_question text,
+            translated_description text,
+            quality_status text not null,
+            quality_failure_codes_json text not null,
+            quality_details_json text not null,
+            latency_ms integer,
+            metered_characters integer,
+            provider_request_id text,
+            attempted_at text not null
+        );
+        create index if not exists idx_market_translation_attempts_market_attempted
+            on market_translation_attempts(market_id, attempted_at desc, id desc);
+        create index if not exists idx_market_translation_attempts_quality_attempted
+            on market_translation_attempts(quality_status, attempted_at desc, id desc);
+        create index if not exists idx_market_translation_attempts_provider_attempted
+            on market_translation_attempts(translation_provider, attempted_at desc, id desc);
         create table if not exists demo_users (
             user_id text primary key,
             balance real not null
@@ -179,6 +205,274 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaratio
     columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"alter table {table} add column {column} {declaration}")
+
+
+_TRANSLATION_ATTEMPT_STATUSES = frozenset({"passed", "failed"})
+_TRANSLATION_ATTEMPT_LIMIT_MAX = 200
+
+
+def _required_translation_attempt_text(value: str | None, field: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field} must not be empty")
+    return normalized
+
+
+def _canonical_translation_attempt_json(value: Any, *, field: str, expected_type: type) -> str:
+    if not isinstance(value, expected_type):
+        raise ValueError(f"{field} must be a JSON {expected_type.__name__}")
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be JSON-compatible") from exc
+
+
+def _normalize_failure_codes(value: list[str] | tuple[str, ...]) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("quality_failure_codes must be a JSON array")
+    normalized: list[str] = []
+    for code in value:
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("quality_failure_codes must contain non-empty strings")
+        code = code.strip()
+        if code not in normalized:
+            normalized.append(code)
+    return normalized
+
+
+def _validate_translation_attempt(
+    *,
+    market_id: str,
+    target_language: str,
+    translation_provider: str,
+    translation_model: str,
+    source_title_hash: str,
+    source_question_hash: str,
+    source_description_hash: str,
+    quality_status: str,
+    quality_failure_codes: list[str] | tuple[str, ...],
+    quality_details: dict[str, Any],
+    latency_ms: int | None,
+    metered_characters: int | None,
+) -> tuple[dict[str, str], list[str], str]:
+    values = {
+        "market_id": _required_translation_attempt_text(market_id, "market_id"),
+        "target_language": _required_translation_attempt_text(target_language, "target_language"),
+        "translation_provider": _required_translation_attempt_text(translation_provider, "translation_provider"),
+        "translation_model": _required_translation_attempt_text(translation_model, "translation_model"),
+        "source_title_hash": _required_translation_attempt_text(source_title_hash, "source_title_hash"),
+        "source_question_hash": _required_translation_attempt_text(source_question_hash, "source_question_hash"),
+        "source_description_hash": _required_translation_attempt_text(source_description_hash, "source_description_hash"),
+    }
+    if quality_status not in _TRANSLATION_ATTEMPT_STATUSES:
+        raise ValueError("quality_status must be passed or failed")
+    failure_codes = _normalize_failure_codes(quality_failure_codes)
+    if quality_status == "passed" and failure_codes:
+        raise ValueError("passed attempts must not have quality failure codes")
+    if quality_status == "failed" and not failure_codes:
+        raise ValueError("failed attempts must have quality failure codes")
+    for field, metric in (("latency_ms", latency_ms), ("metered_characters", metered_characters)):
+        if metric is not None and (isinstance(metric, bool) or not isinstance(metric, int) or metric < 0):
+            raise ValueError(f"{field} must be null or a non-negative integer")
+    # quality_details must never include credentials, HTTP headers, or raw request/response payloads.
+    details_json = _canonical_translation_attempt_json(quality_details, field="quality_details", expected_type=dict)
+    return values, failure_codes, details_json
+
+
+def _decode_translation_attempt(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["quality_failure_codes"] = json.loads(item.pop("quality_failure_codes_json"))
+    item["quality_details"] = json.loads(item.pop("quality_details_json"))
+    return item
+
+
+def insert_market_translation_attempt(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str,
+    target_language: str,
+    translation_provider: str,
+    translation_model: str,
+    source_title_hash: str,
+    source_question_hash: str,
+    source_description_hash: str,
+    translated_title: str | None,
+    translated_question: str | None,
+    translated_description: str | None,
+    quality_status: str,
+    quality_failure_codes: list[str] | tuple[str, ...],
+    quality_details: dict[str, Any],
+    latency_ms: int | None = None,
+    metered_characters: int | None = None,
+    provider_request_id: str | None = None,
+    attempted_at: str | None = None,
+) -> dict[str, Any]:
+    """Save one evaluated attempt without committing the caller's transaction.
+
+    ``quality_details`` must not contain credentials, HTTP headers, or raw request/response payloads.
+    """
+    values, failure_codes, details_json = _validate_translation_attempt(
+        market_id=market_id,
+        target_language=target_language,
+        translation_provider=translation_provider,
+        translation_model=translation_model,
+        source_title_hash=source_title_hash,
+        source_question_hash=source_question_hash,
+        source_description_hash=source_description_hash,
+        quality_status=quality_status,
+        quality_failure_codes=quality_failure_codes,
+        quality_details=quality_details,
+        latency_ms=latency_ms,
+        metered_characters=metered_characters,
+    )
+    timestamp = attempted_at or datetime.now(timezone.utc).isoformat()
+    try:
+        parsed_timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("attempted_at must be an ISO 8601 timestamp") from exc
+    if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() != timezone.utc.utcoffset(parsed_timestamp):
+        raise ValueError("attempted_at must be a UTC ISO 8601 timestamp")
+    cursor = conn.execute(
+        """
+        insert into market_translation_attempts(
+            market_id, target_language, translation_provider, translation_model,
+            source_title_hash, source_question_hash, source_description_hash,
+            translated_title, translated_question, translated_description,
+            quality_status, quality_failure_codes_json, quality_details_json,
+            latency_ms, metered_characters, provider_request_id, attempted_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            values["market_id"], values["target_language"], values["translation_provider"], values["translation_model"],
+            values["source_title_hash"], values["source_question_hash"], values["source_description_hash"],
+            translated_title, translated_question, translated_description, quality_status,
+            _canonical_translation_attempt_json(failure_codes, field="quality_failure_codes", expected_type=list), details_json,
+            latency_ms, metered_characters, provider_request_id, timestamp,
+        ),
+    )
+    return get_market_translation_attempt(conn, int(cursor.lastrowid)) or {}
+
+
+def get_market_translation_attempt(conn: sqlite3.Connection, attempt_id: int) -> dict[str, Any] | None:
+    return _decode_translation_attempt(
+        conn.execute("select * from market_translation_attempts where id = ?", (attempt_id,)).fetchone()
+    )
+
+
+def list_market_translation_attempts(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str | None = None,
+    target_language: str | None = None,
+    translation_provider: str | None = None,
+    quality_status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+    if quality_status is not None and quality_status not in _TRANSLATION_ATTEMPT_STATUSES:
+        raise ValueError("quality_status must be passed or failed")
+    clauses: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("market_id", market_id),
+        ("target_language", target_language),
+        ("translation_provider", translation_provider),
+        ("quality_status", quality_status),
+    ):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            params.append(_required_translation_attempt_text(value, column))
+    where = f" where {' and '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"select * from market_translation_attempts{where} order by attempted_at desc, id desc limit ?",
+        [*params, min(limit, _TRANSLATION_ATTEMPT_LIMIT_MAX)],
+    ).fetchall()
+    return [_decode_translation_attempt(row) for row in rows if row is not None]
+
+
+def _upsert_accepted_market_translation(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str,
+    language: str,
+    translated_title: str | None,
+    translated_question: str | None,
+    translated_description: str | None,
+    source_title_hash: str,
+    source_question_hash: str,
+    source_description_hash: str,
+    provider: str,
+    model: str,
+) -> None:
+    """Match the existing translation cache upsert without committing an outer transaction."""
+    conn.execute(
+        """
+        insert into market_translations(
+            market_id, language, translated_title, translated_question, translated_description,
+            source_title_hash, source_question_hash, source_description_hash,
+            translation_provider, translation_model, translation_status, translated_at, error_message
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(market_id, language) do update set
+            translated_title = excluded.translated_title,
+            translated_question = excluded.translated_question,
+            translated_description = excluded.translated_description,
+            source_title_hash = excluded.source_title_hash,
+            source_question_hash = excluded.source_question_hash,
+            source_description_hash = excluded.source_description_hash,
+            translation_provider = excluded.translation_provider,
+            translation_model = excluded.translation_model,
+            translation_status = excluded.translation_status,
+            translated_at = excluded.translated_at,
+            error_message = excluded.error_message
+        """,
+        (
+            market_id, language, translated_title, translated_question, translated_description,
+            source_title_hash, source_question_hash, source_description_hash,
+            provider, model, "success", datetime.now(timezone.utc).isoformat(), None,
+        ),
+    )
+
+
+def record_translation_evaluation(
+    conn: sqlite3.Connection,
+    **attempt: Any,
+) -> dict[str, Any]:
+    """Atomically retain an evaluation attempt and adopt only a passed translation cache entry."""
+    outer_transaction = conn.in_transaction
+    savepoint = f"translation_evaluation_{id(conn)}"
+    if outer_transaction:
+        conn.execute(f"savepoint {savepoint}")
+    try:
+        saved_attempt = insert_market_translation_attempt(conn, **attempt)
+        if attempt["quality_status"] == "passed":
+            _upsert_accepted_market_translation(
+                conn,
+                market_id=saved_attempt["market_id"],
+                language=saved_attempt["target_language"],
+                translated_title=saved_attempt["translated_title"],
+                translated_question=saved_attempt["translated_question"],
+                translated_description=saved_attempt["translated_description"],
+                source_title_hash=saved_attempt["source_title_hash"],
+                source_question_hash=saved_attempt["source_question_hash"],
+                source_description_hash=saved_attempt["source_description_hash"],
+                provider=saved_attempt["translation_provider"],
+                model=saved_attempt["translation_model"],
+            )
+        if outer_transaction:
+            conn.execute(f"release savepoint {savepoint}")
+        else:
+            conn.commit()
+    except Exception:
+        if outer_transaction:
+            conn.execute(f"rollback to savepoint {savepoint}")
+            conn.execute(f"release savepoint {savepoint}")
+        else:
+            conn.rollback()
+        raise
+    return {"attempt": saved_attempt, "accepted": attempt["quality_status"] == "passed"}
 
 
 def normalize_demo_user_id(value: str | None) -> str:
