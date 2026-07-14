@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.translation import AzureTranslator, AzureTranslatorError, get_translator
+from app.translation import AzureTranslator, AzureTranslatorError, LogicProtectionError, get_translator, protect_translation_logic, restore_translation_logic
 
 
 class FakeResponse:
@@ -143,3 +143,35 @@ def test_azure_rejects_unresolved_outcome_placeholder():
     translator = _translator([_success("__AZURE_OUTCOME_NO_99_A19F__")])
     with pytest.raises(AzureTranslatorError, match="unresolved outcome placeholder"):
         translator._translate_texts(["Yes"], "ja")
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "expected"),
+    [
+        ("before September 2026", "2026年9月", "2026年9月より前"),
+        ("by December 31, 2026", "2026年12月31日", "2026年12月31日までに"),
+        ("on or before July 31, 2026", "2026年7月31日", "2026年7月31日以前"),
+        ("after January 1, 2027", "2027年1月1日", "2027年1月1日より後"),
+        ("on or after January 1, 2027", "2027年1月1日", "2027年1月1日以降"),
+        ("more than 50 percent", "50%", "50%を超える"),
+        ("no more than 10 percent", "10%", "10%以下"),
+        ("only if the event occurs", "イベントが発生する", "イベントが発生するの場合に限り"),
+    ],
+)
+def test_logic_markers_restore_deterministically(source, target, expected):
+    protected, spans = protect_translation_logic(source, "TEST")
+    marker = spans[0].marker_id
+    translated = f"DPMLOGIC{marker}X"
+    assert restore_translation_logic(translated, spans) == expected
+    assert "DPMLOGIC" in protected
+
+
+def test_logic_markers_reject_missing_duplicate_and_unresolved_markers():
+    _, spans = protect_translation_logic("before September 2026", "TEST")
+    marker = spans[0].marker_id
+    with pytest.raises(LogicProtectionError):
+        restore_translation_logic("", spans)
+    with pytest.raises(LogicProtectionError):
+        restore_translation_logic(f"DPMLOGIC{marker}X DPMLOGIC{marker}X", spans)
+    with pytest.raises(LogicProtectionError):
+        restore_translation_logic("DPMLOGICOTHER0000X", spans)

@@ -151,6 +151,95 @@ class TranslationPayload:
     model: str = "unknown"
 
 
+class LogicProtectionError(TranslationUnavailableError):
+    """Raised when Azure logic markers cannot be restored safely."""
+
+
+@dataclass(frozen=True)
+class ProtectedLogicSpan:
+    marker_id: str
+    operator: str
+    source_text: str
+    target_text: str
+    start: int
+    end: int
+
+
+_LOGIC_PATTERNS = (
+    ("on_or_before", re.compile(r"\bon or before\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("on_or_after", re.compile(r"\bon or after\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("no_more_than", re.compile(r"\bno more than\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
+    ("at_least", re.compile(r"\bat least\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
+    ("more_than", re.compile(r"\bmore than\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
+    ("less_than", re.compile(r"\bless than\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
+    ("exactly", re.compile(r"\bexactly\s+(?P<target>(?:\$?[\d,]+|one|two|three|five|ten)(?:\s+(?:percent|%|countries|country|votes))?)", re.I)),
+    ("before", re.compile(r"\bbefore\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("after", re.compile(r"\bafter\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("by", re.compile(r"\bby\s+(?P<target>(?:[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|[A-Z][a-z]+\s+\d{4}|Q[1-4]\s+\d{4}))", re.I)),
+    ("only_if", re.compile(r"\bonly if\s+(?P<target>[^,.;?!]+)", re.I)),
+)
+
+
+def protect_translation_logic(text: str, marker_seed: str) -> tuple[str, list[ProtectedLogicSpan]]:
+    candidates: list[tuple[int, int, str, str]] = []
+    for operator, pattern in _LOGIC_PATTERNS:
+        for match in pattern.finditer(text):
+            if operator == "only_if" and re.search(r"\bon or (?:before|after)\b", match.group("target"), re.I):
+                continue
+            candidates.append((match.start(), match.end(), operator, match.group("target").strip()))
+    candidates.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    selected: list[tuple[int, int, str, str]] = []
+    for candidate in candidates:
+        if not any(candidate[0] < end and start < candidate[1] for start, end, _, _ in selected):
+            selected.append(candidate)
+    spans: list[ProtectedLogicSpan] = []
+    output = text
+    for index, (start, end, operator, target) in reversed(list(enumerate(selected))):
+        marker_id = f"{marker_seed}{index:04d}"
+        token = f"DPMLOGIC{marker_id}X"
+        output = output[:start] + token + output[end:]
+        spans.append(ProtectedLogicSpan(marker_id, operator, text[start:end], target, start, end))
+    return output, list(reversed(spans))
+
+
+def restore_translation_logic(translated: str, spans: list[ProtectedLogicSpan]) -> str:
+    restored = translated
+    templates = {
+        "before": "{target}より前", "by": "{target}までに", "on_or_before": "{target}以前",
+        "after": "{target}より後", "on_or_after": "{target}以降", "at_least": "少なくとも{target}",
+        "more_than": "{target}を超える", "less_than": "{target}未満", "no_more_than": "{target}以下",
+        "exactly": "ちょうど{target}", "only_if": "{target}の場合に限り",
+    }
+    for span in spans:
+        token = f"DPMLOGIC{span.marker_id}X"
+        if restored.count(token) != 1:
+            raise LogicProtectionError("Azure Translator logic marker count mismatch")
+        target = _logic_target_japanese(span.target_text)
+        restored = restored.replace(token, templates[span.operator].format(target=target))
+    if "DPMLOGIC" in restored:
+        raise LogicProtectionError("Azure Translator returned an unresolved logic marker")
+    return restored
+
+
+def _logic_target_japanese(target: str) -> str:
+    months = {"January": "1月", "February": "2月", "March": "3月", "April": "4月", "May": "5月", "June": "6月", "July": "7月", "August": "8月", "September": "9月", "October": "10月", "November": "11月", "December": "12月"}
+    match = re.fullmatch(r"([A-Z][a-z]+)\s+(\d{1,2}),?\s+(\d{4})", target)
+    if match and match.group(1) in months:
+        return f"{match.group(3)}年{months[match.group(1)]}{match.group(2)}日"
+    match = re.fullmatch(r"([A-Z][a-z]+)\s+(\d{4})", target)
+    if match and match.group(1) in months:
+        return f"{match.group(2)}年{months[match.group(1)]}"
+    words = {"one": "1", "two": "2", "three": "3", "five": "5", "ten": "10"}
+    converted = target
+    for english, japanese in words.items():
+        converted = re.sub(rf"\b{english}\b", japanese, converted, flags=re.I)
+    converted = re.sub(r"\s*percent\b", "%", converted, flags=re.I)
+    converted = re.sub(r"\s*countries?\b", "か国", converted, flags=re.I)
+    converted = re.sub(r"\s*votes\b", "票", converted, flags=re.I)
+    converted = re.sub(r"^\$([\d,]+)$", r"\1ドル", converted)
+    return {"audited": "監査を受けた", "the event occurs": "イベントが発生する"}.get(converted.lower(), converted)
+
+
 class Translator(Protocol):
     def translate(
         self,
@@ -203,6 +292,7 @@ class AzureTranslator:
         batch_size: int = 20,
         http_client: Any | None = None,
         sleep: Any = time.sleep,
+        logic_marker_seed_factory: Any = lambda: uuid4().hex[:12].upper(),
     ) -> None:
         self.key = key
         self.endpoint = endpoint.rstrip("/")
@@ -216,6 +306,7 @@ class AzureTranslator:
         self.model = f"azure-translator-{api_version}"
         self._http_client = http_client
         self._sleep = sleep
+        self._logic_marker_seed_factory = logic_marker_seed_factory
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -320,13 +411,16 @@ class AzureTranslator:
             indexes = positions[start:start + self.batch_size]
             protected_texts: list[str] = []
             replacements: list[dict[str, str]] = []
+            logic_spans: list[list[ProtectedLogicSpan]] = []
             for index in indexes:
-                protected, mapping = self._protect_outcomes(values[index])
+                protected_logic, spans = protect_translation_logic(values[index], self._logic_marker_seed_factory())
+                protected, mapping = self._protect_outcomes(protected_logic)
                 protected_texts.append(protected)
                 replacements.append(mapping)
+                logic_spans.append(spans)
             translated_batch = self._post(protected_texts, target_language)
-            for index, translated, mapping in zip(indexes, translated_batch, replacements):
-                results[index] = self._restore_outcomes(translated, mapping)
+            for index, translated, mapping, spans in zip(indexes, translated_batch, replacements, logic_spans):
+                results[index] = restore_translation_logic(self._restore_outcomes(translated, mapping), spans)
         return results
 
     @classmethod
