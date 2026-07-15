@@ -1,17 +1,30 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import base64
+import hmac
 import hashlib
 import json
 import math
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 from typing import Any
+import uuid
 
 DEMO_USER_ID = "participant-1"
 INITIAL_DEMO_POINTS = 10000.0
 USER_ID_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+ACCOUNT_STATUSES = frozenset({"active", "disabled"})
+PASSWORD_HASH_VERSION = "scrypt-v1"
+PASSWORD_SCRYPT_N = 2**14
+PASSWORD_SCRYPT_R = 8
+PASSWORD_SCRYPT_P = 1
+PASSWORD_HASH_LENGTH = 64
+PASSWORD_SALT_BYTES = 16
+SESSION_TOKEN_BYTES = 32
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -197,6 +210,33 @@ def init_db(conn: sqlite3.Connection) -> None:
             on settlement_evidence(market_id, evidence_hash);
         create index if not exists idx_settlement_evidence_settlement_id
             on settlement_evidence(settlement_id, id desc);
+        create table if not exists user_accounts (
+            id text primary key,
+            email_normalized text not null unique,
+            email_display text not null,
+            password_hash text not null,
+            participant_id text not null unique,
+            account_status text not null check(account_status in ('active', 'disabled')),
+            created_at text not null,
+            updated_at text not null,
+            password_changed_at text not null,
+            last_login_at text
+        );
+        create table if not exists user_sessions (
+            id text primary key,
+            user_id text not null,
+            token_hash text not null unique,
+            created_at text not null,
+            expires_at text not null,
+            last_seen_at text not null,
+            revoked_at text,
+            revoke_reason text,
+            user_agent_hash text,
+            foreign key(user_id) references user_accounts(id)
+        );
+        create index if not exists idx_user_sessions_user_id on user_sessions(user_id);
+        create index if not exists idx_user_sessions_expires_at on user_sessions(expires_at);
+        create index if not exists idx_user_sessions_revoked_at on user_sessions(revoked_at);
         """
     )
     _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
@@ -517,6 +557,209 @@ def ensure_demo_user(conn: sqlite3.Connection, user_id: str) -> str:
         )
         conn.commit()
     return normalized
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime | None = None) -> str:
+    return (value or _utc_now()).astimezone(timezone.utc).isoformat()
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def normalize_email(email: str | None) -> str:
+    normalized = str(email or "").strip().casefold()
+    if not normalized or not EMAIL_PATTERN.fullmatch(normalized):
+        raise ValueError("invalid email")
+    return normalized
+
+
+def validate_password(password: str | None, *, minimum_length: int, maximum_length: int) -> str:
+    if not isinstance(password, str):
+        raise ValueError("invalid password")
+    if minimum_length < 1 or maximum_length < minimum_length:
+        raise ValueError("invalid password policy")
+    # Count Unicode code points consistently before the costly KDF.
+    if not minimum_length <= len(password) <= maximum_length:
+        raise ValueError("password does not meet length requirements")
+    return password
+
+
+def hash_password(password: str, *, n: int = PASSWORD_SCRYPT_N, r: int = PASSWORD_SCRYPT_R, p: int = PASSWORD_SCRYPT_P) -> str:
+    """Return a self-describing scrypt hash; never log or persist the input password."""
+    salt = secrets.token_bytes(PASSWORD_SALT_BYTES)
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=PASSWORD_HASH_LENGTH)
+    salt_text = base64.urlsafe_b64encode(salt).decode("ascii")
+    hash_text = base64.urlsafe_b64encode(derived).decode("ascii")
+    return f"{PASSWORD_HASH_VERSION}${n}${r}${p}${salt_text}${hash_text}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        version, n_text, r_text, p_text, salt_text, digest_text = encoded.split("$")
+        if version != PASSWORD_HASH_VERSION:
+            return False
+        n, r, p = int(n_text), int(r_text), int(p_text)
+        if n < 2**10 or n > 2**18 or n & (n - 1) or not (1 <= r <= 32 and 1 <= p <= 16):
+            return False
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        if not salt or len(expected) != PASSWORD_HASH_LENGTH:
+            return False
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=len(expected))
+        return hmac.compare_digest(actual, expected)
+    except (AttributeError, ValueError, TypeError, UnicodeError, MemoryError):
+        return False
+
+
+def _public_account(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    account = dict(row)
+    account.pop("password_hash", None)
+    return account
+
+
+def get_user_account_by_id(conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+    return _public_account(conn.execute("select * from user_accounts where id = ?", (user_id,)).fetchone())
+
+
+def get_user_account_by_email(conn: sqlite3.Connection, email: str) -> dict[str, Any] | None:
+    return _public_account(conn.execute("select * from user_accounts where email_normalized = ?", (normalize_email(email),)).fetchone())
+
+
+def create_user_account(conn: sqlite3.Connection, *, email: str, password: str, participant_id: str, password_min_length: int = 12, password_max_length: int = 256) -> dict[str, Any]:
+    email_normalized = normalize_email(email)
+    password = validate_password(password, minimum_length=password_min_length, maximum_length=password_max_length)
+    participant_id = normalize_demo_user_id(participant_id)
+    if not participant_id:
+        raise ValueError("participant_id must not be empty")
+    timestamp = _utc_iso()
+    try:
+        conn.execute(
+            """insert into user_accounts(id, email_normalized, email_display, password_hash, participant_id, account_status, created_at, updated_at, password_changed_at)
+               values (?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+            (str(uuid.uuid4()), email_normalized, str(email).strip(), hash_password(password), participant_id, timestamp, timestamp, timestamp),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("account already exists") from exc
+    return get_user_account_by_email(conn, email_normalized) or {}
+
+
+def verify_user_credentials(conn: sqlite3.Connection, *, email: str, password: str) -> dict[str, Any] | None:
+    try:
+        normalized = normalize_email(email)
+    except ValueError:
+        # Preserve a similar KDF cost for malformed/non-existent identities.
+        verify_password(password if isinstance(password, str) else "", hash_password("credential-padding"))
+        return None
+    row = conn.execute("select * from user_accounts where email_normalized = ?", (normalized,)).fetchone()
+    if row is None:
+        verify_password(password if isinstance(password, str) else "", hash_password("credential-padding"))
+        return None
+    if row["account_status"] != "active" or not verify_password(password if isinstance(password, str) else "", row["password_hash"]):
+        return None
+    return _public_account(row)
+
+
+def _session_token_hash(token: str) -> str | None:
+    if not isinstance(token, str) or len(token) < 40 or len(token) > 512:
+        return None
+    return hashlib.sha256(token.encode("ascii")).hexdigest() if token.isascii() else None
+
+
+def create_user_session(conn: sqlite3.Connection, *, user_id: str, ttl_seconds: int, user_agent_hash: str | None = None) -> tuple[dict[str, Any], str]:
+    if not 1 <= ttl_seconds <= 60 * 60 * 24 * 31:
+        raise ValueError("invalid session lifetime")
+    account = get_user_account_by_id(conn, user_id)
+    if account is None or account["account_status"] != "active":
+        raise ValueError("account is not active")
+    now = _utc_now()
+    expires_at = _utc_iso(now + timedelta(seconds=ttl_seconds))
+    for _ in range(5):
+        token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        token_hash = _session_token_hash(token)
+        try:
+            conn.execute(
+                """insert into user_sessions(id, user_id, token_hash, created_at, expires_at, last_seen_at, user_agent_hash)
+                   values (?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), user_id, token_hash, _utc_iso(now), expires_at, _utc_iso(now), user_agent_hash),
+            )
+            row = conn.execute("select * from user_sessions where token_hash = ?", (token_hash,)).fetchone()
+            return dict(row), token
+        except sqlite3.IntegrityError:
+            continue
+    raise RuntimeError("could not create session")
+
+
+def resolve_user_session(conn: sqlite3.Connection, token: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+    token_hash = _session_token_hash(token)
+    if token_hash is None:
+        return None
+    row = conn.execute(
+        """select s.*, a.email_display, a.participant_id, a.account_status
+           from user_sessions s join user_accounts a on a.id = s.user_id where s.token_hash = ?""",
+        (token_hash,),
+    ).fetchone()
+    if row is None or row["revoked_at"] or row["account_status"] != "active":
+        return None
+    current = now or _utc_now()
+    try:
+        if _parse_utc_timestamp(row["expires_at"]) <= current:
+            return None
+    except ValueError:
+        return None
+    # Avoid a write on every request while retaining an operational last-seen value.
+    if current - _parse_utc_timestamp(row["last_seen_at"]) >= timedelta(minutes=5):
+        conn.execute("update user_sessions set last_seen_at = ? where id = ?", (_utc_iso(current), row["id"]))
+    return dict(row)
+
+
+def revoke_user_session(conn: sqlite3.Connection, token: str, *, user_id: str | None = None, reason: str = "logout") -> bool:
+    token_hash = _session_token_hash(token)
+    if token_hash is None:
+        return False
+    sql = "update user_sessions set revoked_at = ?, revoke_reason = ? where token_hash = ? and revoked_at is null"
+    params: list[Any] = [_utc_iso(), reason, token_hash]
+    if user_id is not None:
+        sql += " and user_id = ?"
+        params.append(user_id)
+    return conn.execute(sql, params).rowcount > 0
+
+
+def revoke_all_user_sessions(conn: sqlite3.Connection, user_id: str, *, reason: str = "account_disabled") -> int:
+    return conn.execute(
+        "update user_sessions set revoked_at = ?, revoke_reason = ? where user_id = ? and revoked_at is null",
+        (_utc_iso(), reason, user_id),
+    ).rowcount
+
+
+def disable_user_account(conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+    account = get_user_account_by_id(conn, user_id)
+    if account is None:
+        return None
+    now = _utc_iso()
+    conn.execute("update user_accounts set account_status = 'disabled', updated_at = ? where id = ?", (now, user_id))
+    revoke_all_user_sessions(conn, user_id, reason="account_disabled")
+    disabled = get_user_account_by_id(conn, user_id)
+    if disabled is not None:
+        insert_audit_event(
+            conn, event_type="account_disabled", user_id=user_id,
+            reference_type="participant", reference_id=disabled["participant_id"],
+        )
+    return disabled
+
+
+def update_user_last_login(conn: sqlite3.Connection, user_id: str) -> None:
+    now = _utc_iso()
+    conn.execute("update user_accounts set last_login_at = ?, updated_at = ? where id = ?", (now, now, user_id))
 
 
 def store_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> None:
