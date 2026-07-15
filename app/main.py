@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import hashlib
 from io import StringIO
 from secrets import compare_digest, token_urlsafe
 from time import monotonic
@@ -30,10 +31,14 @@ from app.realtime import (
 from app.safety import DISCLAIMER
 from app.i18n import detect_lang, template_i18n_context
 from app.settlement import compare_candidate_with_rest_resolution, settle_pending_positions
+from app.translation import add_translation_display, add_translation_displays
 from app.storage import (
     DEMO_USER_ID,
     count_resolution_candidates,
     connect,
+    create_user_account,
+    create_user_session,
+    get_user_account_by_id,
     ensure_demo_user,
     get_balance,
     get_latest_resolution_candidate,
@@ -45,14 +50,20 @@ from app.storage import (
     list_demo_user_overview,
     list_markets_with_resolution_candidates,
     list_ledger,
+    list_market_catalog,
     list_demo_results,
     list_markets,
     list_markets_by_ids,
     list_orders,
     list_positions,
+    insert_audit_event,
     list_resolution_candidate_updates,
     list_snapshots,
     normalize_demo_user_id,
+    resolve_user_session,
+    revoke_user_session,
+    update_user_last_login,
+    verify_user_credentials,
     verify_audit_chain,
 )
 
@@ -132,6 +143,17 @@ class LedgerReversalRequest(BaseModel):
     idempotency_key: str | None = None
 
 
+class AuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+    participant_code: str
+
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 async def get_conn() -> sqlite3.Connection:
     return db
 
@@ -147,11 +169,61 @@ RATE_LIMIT_MAX_POSTS = 3
 ADMIN_DEFAULT_LIMIT = 50
 ADMIN_MAX_LIMIT = 200
 _post_rate_events: dict[tuple[str, str], list[float]] = {}
+_auth_failure_events: dict[tuple[str, str], list[float]] = {}
 _operation_rejections: list[dict[str, str]] = []
 
 
 def demo_session_cookie_name() -> str:
     return settings.session_cookie_name or DEMO_USER_COOKIE
+
+
+def auth_session_cookie_name() -> str:
+    return settings.auth_session_cookie_name
+
+
+def _request_identifier_hash(request: Request) -> str:
+    client = request.client.host if request.client else "unknown"
+    return hashlib.sha256(client.encode("utf-8")).hexdigest()
+
+
+def _auth_rate_key(request: Request, email: str) -> tuple[str, str]:
+    normalized = email.strip().casefold()
+    return (hashlib.sha256(normalized.encode("utf-8")).hexdigest(), _request_identifier_hash(request))
+
+
+def _auth_rate_limit(request: Request, email: str, action: str) -> JSONResponse | None:
+    now = monotonic()
+    key = (action, *_auth_rate_key(request, email))
+    recent = [value for value in _auth_failure_events.get(key, []) if now - value < settings.auth_login_rate_window_seconds]
+    if len(recent) >= settings.auth_login_rate_limit:
+        _auth_failure_events[key] = recent
+        retry_after = max(1, int(settings.auth_login_rate_window_seconds - (now - recent[0])))
+        return JSONResponse(status_code=429, content={"detail": "too many attempts", "retry_after": retry_after}, headers={"Retry-After": str(retry_after)})
+    _auth_failure_events[key] = recent
+    return None
+
+
+def _record_auth_failure(request: Request, email: str, action: str) -> None:
+    key = (action, *_auth_rate_key(request, email))
+    _auth_failure_events.setdefault(key, []).append(monotonic())
+
+
+def _clear_auth_failures(request: Request, email: str, action: str) -> None:
+    _auth_failure_events.pop((action, *_auth_rate_key(request, email)), None)
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        auth_session_cookie_name(), token, max_age=settings.auth_session_ttl_seconds,
+        httponly=True, secure=settings.auth_cookie_secure, samesite=settings.auth_cookie_samesite, path=settings.auth_cookie_path,
+    )
+
+
+def _delete_auth_cookie(response: Response) -> None:
+    response.delete_cookie(
+        auth_session_cookie_name(), secure=settings.auth_cookie_secure,
+        samesite=settings.auth_cookie_samesite, path=settings.auth_cookie_path,
+    )
 
 
 def allowed_participant_codes() -> set[str]:
@@ -172,6 +244,15 @@ def validate_strict_participant_code(raw_code: str | None) -> str | None:
 
 def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
     cookie_name = demo_session_cookie_name()
+
+    auth_token = request.cookies.get(auth_session_cookie_name())
+    if auth_token:
+        authenticated = resolve_user_session(conn, auth_token)
+        if authenticated is None:
+            # A supplied invalid formal-auth cookie must never fall through to a
+            # potentially unrelated participant cookie.
+            raise HTTPException(status_code=401, detail="authentication session is invalid")
+        return ensure_demo_user(conn, authenticated["participant_id"])
 
     # Development/test-only participant override. Disabled by default.
     raw_header_override = (
@@ -421,6 +502,60 @@ def admin_query(filters: dict[str, str | int], *, page_delta: int = 0, export_ty
     if export_type:
         values["type"] = export_type
     return urlencode({key: value for key, value in values.items() if value not in ("", None)})
+
+
+CATALOG_QUERY_MAX_LENGTH = 120
+CATALOG_STATUSES = {"active", "closed", "all"}
+CATALOG_SORTS = {"volume_24h", "liquidity", "end_date", "probability", "updated"}
+CATALOG_PAGE_SIZES = {10, 20, 50}
+
+
+def catalog_filters(request: Request) -> dict[str, str | int]:
+    query = (request.query_params.get("q") or "").strip()[:CATALOG_QUERY_MAX_LENGTH]
+    status = (request.query_params.get("status") or "active").strip().lower()
+    sort = (request.query_params.get("sort") or "volume_24h").strip().lower()
+    order = (request.query_params.get("order") or "desc").strip().lower()
+    try:
+        page_size_raw = int(request.query_params.get("page_size") or "20")
+    except ValueError:
+        page_size_raw = 20
+    return {
+        "q": query,
+        "status": status if status in CATALOG_STATUSES else "active",
+        "sort": sort if sort in CATALOG_SORTS else "volume_24h",
+        "order": order if order in {"asc", "desc"} else "desc",
+        "page": _positive_int(request.query_params.get("page"), 1),
+        "page_size": page_size_raw if page_size_raw in CATALOG_PAGE_SIZES else 20,
+    }
+
+
+def catalog_url(filters: dict[str, str | int], *, page: int | None = None, **changes: str | int | None) -> str:
+    values = dict(filters)
+    values.update(changes)
+    if page is not None:
+        values["page"] = page
+    values["lang"] = values.get("lang") or "ja"
+    return "/markets?" + urlencode({key: value for key, value in values.items() if value not in ("", None)})
+
+
+def catalog_market_is_active(market: dict) -> bool:
+    if not market.get("active") or market.get("closed"):
+        return False
+    value = market.get("end_date")
+    if not value:
+        return True
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed > datetime.now(timezone.utc)
+    except ValueError:
+        return True
+
+
+def catalog_question(value: str | None, maximum: int = 220) -> str:
+    text = (value or "").strip()
+    return text if len(text) <= maximum else f"{text[:maximum - 1].rstrip()}…"
 
 
 def data_status_badge(markets: list[dict]) -> str:
@@ -676,6 +811,12 @@ def resolution_candidates_payload(conn: sqlite3.Connection, user_id: str) -> dic
 async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     user_id = current_demo_user_id(request, conn)
     all_markets = attach_realtime_updates(conn, ensure_fresh_markets(conn, settings), settings)
+    all_markets = add_translation_displays(
+        conn,
+        all_markets,
+        language=detect_lang(request),
+        enabled=settings.translation_enabled,
+    )
     market_response = filtered_market_response(all_markets)
     response = templates.TemplateResponse(
         request,
@@ -693,6 +834,79 @@ async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     return prepare_response(response, request, user_id)
 
 
+@app.get("/markets", response_class=HTMLResponse)
+async def market_catalog(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    user_id = current_demo_user_id(request, conn)
+    filters = catalog_filters(request)
+    filters["lang"] = detect_lang(request)
+    ensure_fresh_markets(conn, settings)
+    page = int(filters["page"])
+    page_size = int(filters["page_size"])
+    catalog = list_market_catalog(
+        conn,
+        str(filters["q"]),
+        str(filters["status"]),
+        str(filters["sort"]),
+        str(filters["order"]),
+        page_size,
+        (page - 1) * page_size,
+    )
+    total_pages = int(catalog["total_pages"])
+    if total_pages and page > total_pages:
+        page = total_pages
+        catalog = list_market_catalog(
+            conn,
+            str(filters["q"]),
+            str(filters["status"]),
+            str(filters["sort"]),
+            str(filters["order"]),
+            page_size,
+            (page - 1) * page_size,
+        )
+    markets = attach_realtime_updates(conn, catalog["markets"], settings)
+    markets = add_translation_displays(
+        conn,
+        markets,
+        language=detect_lang(request),
+        enabled=settings.translation_enabled,
+    )
+    rendered_markets = []
+    for market in markets:
+        item = enrich_market_for_display(market)
+        item["catalog_status"] = "active" if catalog_market_is_active(item) else "closed"
+        item["catalog_question"] = catalog_question(item.get("display_question"))
+        rendered_markets.append(item)
+    filters["page"] = page
+    filter_urls = {status: catalog_url(filters, page=1, status=status) for status in ("active", "closed", "all")}
+    sort_urls = {sort: catalog_url(filters, page=1, sort=sort) for sort in CATALOG_SORTS}
+    response = templates.TemplateResponse(
+        request,
+        "markets.html",
+        template_context(
+            request,
+            conn,
+            user_id,
+            markets=rendered_markets,
+            q=filters["q"],
+            status=filters["status"],
+            sort=filters["sort"],
+            order=filters["order"],
+            page=page,
+            page_size=page_size,
+            total_count=catalog["total_count"],
+            total_pages=total_pages,
+            has_previous=page > 1,
+            has_next=bool(total_pages and page < total_pages),
+            previous_url=catalog_url(filters, page=page - 1),
+            next_url=catalog_url(filters, page=page + 1),
+            filter_urls=filter_urls,
+            sort_urls=sort_urls,
+            clear_filters_url=catalog_url({"lang": filters["lang"]}, page=1),
+        ),
+    )
+    return prepare_response(response, request, user_id)
+
+
 @app.get("/markets/{market_id}", response_class=HTMLResponse)
 async def market_detail(request: Request, market_id: str, conn: sqlite3.Connection = Depends(get_conn)):
     user_id = current_demo_user_id(request, conn)
@@ -702,6 +916,12 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
         raise HTTPException(status_code=404, detail="market not found")
     market = attach_realtime_updates(conn, [market], settings)[0]
     market = enrich_market_for_display(market)
+    market = add_translation_display(
+        conn,
+        market,
+        language=detect_lang(request),
+        enabled=settings.translation_enabled,
+    )
     snapshots = list_snapshots(conn, market_id, limit=12)
     response = templates.TemplateResponse(
         request,
@@ -929,6 +1149,106 @@ async def set_demo_user(request: Request, conn: sqlite3.Connection = Depends(get
         secure=settings.cookie_secure,
     )
     return response
+
+
+def _auth_user_payload(account: dict, *, session_expires_at: str | None = None) -> dict:
+    payload = {
+        "id": account["id"],
+        "email": account["email_display"],
+        "participant_id": account["participant_id"],
+        "account_status": account["account_status"],
+    }
+    if session_expires_at is not None:
+        payload["session_expires_at"] = session_expires_at
+    return payload
+
+
+@app.post("/api/auth/register")
+async def api_auth_register(payload: AuthRegisterRequest, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    if not settings.auth_registration_enabled:
+        return JSONResponse(status_code=403, content={"detail": "registration_disabled"})
+    limited = _auth_rate_limit(request, payload.email, "register")
+    if limited:
+        return limited
+    participant_id = validate_strict_participant_code(payload.participant_code)
+    if participant_id is None:
+        _record_auth_failure(request, payload.email, "register")
+        insert_audit_event(conn, event_type="login_failed", route=request.url.path, after={"reason": "invalid_registration", "client_hash": _request_identifier_hash(request)})
+        conn.commit()
+        return JSONResponse(status_code=400, content={"detail": "invalid participant code"})
+    try:
+        ensure_demo_user(conn, participant_id)
+        account = create_user_account(
+            conn, email=payload.email, password=payload.password, participant_id=participant_id,
+            password_min_length=settings.auth_password_min_length, password_max_length=settings.auth_password_max_length,
+        )
+        session, token = create_user_session(conn, user_id=account["id"], ttl_seconds=settings.auth_session_ttl_seconds, user_agent_hash=_request_identifier_hash(request))
+        insert_audit_event(conn, event_type="account_created", user_id=account["id"], route=request.url.path, reference_type="participant", reference_id=participant_id, after={"client_hash": _request_identifier_hash(request)})
+        conn.commit()
+    except ValueError as exc:
+        conn.rollback()
+        _record_auth_failure(request, payload.email, "register")
+        detail = "weak password" if "password" in str(exc) else "account already exists"
+        return JSONResponse(status_code=400, content={"detail": detail})
+    _clear_auth_failures(request, payload.email, "register")
+    response = JSONResponse(status_code=201, content={"user": _auth_user_payload(account, session_expires_at=session["expires_at"])})
+    _set_auth_cookie(response, token)
+    return response
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(payload: AuthLoginRequest, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    limited = _auth_rate_limit(request, payload.email, "login")
+    if limited:
+        return limited
+    account = verify_user_credentials(conn, email=payload.email, password=payload.password)
+    if account is None:
+        _record_auth_failure(request, payload.email, "login")
+        insert_audit_event(conn, event_type="login_failed", route=request.url.path, after={"reason": "invalid_credentials", "client_hash": _request_identifier_hash(request)})
+        conn.commit()
+        return JSONResponse(status_code=401, content={"detail": "invalid credentials"})
+    try:
+        session, token = create_user_session(conn, user_id=account["id"], ttl_seconds=settings.auth_session_ttl_seconds, user_agent_hash=_request_identifier_hash(request))
+        update_user_last_login(conn, account["id"])
+        insert_audit_event(conn, event_type="login_succeeded", user_id=account["id"], route=request.url.path, reference_type="participant", reference_id=account["participant_id"], after={"client_hash": _request_identifier_hash(request)})
+        conn.commit()
+    except ValueError:
+        conn.rollback()
+        return JSONResponse(status_code=401, content={"detail": "invalid credentials"})
+    _clear_auth_failures(request, payload.email, "login")
+    response = JSONResponse(content={"user": _auth_user_payload(account, session_expires_at=session["expires_at"])})
+    _set_auth_cookie(response, token)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    token = request.cookies.get(auth_session_cookie_name())
+    session = resolve_user_session(conn, token) if token else None
+    if token:
+        revoke_user_session(conn, token, user_id=session["user_id"] if session else None)
+    if session:
+        insert_audit_event(conn, event_type="logout", user_id=session["user_id"], route=request.url.path, reference_type="participant", reference_id=session["participant_id"])
+        insert_audit_event(conn, event_type="session_revoked", user_id=session["user_id"], route=request.url.path, reference_type="session", reference_id=session["id"])
+    conn.commit()
+    response = JSONResponse(content={"ok": True})
+    _delete_auth_cookie(response)
+    return response
+
+
+@app.get("/api/auth/me")
+async def api_auth_me(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    token = request.cookies.get(auth_session_cookie_name())
+    session = resolve_user_session(conn, token) if token else None
+    if session is None:
+        return JSONResponse(status_code=401, content={"authenticated": False})
+    account = get_user_account_by_id(conn, session["user_id"])
+    if account is None:
+        return JSONResponse(status_code=401, content={"authenticated": False})
+    return {"authenticated": True, "user": _auth_user_payload(account, session_expires_at=session["expires_at"])}
 
 
 @app.get("/health")

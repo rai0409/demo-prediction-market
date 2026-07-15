@@ -5,7 +5,8 @@ import pytest
 
 from app.config import Settings
 from app.polymarket_gamma import load_markets
-from app.storage import connect, init_db, store_markets
+from app.polymarket_gamma import MarketDetailResult
+from app.storage import connect, get_market, init_db, store_markets
 
 
 @pytest.fixture()
@@ -25,6 +26,17 @@ def db_conn(sample_markets):
 @pytest.fixture()
 def client(db_conn, monkeypatch):
     import app.main as main
+    import app.settlement as settlement_module
+
+    def fresh_detail(market_id):
+        market = dict(get_market(db_conn, market_id) or {})
+        market["id"] = market_id
+        market["clobTokenIds"] = market.get("clob_token_ids") or [f"{market_id}-yes", f"{market_id}-no"]
+        if market.get("closed") and market.get("probabilities", {}).get("YES") == 1.0:
+            market["winningOutcome"] = "YES"
+        return MarketDetailResult(True, "ok", market, "2026-01-01T00:00:00+00:00", "mock://market")
+
+    monkeypatch.setattr(settlement_module, "fetch_market_detail_for_settlement", fresh_detail)
 
     monkeypatch.setattr(main, "db", db_conn)
     monkeypatch.setattr(
@@ -41,6 +53,7 @@ def client(db_conn, monkeypatch):
         ),
     )
     main._post_rate_events.clear()
+    main._auth_failure_events.clear()
     async def override_conn():
         return db_conn
 

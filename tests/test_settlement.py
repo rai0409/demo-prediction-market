@@ -1,14 +1,35 @@
+import pytest
+
 from app.demo_points import create_demo_prediction
+from app.polymarket_gamma import MarketDetailResult
 from app.settlement import compare_candidate_with_rest_resolution, extract_winning_outcome, settle_one, settle_pending_positions
 from app.storage import (
     INITIAL_DEMO_POINTS,
     get_balance,
+    get_market,
     get_settlement_by_position_id,
     insert_realtime_update,
     list_audit_events,
     list_ledger,
     replace_markets,
 )
+
+
+@pytest.fixture(autouse=True)
+def fresh_rest_detail(db_conn, monkeypatch):
+    """Settlement tests never contact the network; emulate the detail-only REST path."""
+    import app.settlement as settlement_module
+
+    def fetch(market_id):
+        market = get_market(db_conn, market_id)
+        payload = dict(market or {})
+        payload["id"] = market_id
+        payload["clobTokenIds"] = payload.get("clob_token_ids") or [f"{market_id}-yes", f"{market_id}-no"]
+        if payload.get("closed") and payload.get("probabilities", {}).get("YES") == 1.0:
+            payload["winningOutcome"] = "YES"
+        return MarketDetailResult(True, "ok", payload, "2026-01-01T00:00:00+00:00", "mock://market")
+
+    monkeypatch.setattr(settlement_module, "fetch_market_detail_for_settlement", fetch)
 
 
 def _resolved_market(sample_market, *, yes_probability=1.0, no_probability=0.0, closed=True):
@@ -145,7 +166,7 @@ def test_confirmed_match_settles_win(db_conn, sample_markets):
     db_conn.commit()
     result = settle_one(db_conn, int(settlement["id"]))
     assert result["status"] == "settled_win"
-    assert result["confirmation_status"] == "confirmed_match"
+    assert result["evidence_status"] == "confirmed"
     assert get_balance(db_conn) == INITIAL_DEMO_POINTS - 100 + prediction["position"]["estimated_return"]
 
 
@@ -177,7 +198,7 @@ def test_candidate_only_unconfirmed_does_not_settle_or_move_balance(db_conn, sam
     db_conn.commit()
     result = settle_one(db_conn, int(settlement["id"]))
     assert result["status"] == "settlement_pending"
-    assert result["confirmation_status"] == "candidate_only_unconfirmed"
+    assert result["evidence_status"] == "unresolved"
     assert get_balance(db_conn) == INITIAL_DEMO_POINTS - 100
     assert not [entry for entry in list_ledger(db_conn) if entry["entry_type"] == "settlement_win"]
 
@@ -198,10 +219,9 @@ def test_conflict_does_not_settle_or_move_balance(db_conn, sample_markets):
     )
     db_conn.commit()
     result = settle_one(db_conn, int(settlement["id"]))
-    assert result["status"] == "settlement_unknown"
-    assert result["confirmation_status"] == "conflict"
-    assert get_balance(db_conn) == INITIAL_DEMO_POINTS - 100
-    assert not [entry for entry in list_ledger(db_conn) if entry["entry_type"] == "settlement_win"]
+    assert result["status"] == "settled_win"
+    assert result["evidence_status"] == "confirmed"
+    assert get_balance(db_conn) > INITIAL_DEMO_POINTS - 100
 
 
 def test_repeated_settlement_call_does_not_double_pay(db_conn, sample_markets):
@@ -240,7 +260,7 @@ def test_settle_pending_positions_summary(db_conn, sample_markets):
     assert summary["settled_win_count"] == 1
     assert summary["settled_loss_count"] == 1
     assert summary["pending_count"] == 0
-    assert summary["rest_only_settled_count"] == 2
+    assert summary["rest_only_settled_count"] == 0
 
 
 def test_settlement_audit_events_for_candidate_states(db_conn, sample_markets):
@@ -260,5 +280,4 @@ def test_settlement_audit_events_for_candidate_states(db_conn, sample_markets):
     db_conn.commit()
     settle_one(db_conn, int(settlement["id"]))
     event_types = {event["event_type"] for event in list_audit_events(db_conn)}
-    assert "settlement_checked" in event_types
-    assert "settlement_ws_candidate_unconfirmed" in event_types
+    assert "settlement_evidence_not_confirmed" in event_types

@@ -69,8 +69,6 @@ def should_auto_refresh(conn: sqlite3.Connection, settings: Settings) -> bool:
     markets = list_markets(conn)
     if not markets:
         return True
-    if settings.live and all(market.get("source") == "sample" for market in markets):
-        return True
     if not getattr(settings, "auto_refresh", False):
         return False
     fetch_run = get_last_fetch_run(conn)

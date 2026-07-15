@@ -1,16 +1,30 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import base64
+import hmac
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 from typing import Any
+import uuid
 
 DEMO_USER_ID = "participant-1"
 INITIAL_DEMO_POINTS = 10000.0
 USER_ID_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+ACCOUNT_STATUSES = frozenset({"active", "disabled"})
+PASSWORD_HASH_VERSION = "scrypt-v1"
+PASSWORD_SCRYPT_N = 2**14
+PASSWORD_SCRYPT_R = 8
+PASSWORD_SCRYPT_P = 1
+PASSWORD_HASH_LENGTH = 64
+PASSWORD_SALT_BYTES = 16
+SESSION_TOKEN_BYTES = 32
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -59,6 +73,48 @@ def init_db(conn: sqlite3.Connection) -> None:
             status text not null,
             market_count integer not null
         );
+        create table if not exists market_translations (
+            market_id text not null,
+            language text not null,
+            translated_title text,
+            translated_question text,
+            translated_description text,
+            source_title_hash text not null,
+            source_question_hash text not null,
+            source_description_hash text not null,
+            translation_provider text not null,
+            translation_model text not null,
+            translation_status text not null,
+            translated_at text not null,
+            error_message text,
+            primary key (market_id, language)
+        );
+        create table if not exists market_translation_attempts (
+            id integer primary key autoincrement,
+            market_id text not null,
+            target_language text not null,
+            translation_provider text not null,
+            translation_model text not null,
+            source_title_hash text not null,
+            source_question_hash text not null,
+            source_description_hash text not null,
+            translated_title text,
+            translated_question text,
+            translated_description text,
+            quality_status text not null,
+            quality_failure_codes_json text not null,
+            quality_details_json text not null,
+            latency_ms integer,
+            metered_characters integer,
+            provider_request_id text,
+            attempted_at text not null
+        );
+        create index if not exists idx_market_translation_attempts_market_attempted
+            on market_translation_attempts(market_id, attempted_at desc, id desc);
+        create index if not exists idx_market_translation_attempts_quality_attempted
+            on market_translation_attempts(quality_status, attempted_at desc, id desc);
+        create index if not exists idx_market_translation_attempts_provider_attempted
+            on market_translation_attempts(translation_provider, attempted_at desc, id desc);
         create table if not exists demo_users (
             user_id text primary key,
             balance real not null
@@ -134,6 +190,53 @@ def init_db(conn: sqlite3.Connection) -> None:
             settled_at text,
             created_at text not null default current_timestamp
         );
+        create table if not exists settlement_evidence (
+            id integer primary key autoincrement,
+            market_id text not null,
+            settlement_id integer,
+            source_type text not null,
+            fetched_at text not null,
+            upstream_updated_at text,
+            evidence_hash text not null,
+            normalized_evidence_json text not null,
+            resolution_status text not null,
+            winning_outcome text,
+            winning_token_id text,
+            validation_status text not null,
+            validation_failure_codes_json text not null,
+            created_at text not null
+        );
+        create index if not exists idx_settlement_evidence_market_hash
+            on settlement_evidence(market_id, evidence_hash);
+        create index if not exists idx_settlement_evidence_settlement_id
+            on settlement_evidence(settlement_id, id desc);
+        create table if not exists user_accounts (
+            id text primary key,
+            email_normalized text not null unique,
+            email_display text not null,
+            password_hash text not null,
+            participant_id text not null unique,
+            account_status text not null check(account_status in ('active', 'disabled')),
+            created_at text not null,
+            updated_at text not null,
+            password_changed_at text not null,
+            last_login_at text
+        );
+        create table if not exists user_sessions (
+            id text primary key,
+            user_id text not null,
+            token_hash text not null unique,
+            created_at text not null,
+            expires_at text not null,
+            last_seen_at text not null,
+            revoked_at text,
+            revoke_reason text,
+            user_agent_hash text,
+            foreign key(user_id) references user_accounts(id)
+        );
+        create index if not exists idx_user_sessions_user_id on user_sessions(user_id);
+        create index if not exists idx_user_sessions_expires_at on user_sessions(expires_at);
+        create index if not exists idx_user_sessions_revoked_at on user_sessions(revoked_at);
         """
     )
     _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
@@ -164,6 +267,274 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaratio
         conn.execute(f"alter table {table} add column {column} {declaration}")
 
 
+_TRANSLATION_ATTEMPT_STATUSES = frozenset({"passed", "failed"})
+_TRANSLATION_ATTEMPT_LIMIT_MAX = 200
+
+
+def _required_translation_attempt_text(value: str | None, field: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field} must not be empty")
+    return normalized
+
+
+def _canonical_translation_attempt_json(value: Any, *, field: str, expected_type: type) -> str:
+    if not isinstance(value, expected_type):
+        raise ValueError(f"{field} must be a JSON {expected_type.__name__}")
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be JSON-compatible") from exc
+
+
+def _normalize_failure_codes(value: list[str] | tuple[str, ...]) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("quality_failure_codes must be a JSON array")
+    normalized: list[str] = []
+    for code in value:
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("quality_failure_codes must contain non-empty strings")
+        code = code.strip()
+        if code not in normalized:
+            normalized.append(code)
+    return normalized
+
+
+def _validate_translation_attempt(
+    *,
+    market_id: str,
+    target_language: str,
+    translation_provider: str,
+    translation_model: str,
+    source_title_hash: str,
+    source_question_hash: str,
+    source_description_hash: str,
+    quality_status: str,
+    quality_failure_codes: list[str] | tuple[str, ...],
+    quality_details: dict[str, Any],
+    latency_ms: int | None,
+    metered_characters: int | None,
+) -> tuple[dict[str, str], list[str], str]:
+    values = {
+        "market_id": _required_translation_attempt_text(market_id, "market_id"),
+        "target_language": _required_translation_attempt_text(target_language, "target_language"),
+        "translation_provider": _required_translation_attempt_text(translation_provider, "translation_provider"),
+        "translation_model": _required_translation_attempt_text(translation_model, "translation_model"),
+        "source_title_hash": _required_translation_attempt_text(source_title_hash, "source_title_hash"),
+        "source_question_hash": _required_translation_attempt_text(source_question_hash, "source_question_hash"),
+        "source_description_hash": _required_translation_attempt_text(source_description_hash, "source_description_hash"),
+    }
+    if quality_status not in _TRANSLATION_ATTEMPT_STATUSES:
+        raise ValueError("quality_status must be passed or failed")
+    failure_codes = _normalize_failure_codes(quality_failure_codes)
+    if quality_status == "passed" and failure_codes:
+        raise ValueError("passed attempts must not have quality failure codes")
+    if quality_status == "failed" and not failure_codes:
+        raise ValueError("failed attempts must have quality failure codes")
+    for field, metric in (("latency_ms", latency_ms), ("metered_characters", metered_characters)):
+        if metric is not None and (isinstance(metric, bool) or not isinstance(metric, int) or metric < 0):
+            raise ValueError(f"{field} must be null or a non-negative integer")
+    # quality_details must never include credentials, HTTP headers, or raw request/response payloads.
+    details_json = _canonical_translation_attempt_json(quality_details, field="quality_details", expected_type=dict)
+    return values, failure_codes, details_json
+
+
+def _decode_translation_attempt(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["quality_failure_codes"] = json.loads(item.pop("quality_failure_codes_json"))
+    item["quality_details"] = json.loads(item.pop("quality_details_json"))
+    return item
+
+
+def insert_market_translation_attempt(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str,
+    target_language: str,
+    translation_provider: str,
+    translation_model: str,
+    source_title_hash: str,
+    source_question_hash: str,
+    source_description_hash: str,
+    translated_title: str | None,
+    translated_question: str | None,
+    translated_description: str | None,
+    quality_status: str,
+    quality_failure_codes: list[str] | tuple[str, ...],
+    quality_details: dict[str, Any],
+    latency_ms: int | None = None,
+    metered_characters: int | None = None,
+    provider_request_id: str | None = None,
+    attempted_at: str | None = None,
+) -> dict[str, Any]:
+    """Save one evaluated attempt without committing the caller's transaction.
+
+    ``quality_details`` must not contain credentials, HTTP headers, or raw request/response payloads.
+    """
+    values, failure_codes, details_json = _validate_translation_attempt(
+        market_id=market_id,
+        target_language=target_language,
+        translation_provider=translation_provider,
+        translation_model=translation_model,
+        source_title_hash=source_title_hash,
+        source_question_hash=source_question_hash,
+        source_description_hash=source_description_hash,
+        quality_status=quality_status,
+        quality_failure_codes=quality_failure_codes,
+        quality_details=quality_details,
+        latency_ms=latency_ms,
+        metered_characters=metered_characters,
+    )
+    timestamp = attempted_at or datetime.now(timezone.utc).isoformat()
+    try:
+        parsed_timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("attempted_at must be an ISO 8601 timestamp") from exc
+    if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() != timezone.utc.utcoffset(parsed_timestamp):
+        raise ValueError("attempted_at must be a UTC ISO 8601 timestamp")
+    cursor = conn.execute(
+        """
+        insert into market_translation_attempts(
+            market_id, target_language, translation_provider, translation_model,
+            source_title_hash, source_question_hash, source_description_hash,
+            translated_title, translated_question, translated_description,
+            quality_status, quality_failure_codes_json, quality_details_json,
+            latency_ms, metered_characters, provider_request_id, attempted_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            values["market_id"], values["target_language"], values["translation_provider"], values["translation_model"],
+            values["source_title_hash"], values["source_question_hash"], values["source_description_hash"],
+            translated_title, translated_question, translated_description, quality_status,
+            _canonical_translation_attempt_json(failure_codes, field="quality_failure_codes", expected_type=list), details_json,
+            latency_ms, metered_characters, provider_request_id, timestamp,
+        ),
+    )
+    return get_market_translation_attempt(conn, int(cursor.lastrowid)) or {}
+
+
+def get_market_translation_attempt(conn: sqlite3.Connection, attempt_id: int) -> dict[str, Any] | None:
+    return _decode_translation_attempt(
+        conn.execute("select * from market_translation_attempts where id = ?", (attempt_id,)).fetchone()
+    )
+
+
+def list_market_translation_attempts(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str | None = None,
+    target_language: str | None = None,
+    translation_provider: str | None = None,
+    quality_status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+    if quality_status is not None and quality_status not in _TRANSLATION_ATTEMPT_STATUSES:
+        raise ValueError("quality_status must be passed or failed")
+    clauses: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("market_id", market_id),
+        ("target_language", target_language),
+        ("translation_provider", translation_provider),
+        ("quality_status", quality_status),
+    ):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            params.append(_required_translation_attempt_text(value, column))
+    where = f" where {' and '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"select * from market_translation_attempts{where} order by attempted_at desc, id desc limit ?",
+        [*params, min(limit, _TRANSLATION_ATTEMPT_LIMIT_MAX)],
+    ).fetchall()
+    return [_decode_translation_attempt(row) for row in rows if row is not None]
+
+
+def _upsert_accepted_market_translation(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str,
+    language: str,
+    translated_title: str | None,
+    translated_question: str | None,
+    translated_description: str | None,
+    source_title_hash: str,
+    source_question_hash: str,
+    source_description_hash: str,
+    provider: str,
+    model: str,
+) -> None:
+    """Match the existing translation cache upsert without committing an outer transaction."""
+    conn.execute(
+        """
+        insert into market_translations(
+            market_id, language, translated_title, translated_question, translated_description,
+            source_title_hash, source_question_hash, source_description_hash,
+            translation_provider, translation_model, translation_status, translated_at, error_message
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(market_id, language) do update set
+            translated_title = excluded.translated_title,
+            translated_question = excluded.translated_question,
+            translated_description = excluded.translated_description,
+            source_title_hash = excluded.source_title_hash,
+            source_question_hash = excluded.source_question_hash,
+            source_description_hash = excluded.source_description_hash,
+            translation_provider = excluded.translation_provider,
+            translation_model = excluded.translation_model,
+            translation_status = excluded.translation_status,
+            translated_at = excluded.translated_at,
+            error_message = excluded.error_message
+        """,
+        (
+            market_id, language, translated_title, translated_question, translated_description,
+            source_title_hash, source_question_hash, source_description_hash,
+            provider, model, "success", datetime.now(timezone.utc).isoformat(), None,
+        ),
+    )
+
+
+def record_translation_evaluation(
+    conn: sqlite3.Connection,
+    **attempt: Any,
+) -> dict[str, Any]:
+    """Atomically retain an evaluation attempt and adopt only a passed translation cache entry."""
+    outer_transaction = conn.in_transaction
+    savepoint = f"translation_evaluation_{id(conn)}"
+    if outer_transaction:
+        conn.execute(f"savepoint {savepoint}")
+    try:
+        saved_attempt = insert_market_translation_attempt(conn, **attempt)
+        if attempt["quality_status"] == "passed":
+            _upsert_accepted_market_translation(
+                conn,
+                market_id=saved_attempt["market_id"],
+                language=saved_attempt["target_language"],
+                translated_title=saved_attempt["translated_title"],
+                translated_question=saved_attempt["translated_question"],
+                translated_description=saved_attempt["translated_description"],
+                source_title_hash=saved_attempt["source_title_hash"],
+                source_question_hash=saved_attempt["source_question_hash"],
+                source_description_hash=saved_attempt["source_description_hash"],
+                provider=saved_attempt["translation_provider"],
+                model=saved_attempt["translation_model"],
+            )
+        if outer_transaction:
+            conn.execute(f"release savepoint {savepoint}")
+        else:
+            conn.commit()
+    except Exception:
+        if outer_transaction:
+            conn.execute(f"rollback to savepoint {savepoint}")
+            conn.execute(f"release savepoint {savepoint}")
+        else:
+            conn.rollback()
+        raise
+    return {"attempt": saved_attempt, "accepted": attempt["quality_status"] == "passed"}
+
+
 def normalize_demo_user_id(value: str | None) -> str:
     text = (value or DEMO_USER_ID).strip()
     if not text:
@@ -186,6 +557,209 @@ def ensure_demo_user(conn: sqlite3.Connection, user_id: str) -> str:
         )
         conn.commit()
     return normalized
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime | None = None) -> str:
+    return (value or _utc_now()).astimezone(timezone.utc).isoformat()
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def normalize_email(email: str | None) -> str:
+    normalized = str(email or "").strip().casefold()
+    if not normalized or not EMAIL_PATTERN.fullmatch(normalized):
+        raise ValueError("invalid email")
+    return normalized
+
+
+def validate_password(password: str | None, *, minimum_length: int, maximum_length: int) -> str:
+    if not isinstance(password, str):
+        raise ValueError("invalid password")
+    if minimum_length < 1 or maximum_length < minimum_length:
+        raise ValueError("invalid password policy")
+    # Count Unicode code points consistently before the costly KDF.
+    if not minimum_length <= len(password) <= maximum_length:
+        raise ValueError("password does not meet length requirements")
+    return password
+
+
+def hash_password(password: str, *, n: int = PASSWORD_SCRYPT_N, r: int = PASSWORD_SCRYPT_R, p: int = PASSWORD_SCRYPT_P) -> str:
+    """Return a self-describing scrypt hash; never log or persist the input password."""
+    salt = secrets.token_bytes(PASSWORD_SALT_BYTES)
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=PASSWORD_HASH_LENGTH)
+    salt_text = base64.urlsafe_b64encode(salt).decode("ascii")
+    hash_text = base64.urlsafe_b64encode(derived).decode("ascii")
+    return f"{PASSWORD_HASH_VERSION}${n}${r}${p}${salt_text}${hash_text}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        version, n_text, r_text, p_text, salt_text, digest_text = encoded.split("$")
+        if version != PASSWORD_HASH_VERSION:
+            return False
+        n, r, p = int(n_text), int(r_text), int(p_text)
+        if n < 2**10 or n > 2**18 or n & (n - 1) or not (1 <= r <= 32 and 1 <= p <= 16):
+            return False
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        if not salt or len(expected) != PASSWORD_HASH_LENGTH:
+            return False
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=len(expected))
+        return hmac.compare_digest(actual, expected)
+    except (AttributeError, ValueError, TypeError, UnicodeError, MemoryError):
+        return False
+
+
+def _public_account(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    account = dict(row)
+    account.pop("password_hash", None)
+    return account
+
+
+def get_user_account_by_id(conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+    return _public_account(conn.execute("select * from user_accounts where id = ?", (user_id,)).fetchone())
+
+
+def get_user_account_by_email(conn: sqlite3.Connection, email: str) -> dict[str, Any] | None:
+    return _public_account(conn.execute("select * from user_accounts where email_normalized = ?", (normalize_email(email),)).fetchone())
+
+
+def create_user_account(conn: sqlite3.Connection, *, email: str, password: str, participant_id: str, password_min_length: int = 12, password_max_length: int = 256) -> dict[str, Any]:
+    email_normalized = normalize_email(email)
+    password = validate_password(password, minimum_length=password_min_length, maximum_length=password_max_length)
+    participant_id = normalize_demo_user_id(participant_id)
+    if not participant_id:
+        raise ValueError("participant_id must not be empty")
+    timestamp = _utc_iso()
+    try:
+        conn.execute(
+            """insert into user_accounts(id, email_normalized, email_display, password_hash, participant_id, account_status, created_at, updated_at, password_changed_at)
+               values (?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+            (str(uuid.uuid4()), email_normalized, str(email).strip(), hash_password(password), participant_id, timestamp, timestamp, timestamp),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("account already exists") from exc
+    return get_user_account_by_email(conn, email_normalized) or {}
+
+
+def verify_user_credentials(conn: sqlite3.Connection, *, email: str, password: str) -> dict[str, Any] | None:
+    try:
+        normalized = normalize_email(email)
+    except ValueError:
+        # Preserve a similar KDF cost for malformed/non-existent identities.
+        verify_password(password if isinstance(password, str) else "", hash_password("credential-padding"))
+        return None
+    row = conn.execute("select * from user_accounts where email_normalized = ?", (normalized,)).fetchone()
+    if row is None:
+        verify_password(password if isinstance(password, str) else "", hash_password("credential-padding"))
+        return None
+    if row["account_status"] != "active" or not verify_password(password if isinstance(password, str) else "", row["password_hash"]):
+        return None
+    return _public_account(row)
+
+
+def _session_token_hash(token: str) -> str | None:
+    if not isinstance(token, str) or len(token) < 40 or len(token) > 512:
+        return None
+    return hashlib.sha256(token.encode("ascii")).hexdigest() if token.isascii() else None
+
+
+def create_user_session(conn: sqlite3.Connection, *, user_id: str, ttl_seconds: int, user_agent_hash: str | None = None) -> tuple[dict[str, Any], str]:
+    if not 1 <= ttl_seconds <= 60 * 60 * 24 * 31:
+        raise ValueError("invalid session lifetime")
+    account = get_user_account_by_id(conn, user_id)
+    if account is None or account["account_status"] != "active":
+        raise ValueError("account is not active")
+    now = _utc_now()
+    expires_at = _utc_iso(now + timedelta(seconds=ttl_seconds))
+    for _ in range(5):
+        token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        token_hash = _session_token_hash(token)
+        try:
+            conn.execute(
+                """insert into user_sessions(id, user_id, token_hash, created_at, expires_at, last_seen_at, user_agent_hash)
+                   values (?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), user_id, token_hash, _utc_iso(now), expires_at, _utc_iso(now), user_agent_hash),
+            )
+            row = conn.execute("select * from user_sessions where token_hash = ?", (token_hash,)).fetchone()
+            return dict(row), token
+        except sqlite3.IntegrityError:
+            continue
+    raise RuntimeError("could not create session")
+
+
+def resolve_user_session(conn: sqlite3.Connection, token: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+    token_hash = _session_token_hash(token)
+    if token_hash is None:
+        return None
+    row = conn.execute(
+        """select s.*, a.email_display, a.participant_id, a.account_status
+           from user_sessions s join user_accounts a on a.id = s.user_id where s.token_hash = ?""",
+        (token_hash,),
+    ).fetchone()
+    if row is None or row["revoked_at"] or row["account_status"] != "active":
+        return None
+    current = now or _utc_now()
+    try:
+        if _parse_utc_timestamp(row["expires_at"]) <= current:
+            return None
+    except ValueError:
+        return None
+    # Avoid a write on every request while retaining an operational last-seen value.
+    if current - _parse_utc_timestamp(row["last_seen_at"]) >= timedelta(minutes=5):
+        conn.execute("update user_sessions set last_seen_at = ? where id = ?", (_utc_iso(current), row["id"]))
+    return dict(row)
+
+
+def revoke_user_session(conn: sqlite3.Connection, token: str, *, user_id: str | None = None, reason: str = "logout") -> bool:
+    token_hash = _session_token_hash(token)
+    if token_hash is None:
+        return False
+    sql = "update user_sessions set revoked_at = ?, revoke_reason = ? where token_hash = ? and revoked_at is null"
+    params: list[Any] = [_utc_iso(), reason, token_hash]
+    if user_id is not None:
+        sql += " and user_id = ?"
+        params.append(user_id)
+    return conn.execute(sql, params).rowcount > 0
+
+
+def revoke_all_user_sessions(conn: sqlite3.Connection, user_id: str, *, reason: str = "account_disabled") -> int:
+    return conn.execute(
+        "update user_sessions set revoked_at = ?, revoke_reason = ? where user_id = ? and revoked_at is null",
+        (_utc_iso(), reason, user_id),
+    ).rowcount
+
+
+def disable_user_account(conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+    account = get_user_account_by_id(conn, user_id)
+    if account is None:
+        return None
+    now = _utc_iso()
+    conn.execute("update user_accounts set account_status = 'disabled', updated_at = ? where id = ?", (now, user_id))
+    revoke_all_user_sessions(conn, user_id, reason="account_disabled")
+    disabled = get_user_account_by_id(conn, user_id)
+    if disabled is not None:
+        insert_audit_event(
+            conn, event_type="account_disabled", user_id=user_id,
+            reference_type="participant", reference_id=disabled["participant_id"],
+        )
+    return disabled
+
+
+def update_user_last_login(conn: sqlite3.Connection, user_id: str) -> None:
+    now = _utc_iso()
+    conn.execute("update user_accounts set last_login_at = ?, updated_at = ? where id = ?", (now, now, user_id))
 
 
 def store_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> None:
@@ -218,6 +792,84 @@ def replace_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> 
 def list_markets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("select payload from markets order by json_extract(payload, '$.volume_24hr') desc").fetchall()
     return [json.loads(row["payload"]) for row in rows]
+
+
+def list_markets_for_translation(conn: sqlite3.Connection, limit: int, market_id: str | None = None) -> list[dict[str, Any]]:
+    if market_id:
+        market = get_market(conn, market_id)
+        return [market] if market else []
+    rows = conn.execute(
+        "select payload from markets order by updated_at desc, market_id asc limit ?",
+        (max(1, min(int(limit), 50)),),
+    ).fetchall()
+    return [json.loads(row["payload"]) for row in rows]
+
+
+CATALOG_SORT_SQL = {
+    "volume_24h": "cast(coalesce(json_extract(payload, '$.volume_24hr'), 0) as real)",
+    "liquidity": "cast(coalesce(json_extract(payload, '$.liquidity'), 0) as real)",
+    "end_date": "coalesce(datetime(json_extract(payload, '$.end_date')), '')",
+    "probability": "cast(coalesce((select value from json_each(markets.payload, '$.probabilities') where key = json_extract(markets.payload, '$.outcomes[0]') limit 1), 0) as real)",
+    "updated": "updated_at",
+}
+
+
+def _catalog_like_query(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped.lower()}%"
+
+
+def list_market_catalog(
+    conn: sqlite3.Connection,
+    query: str,
+    status: str,
+    sort: str,
+    order: str,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    """Return one user-facing market catalog page with SQL-side filtering and paging."""
+    normalized_status = status if status in {"active", "closed", "all"} else "active"
+    sort_sql = CATALOG_SORT_SQL.get(sort, CATALOG_SORT_SQL["volume_24h"])
+    order_sql = "asc" if order == "asc" else "desc"
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
+
+    active_sql = """
+        coalesce(json_extract(payload, '$.active'), 0) = 1
+        and coalesce(json_extract(payload, '$.closed'), 0) = 0
+        and (json_extract(payload, '$.end_date') is null
+             or datetime(json_extract(payload, '$.end_date')) > datetime('now'))
+    """
+    closed_sql = f"not ({active_sql})"
+    where: list[str] = []
+    params: list[Any] = []
+    if normalized_status == "active":
+        where.append(active_sql)
+    elif normalized_status == "closed":
+        where.append(closed_sql)
+    if query:
+        where.append(
+            "("
+            "lower(coalesce(json_extract(payload, '$.title'), '')) like ? escape '\\' "
+            "or lower(coalesce(json_extract(payload, '$.question'), '')) like ? escape '\\' "
+            "or lower(coalesce(json_extract(payload, '$.slug'), '')) like ? escape '\\'"
+            ")"
+        )
+        like_query = _catalog_like_query(query)
+        params.extend([like_query, like_query, like_query])
+
+    where_sql = f" where {' and '.join(where)}" if where else ""
+    total_count = int(conn.execute(f"select count(*) as count from markets{where_sql}", params).fetchone()["count"])
+    rows = conn.execute(
+        f"select payload from markets{where_sql} order by {sort_sql} {order_sql}, market_id asc limit ? offset ?",
+        [*params, limit, offset],
+    ).fetchall()
+    return {
+        "markets": [json.loads(row["payload"]) for row in rows],
+        "total_count": total_count,
+        "total_pages": math.ceil(total_count / limit) if total_count else 0,
+    }
 
 
 def get_last_fetch_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
@@ -893,6 +1545,41 @@ def settlement_ledger_entry_exists(conn: sqlite3.Connection, settlement_id: int)
         (f"%{marker}%",),
     ).fetchone()
     return row is not None
+
+
+def insert_settlement_evidence(
+    conn: sqlite3.Connection,
+    *,
+    market_id: str,
+    settlement_id: int | None,
+    evidence: dict[str, Any],
+    evidence_hash: str,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    """Append a canonical, credential-free evidence record without committing."""
+    normalized_json = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    failure_json = json.dumps(validation["failure_codes"], ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        """
+        insert into settlement_evidence(
+            market_id, settlement_id, source_type, fetched_at, upstream_updated_at,
+            evidence_hash, normalized_evidence_json, resolution_status, winning_outcome,
+            winning_token_id, validation_status, validation_failure_codes_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            market_id, settlement_id, str(evidence.get("source_type") or "unknown"), evidence.get("fetched_at"),
+            evidence.get("upstream_updated_at"), evidence_hash, normalized_json, validation["status"],
+            validation.get("winning_outcome"), validation.get("winning_token_id"), validation["status"], failure_json, timestamp,
+        ),
+    )
+    return dict(conn.execute("select * from settlement_evidence where id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def list_settlement_evidence(conn: sqlite3.Connection, market_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute("select * from settlement_evidence where market_id = ? order by id asc", (market_id,)).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_orders(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:

@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 GAMMA_EVENTS_BASE_URL = "https://gamma-api.polymarket.com/events"
+GAMMA_MARKETS_BASE_URL = "https://gamma-api.polymarket.com/markets"
 SAMPLE_PATH = Path("data/sample_events.json")
 RUNTIME_DIR = Path("runtime")
 GAMMA_RESPONSE_PATH = RUNTIME_DIR / "gamma_last_response.json"
@@ -45,6 +46,17 @@ class FetchResult:
         }
 
 
+@dataclass
+class MarketDetailResult:
+    ok: bool
+    status: str
+    payload: dict[str, Any] | None
+    fetched_at: str
+    url: str
+    error: str | None = None
+    http_status: int | None = None
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -58,6 +70,38 @@ def gamma_events_url(limit: int = 100) -> str:
         "limit": str(max(limit, 100)),
     }
     return f"{GAMMA_EVENTS_BASE_URL}?{urlencode(params)}"
+
+
+def gamma_market_detail_url(market_id: str) -> str:
+    return f"{GAMMA_MARKETS_BASE_URL}/{market_id}"
+
+
+def fetch_market_detail_for_settlement(market_id: str, timeout: float = 8.0, retries: int = 2) -> MarketDetailResult:
+    """Fetch a fresh market document. This path intentionally has no DB/sample fallback."""
+    fetched_at, url = utc_now_iso(), gamma_market_detail_url(market_id)
+    headers = {"Accept": "application/json", "User-Agent": "DemoPredictionMarketViewer/0.2 (+local-preview; no-trading)"}
+    last_error: str | None = None
+    for attempt in range(retries + 1):
+        try:
+            response = httpx.get(url, headers=headers, timeout=timeout)
+            if response.status_code != 200:
+                retryable = response.status_code == 429 or response.status_code >= 500
+                last_error = f"Gamma market detail returned HTTP {response.status_code}"
+                if retryable and attempt < retries:
+                    continue
+                return MarketDetailResult(False, "unavailable" if retryable else "invalid_response", None, fetched_at, url, last_error, response.status_code)
+            try:
+                payload = response.json()
+            except (json.JSONDecodeError, ValueError):
+                return MarketDetailResult(False, "invalid_response", None, fetched_at, url, "Gamma market detail JSON parse failed", response.status_code)
+            if not isinstance(payload, dict):
+                return MarketDetailResult(False, "invalid_response", None, fetched_at, url, "Gamma market detail was not an object", response.status_code)
+            return MarketDetailResult(True, "ok", payload, fetched_at, url, http_status=response.status_code)
+        except httpx.HTTPError as exc:
+            last_error = f"Gamma market detail request failed: {exc}"
+            if attempt < retries:
+                continue
+    return MarketDetailResult(False, "unavailable", None, fetched_at, url, last_error or "Gamma market detail request failed")
 
 
 def _write_text(path: Path, content: str) -> None:

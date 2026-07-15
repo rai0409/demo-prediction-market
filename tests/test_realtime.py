@@ -45,6 +45,22 @@ def test_ensure_fresh_markets_does_not_refresh_within_window(db_conn, monkeypatc
     assert len(ensure_fresh_markets(db_conn, settings)) >= 3
 
 
+def test_ensure_fresh_markets_respects_refresh_window_for_live_fallback(db_conn, monkeypatch):
+    def fail_refresh(conn, settings):
+        raise AssertionError("refresh should not run within the configured window")
+
+    monkeypatch.setattr("app.realtime.refresh_markets", fail_refresh)
+    settings = Settings(
+        live=True,
+        poll_seconds=30,
+        limit=50,
+        db_path=":memory:",
+        auto_refresh=True,
+        refresh_seconds=60,
+    )
+    assert len(ensure_fresh_markets(db_conn, settings)) >= 3
+
+
 def test_ensure_fresh_markets_refreshes_when_stale(db_conn, monkeypatch, sample_markets):
     stale = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
     db_conn.execute("update fetch_runs set fetched_at = ?", (stale,))

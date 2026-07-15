@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}{{ t("market.catalog_title") }} | {{ t("app.title") }}{% endblock %}
+
+{% block content %}
+<section class="section-heading catalog-heading">
+  <div>
+    <p class="eyebrow">{{ t("nav.markets") }}</p>
+    <h1>{{ t("market.catalog_title") }}</h1>
+    <p>{{ t("market.catalog_subtitle") }}</p>
+  </div>
+  <p class="catalog-count">{{ total_count }} {{ t("market.total_results") }}</p>
+</section>
+
+<section class="catalog-controls" aria-label="{{ t('market.catalog_title') }}">
+  <form method="get" action="/markets" class="catalog-form">
+    <input type="hidden" name="lang" value="{{ lang }}">
+    <input type="hidden" name="page" value="1">
+    <label for="catalog-query">{{ t("market.search") }}</label>
+    <input id="catalog-query" name="q" type="search" value="{{ q }}" maxlength="120" placeholder="{{ t('market.search_placeholder') }}">
+
+    <label for="catalog-status">{{ t("common.status") }}</label>
+    <select id="catalog-status" name="status">
+      <option value="active" {% if status == "active" %}selected{% endif %}>{{ t("market.filter_active") }}</option>
+      <option value="closed" {% if status == "closed" %}selected{% endif %}>{{ t("market.filter_closed") }}</option>
+      <option value="all" {% if status == "all" %}selected{% endif %}>{{ t("market.filter_all") }}</option>
+    </select>
+
+    <label for="catalog-sort">{{ t("market.sort_label") }}</label>
+    <select id="catalog-sort" name="sort">
+      <option value="volume_24h" {% if sort == "volume_24h" %}selected{% endif %}>{{ t("market.sort_volume_24h") }}</option>
+      <option value="liquidity" {% if sort == "liquidity" %}selected{% endif %}>{{ t("market.sort_liquidity") }}</option>
+      <option value="end_date" {% if sort == "end_date" %}selected{% endif %}>{{ t("market.sort_end_date") }}</option>
+      <option value="probability" {% if sort == "probability" %}selected{% endif %}>{{ t("market.sort_probability") }}</option>
+      <option value="updated" {% if sort == "updated" %}selected{% endif %}>{{ t("market.sort_updated") }}</option>
+    </select>
+
+    <label for="catalog-order">{{ t("market.sort_label") }}</label>
+    <select id="catalog-order" name="order">
+      <option value="desc" {% if order == "desc" %}selected{% endif %}>{{ t("market.order_desc") }}</option>
+      <option value="asc" {% if order == "asc" %}selected{% endif %}>{{ t("market.order_asc") }}</option>
+    </select>
+
+    <label for="catalog-page-size">{{ t("market.page_size") }}</label>
+    <select id="catalog-page-size" name="page_size">
+      {% for size in [10, 20, 50] %}
+      <option value="{{ size }}" {% if page_size == size %}selected{% endif %}>{{ size }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">{{ t("market.search") }}</button>
+    <a class="secondary-link catalog-clear" href="{{ clear_filters_url }}">{{ t("market.clear_filters") }}</a>
+  </form>
+
+  <nav class="catalog-filters" aria-label="{{ t('common.status') }}">
+    <a href="{{ filter_urls.active }}" class="{% if status == 'active' %}active{% endif %}">{{ t("market.filter_active") }}</a>
+    <a href="{{ filter_urls.closed }}" class="{% if status == 'closed' %}active{% endif %}">{{ t("market.filter_closed") }}</a>
+    <a href="{{ filter_urls.all }}" class="{% if status == 'all' %}active{% endif %}">{{ t("market.filter_all") }}</a>
+  </nav>
+</section>
+
+{% if markets %}
+<section class="market-grid" aria-label="{{ t('market.catalog_title') }}">
+  {% for market in markets %}
+  <article class="market-card" data-market-id="{{ market.market_id }}">
+    <div class="card-meta">
+      <span class="badge subtle">{% if market.catalog_status == "active" %}{{ t("market.filter_active") }}{% else %}{{ t("market.filter_closed") }}{% endif %}</span>
+      <span class="badge subtle">{% if market.demo_participation_allowed %}{{ t("market.demo_eligible") }}{% else %}{{ t("market.not_eligible") }}{% endif %}</span>
+      <span>{{ t("market.updated") }}: <span data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>
+    </div>
+    <h2>{{ market.display_title }}</h2>
+    <p class="catalog-question">{{ market.catalog_question }}</p>
+    {% if market.outcomes|length >= 2 %}
+    {% set first = market.outcomes[0] %}
+    {% set second = market.outcomes[1] %}
+    <div class="outcome-row two">
+      <span><strong>{{ first }}</strong><span data-live-probability="{{ first }}">{{ market.probabilities[first]|percent }}</span></span>
+      <span><strong>{{ second }}</strong><span data-live-probability="{{ second }}">{{ market.probabilities[second]|percent }}</span></span>
+    </div>
+    <div class="probability-bar split" aria-label="{{ t('market.sort_probability') }}">
+      <span data-live-probability-bar="{{ first }}" style="width: {{ market.probabilities[first] * 100 }}%"></span>
+    </div>
+    {% endif %}
+    <dl class="metrics">
+      <div><dt>{{ t("market.volume_24h") }}</dt><dd data-live-field="volume_24hr">{{ market.volume_24hr|number }}</dd></div>
+      <div><dt>{{ t("market.liquidity") }}</dt><dd data-live-field="liquidity">{{ market.liquidity|number }}</dd></div>
+      <div><dt>{{ t("market.end_date") }}</dt><dd>{{ market.end_date|date }}</dd></div>
+    </dl>
+    <a class="action-link" href="/markets/{{ market.market_id }}?lang={{ lang }}">{{ t("market.detail") }}</a>
+  </article>
+  {% endfor %}
+</section>
+
+{% if total_pages %}
+<nav class="pagination" aria-label="pagination">
+  {% if has_previous %}<a class="secondary-link" href="{{ previous_url }}">{{ t("pagination.previous") }}</a>{% else %}<span class="pagination-disabled">{{ t("pagination.previous") }}</span>{% endif %}
+  <span>{{ t("pagination.page_of").format(page=page, total=total_pages) }}</span>
+  {% if has_next %}<a class="secondary-link" href="{{ next_url }}">{{ t("pagination.next") }}</a>{% else %}<span class="pagination-disabled">{{ t("pagination.next") }}</span>{% endif %}
+</nav>
+{% endif %}
+{% else %}
+<section class="empty-state">
+  <h2>{{ t("market.no_results") }}</h2>
+  <a class="secondary-link" href="{{ clear_filters_url }}">{{ t("market.clear_filters") }}</a>
+</section>
+{% endif %}
+{% endblock %}

@@ -89,3 +89,33 @@ def test_cookie_secure_config(monkeypatch):
 
     monkeypatch.setenv("DEMO_COOKIE_SECURE", "0")
     assert get_settings().cookie_secure is False
+
+
+def test_translation_config_defaults_and_bounds(monkeypatch):
+    for name in [
+        "DEMO_TRANSLATION_ENABLED",
+        "DEMO_TRANSLATION_PROVIDER",
+        "DEMO_TRANSLATION_TARGET_LANGUAGE",
+        "DEMO_TRANSLATION_MAX_CHARS",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    settings = get_settings()
+    assert settings.translation_enabled is False
+    assert settings.translation_provider == "noop"
+    assert settings.translation_target_language == "ja"
+    assert settings.translation_max_chars == 4000
+    assert settings.translation_model == "Helsinki-NLP/opus-mt-en-jap"
+    assert settings.translation_device == "auto"
+    assert settings.translation_batch_size == 4
+    assert settings.translation_local_files_only is False
+    assert settings.azure_translator_endpoint == "https://api.cognitive.microsofttranslator.com"
+    assert settings.azure_translator_api_version == "3.0"
+    assert settings.azure_translator_source_language == "en"
+    assert settings.azure_translator_target_language == "ja"
+    assert settings.azure_translator_timeout_seconds == 15
+    assert settings.azure_translator_max_retries == 3
+    assert settings.azure_translator_batch_size == 20
+    monkeypatch.setenv("DEMO_TRANSLATION_MAX_CHARS", "1")
+    assert get_settings().translation_max_chars == 200
+    monkeypatch.setenv("DEMO_TRANSLATION_MAX_CHARS", "999999")
+    assert get_settings().translation_max_chars == 20000

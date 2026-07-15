@@ -31,6 +31,10 @@ def test_translation_ja_en():
     assert t("en", "market.live") == "Live"
     assert t("ja", "market.updated") == "最終更新"
     assert t("en", "market.updated") == "Updated"
+    assert t("ja", "market.catalog_title") == "全マーケット"
+    assert t("en", "market.catalog_title") == "All markets"
+    assert t("ja", "pagination.previous") == "前へ"
+    assert t("en", "pagination.next") == "Next"
 
 
 def test_missing_translation_returns_key_or_default():
