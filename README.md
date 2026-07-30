@@ -128,6 +128,12 @@ scripts/run_live.sh
 
 Open `http://127.0.0.1:8093`.
 
+## systemd web application service
+
+`deploy/systemd/demo-prediction-market.service` is a repository-specific template for this checkout at `/home/rai/demo-prediction-market` and user/group `rai`. Review and adapt those three path/user values before installation on another host. It runs the existing single-process Uvicorn command on `127.0.0.1:8093`, reads secrets only from the untracked `.env`, and explicitly keeps `DEMO_PREDICTION_LIVE=0`. It does not run synchronization, timers, migrations, backups, or restores.
+
+The service writes only the application `data` directory for SQLite/runtime state; logs go to journald. Validate the template with `systemd-analyze verify deploy/systemd/demo-prediction-market.service` before any manual installation. This repository does not install, enable, start, or restart the service.
+
 ## Read-only one-shot Polymarket synchronization
 
 The application default remains `DEMO_PREDICTION_LIVE=0`; it does not start periodic synchronization. To explicitly fetch public Polymarket market-data once and safely upsert changed records, run:
