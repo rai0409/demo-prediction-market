@@ -1,27 +1,27 @@
 <!doctype html>
-<html lang="{{ lang | default('ja') }}">
+<html lang="{{ lang | default('en') }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ t("app.title") }}{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
     <script>
-      window.APP_LANG = "{{ lang | default('ja') }}";
+      window.APP_LANG = "{{ lang | default('en') }}";
       window.I18N = {{ js_i18n | default({}) | tojson }};
     </script>
   </head>
   <body data-quick-refresh-seconds="{{ quick_refresh_seconds }}" data-detail-refresh-seconds="{{ detail_refresh_seconds }}" data-csrf-token="{{ csrf_token }}">
     <header class="topbar">
-      <a class="brand" href="/?lang={{ lang | default('ja') }}">
+      <a class="brand" href="/?lang={{ lang | default('en') }}">
         <span>{{ t("app.title") }}</span>
         <small>{{ t("app.subtitle") }}</small>
       </a>
 
       <nav>
-        <a href="/markets?lang={{ lang | default('ja') }}">{{ t("nav.markets") }}</a>
-        <a href="/demo-wallet?lang={{ lang | default('ja') }}">{{ t("nav.demo_wallet") }}</a>
-        <a href="/demo-positions?lang={{ lang | default('ja') }}">{{ t("nav.positions") }}</a>
-        <a href="/demo-results?lang={{ lang | default('ja') }}">{{ t("nav.results") }}</a>
+        <a href="/markets?lang={{ lang | default('en') }}">{{ t("nav.markets") }}</a>
+        <a href="/demo-wallet?lang={{ lang | default('en') }}">{{ t("nav.demo_wallet") }}</a>
+        <a href="/demo-positions?lang={{ lang | default('en') }}">{{ t("nav.positions") }}</a>
+        <a href="/demo-results?lang={{ lang | default('en') }}">{{ t("nav.results") }}</a>
       </nav>
 
       <div class="lang-switch" aria-label="{{ t('nav.language') }}">
@@ -35,6 +35,18 @@
     <main class="page">
       {% block content %}{% endblock %}
     </main>
+
+    <footer class="disclaimer public-boundary-notice">
+      {% if lang == "ja" %}
+      <p>本サービスは、完全無料・非商用の予測研究およびシミュレーションプロジェクトです。</p>
+      <p>一部の外部参考データには、Polymarketの公開市場データAPIから取得した情報が含まれる場合があります。本サービスはPolymarketとは提携、後援、承認その他の関係を有しません。</p>
+      <p>本サービスでは、現金を用いた賭け、暗号資産取引、ウォレット接続、入出金、賞品提供、Polymarketへの注文はできません。</p>
+      {% else %}
+      <p>This is a free, non-commercial forecasting and simulation project.</p>
+      <p>External reference data may include information obtained from Polymarket public market-data APIs. This project is not affiliated with, sponsored by, endorsed by, or operated by Polymarket.</p>
+      <p>No real-money wagers, cryptocurrency transactions, wallet connections, deposits, withdrawals, prizes, or Polymarket orders are available through this project.</p>
+      {% endif %}
+    </footer>
 
     <script src="{{ url_for('static', path='/app.js') }}"></script>
   </body>

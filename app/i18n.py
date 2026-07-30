@@ -3,7 +3,7 @@ from __future__ import annotations
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 SUPPORTED_LANGS = {"ja", "en"}
-DEFAULT_LANG = "ja"
+DEFAULT_LANG = "en"
 LANG_COOKIE_NAME = "demo_lang"
 
 
@@ -43,6 +43,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "market.live": "ライブ",
         "market.updated": "最終更新",
         "market.public_data_note": "市場情報は外部の公開データを参照しています。",
+        "market.research_summary": "この研究版では、外部市場の詳細条件全文を再掲載していません。",
+        "market.external_source": "外部参考データの出典: Polymarket public market-data API",
         "market.volume": "出来高",
         "market.volume_24h": "24時間出来高",
         "market.liquidity": "流動性",
@@ -229,6 +231,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "market.live": "Live",
         "market.updated": "Updated",
         "market.public_data_note": "Market information references external public data.",
+        "market.research_summary": "Detailed market conditions are not republished in this research version.",
+        "market.external_source": "External reference data source: Polymarket public market-data API",
         "market.volume": "Volume",
         "market.volume_24h": "24h volume",
         "market.liquidity": "Liquidity",

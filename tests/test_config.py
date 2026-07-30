@@ -91,6 +91,46 @@ def test_cookie_secure_config(monkeypatch):
     assert get_settings().cookie_secure is False
 
 
+def test_noncommercial_public_mode_defaults_to_disabled(monkeypatch):
+    names = [
+        "DEMO_COMMERCIAL_USE_ENABLED",
+        "DEMO_ADVERTISING_ENABLED",
+        "DEMO_PAID_FEATURES_ENABLED",
+        "DEMO_PRIZES_ENABLED",
+        "DEMO_EXTERNAL_TRADING_ENABLED",
+    ]
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    settings = get_settings()
+    assert settings.commercial_use_enabled is False
+    assert settings.advertising_enabled is False
+    assert settings.paid_features_enabled is False
+    assert settings.prizes_enabled is False
+    assert settings.external_trading_enabled is False
+
+
+def test_noncommercial_public_mode_uses_existing_boolean_parser(monkeypatch):
+    names = [
+        "DEMO_COMMERCIAL_USE_ENABLED",
+        "DEMO_ADVERTISING_ENABLED",
+        "DEMO_PAID_FEATURES_ENABLED",
+        "DEMO_PRIZES_ENABLED",
+        "DEMO_EXTERNAL_TRADING_ENABLED",
+    ]
+    for name in names:
+        monkeypatch.setenv(name, "true")
+    settings = get_settings()
+    assert all(
+        [
+            settings.commercial_use_enabled,
+            settings.advertising_enabled,
+            settings.paid_features_enabled,
+            settings.prizes_enabled,
+            settings.external_trading_enabled,
+        ]
+    )
+
+
 def test_translation_config_defaults_and_bounds(monkeypatch):
     for name in [
         "DEMO_TRANSLATION_ENABLED",

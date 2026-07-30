@@ -9,6 +9,7 @@ from app.i18n import (
 
 
 def test_normalize_lang():
+    assert DEFAULT_LANG == "en"
     assert normalize_lang("ja") == "ja"
     assert normalize_lang("ja-JP") == "ja"
     assert normalize_lang("en") == "en"

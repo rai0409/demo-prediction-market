@@ -7,6 +7,7 @@ from app.storage import (
     INITIAL_DEMO_POINTS,
     get_balance,
     get_ledger_entry,
+    get_market,
     get_settlement_by_position_id,
     insert_audit_event,
     insert_realtime_update,
@@ -23,6 +24,15 @@ class TextOnlyParser(HTMLParser):
 
     def handle_data(self, data):
         self.parts.append(data)
+
+
+class LinkTargetParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.targets = []
+
+    def handle_starttag(self, _tag, attrs):
+        self.targets.extend(value for name, value in attrs if name in {"href", "src", "action"} and value)
 
 
 def visible_html(html: str) -> str:
@@ -54,10 +64,63 @@ def test_api_markets(client):
     assert "hidden_no_liquidity_count" in payload
     assert "hidden_resolved_probability_count" in payload
     assert "filters_applied" in payload
-    assert payload["markets"][0]["realtime_status"] == "rest_only"
     assert "best_bid" in payload["markets"][0]
     assert "best_ask" in payload["markets"][0]
     assert "last_trade_price" in payload["markets"][0]
+
+
+def test_public_market_views_allowlist_content_and_preserve_raw_storage(client, db_conn, sample_markets):
+    market = dict(sample_markets[0])
+    raw_description = "RAW-EXTERNAL-MARKET-CONDITIONS https://polymarket.com/event/not-for-publication"
+    market.update(
+        {
+            "description": raw_description,
+            "slug": "not-for-publication",
+            "title": "T" * 200,
+            "question": "Q" * 260,
+        }
+    )
+    replace_markets(db_conn, [market])
+
+    list_html = client.get("/?lang=en").text
+    detail_html = client.get(f"/markets/{market['market_id']}?lang=en").text
+    list_payload = client.get("/api/markets").json()["markets"][0]
+    detail_payload = client.get(f"/api/markets/{market['market_id']}").json()
+    snapshot_payload = client.get(f"/api/markets/{market['market_id']}/snapshots").json()["snapshots"][0]["market"]
+
+    for public_value in [list_html, detail_html, str(list_payload), str(detail_payload), str(snapshot_payload)]:
+        assert raw_description not in public_value
+        assert "https://polymarket.com/event/not-for-publication" not in public_value
+        assert "not-for-publication" not in public_value
+    assert "Detailed market conditions are not republished in this research version." in detail_html
+    assert detail_payload["public_summary"] == "Detailed market conditions are not republished in this research version."
+    assert len(detail_payload["title"]) == 160
+    assert len(detail_payload["question"]) == 220
+    assert "description" not in detail_payload
+    assert "slug" not in detail_payload
+    assert {"probabilities", "volume", "volume_24hr", "liquidity", "end_date", "fetched_at", "resolved_outcome"}.issubset(detail_payload)
+    assert get_market(db_conn, market["market_id"])["description"] == raw_description
+
+
+def test_public_market_html_has_no_external_trading_navigation_and_shows_boundary_notice(client, sample_markets):
+    html = client.get(f"/markets/{sample_markets[0]['market_id']}?lang=en").text
+    parser = LinkTargetParser()
+    parser.feed(html)
+    targets = " ".join(parser.targets).lower()
+    assert "polymarket" not in targets
+    for term in ["deposit", "withdraw", "trade", "order"]:
+        assert term not in targets
+    assert "This is a free, non-commercial forecasting and simulation project." in html
+    assert "This project is not affiliated with, sponsored by, endorsed by, or operated by Polymarket." in html
+    assert "No real-money wagers, cryptocurrency transactions, wallet connections, deposits, withdrawals, prizes, or Polymarket orders are available through this project." in html
+    assert "External reference data source: Polymarket public market-data API" in html
+
+
+def test_public_market_boundary_notice_has_japanese_copy(client):
+    html = client.get("/?lang=ja").text
+    assert "本サービスは、完全無料・非商用の予測研究およびシミュレーションプロジェクトです。" in html
+    assert "本サービスはPolymarketとは提携、後援、承認その他の関係を有しません。" in html
+    assert "本サービスでは、現金を用いた賭け、暗号資産取引、ウォレット接続、入出金、賞品提供、Polymarketへの注文はできません。" in html
 
 
 LIVE_MARKET_FIELDS = {
@@ -363,7 +426,7 @@ def test_debug_source_status_returns_expected_keys(client):
 
 
 def test_dashboard_renders_status_metadata(client):
-    response = client.get("/")
+    response = client.get("/?lang=ja")
     assert response.status_code == 200
     html = response.text
     assert "市場データ" in html
@@ -374,7 +437,7 @@ def test_dashboard_renders_status_metadata(client):
 
 
 def test_view_all_markets_link_targets_product_ui_not_api(client):
-    html = client.get("/").text
+    html = client.get("/?lang=ja").text
     assert "全マーケットを見る" in html
     assert 'href="/markets?lang=ja"' in html
     assert ">全マーケットを見る</a>" in html
@@ -382,7 +445,7 @@ def test_view_all_markets_link_targets_product_ui_not_api(client):
 
 
 def test_market_list_page_is_product_ui_not_raw_json(client):
-    response = client.get("/")
+    response = client.get("/?lang=ja")
     text = visible_text(response.text)
     assert response.headers["content-type"].startswith("text/html")
     assert "マーケット" in text
@@ -392,7 +455,7 @@ def test_market_list_page_is_product_ui_not_raw_json(client):
 
 
 def test_market_card_includes_predict_for_eligible_market(client):
-    html = client.get("/").text
+    html = client.get("/?lang=ja").text
     assert "予想する" in html
     assert "デモ参加可" in html
 
@@ -402,7 +465,7 @@ def test_market_card_includes_block_reason_for_ineligible_when_rendered(client, 
     closed["market_id"] = "closed-card-market"
     closed["closed"] = True
     replace_markets(db_conn, [closed])
-    html = client.get("/markets/closed-card-market").text
+    html = client.get("/markets/closed-card-market?lang=ja").text
     assert "デモ参加対象外" in html
     assert "終了済み" in html
     assert "id=\"prediction-form\"" not in html
@@ -641,15 +704,13 @@ def test_app_ui_action_text_avoids_forbidden_labels(client):
 
 def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
     combined = visible_html(
-        client.get("/").text
-        + client.get("/markets/sample-market-tokyo-rain").text
-        + client.get("/demo-wallet").text
-        + client.get("/demo-positions").text
-        + client.get("/demo-results").text
+            client.get("/?lang=ja").text
+            + client.get("/markets/sample-market-tokyo-rain?lang=ja").text
+            + client.get("/demo-wallet?lang=ja").text
+            + client.get("/demo-positions?lang=ja").text
+            + client.get("/demo-results?lang=ja").text
     )
     for term in [
-        "入金",
-        "出金",
         "賭ける",
         "ベット",
         "購入",
@@ -657,8 +718,6 @@ def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
         "利益確定",
         "稼ぐ",
         "儲かる",
-        "deposit",
-        "withdraw",
         "cashout",
         "buy",
         "sell",
@@ -676,22 +735,22 @@ def test_rendered_ui_avoids_forbidden_demo_wallet_words(client):
 
 def test_public_pages_do_not_link_directly_to_include_all_api(client):
     combined = (
-        client.get("/").text
-        + client.get("/markets/sample-market-tokyo-rain").text
-        + client.get("/demo-wallet").text
-        + client.get("/demo-positions").text
-        + client.get("/demo-results").text
+        client.get("/?lang=ja").text
+        + client.get("/markets/sample-market-tokyo-rain?lang=ja").text
+        + client.get("/demo-wallet?lang=ja").text
+        + client.get("/demo-positions?lang=ja").text
+        + client.get("/demo-results?lang=ja").text
     )
     assert "/api/markets?include_all=true" not in combined
 
 
 def test_public_pages_do_not_link_to_protected_audit_review(client):
     combined = (
-        client.get("/").text
-        + client.get("/markets/sample-market-tokyo-rain").text
-        + client.get("/demo-wallet").text
-        + client.get("/demo-positions").text
-        + client.get("/demo-results").text
+        client.get("/?lang=ja").text
+        + client.get("/markets/sample-market-tokyo-rain?lang=ja").text
+        + client.get("/demo-wallet?lang=ja").text
+        + client.get("/demo-positions?lang=ja").text
+        + client.get("/demo-results?lang=ja").text
     )
     assert 'href="/admin/audit' not in combined
     assert 'href="/admin/audit.csv' not in combined
@@ -699,11 +758,11 @@ def test_public_pages_do_not_link_to_protected_audit_review(client):
 
 def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
     raw_html = (
-        client.get("/").text
-        + client.get("/markets/sample-market-tokyo-rain").text
-        + client.get("/demo-wallet").text
-        + client.get("/demo-positions").text
-        + client.get("/demo-results").text
+        client.get("/?lang=ja").text
+        + client.get("/markets/sample-market-tokyo-rain?lang=ja").text
+        + client.get("/demo-wallet?lang=ja").text
+        + client.get("/demo-positions?lang=ja").text
+        + client.get("/demo-results?lang=ja").text
     )
     combined = visible_html(raw_html)
     neutralized_market_terms = [
@@ -743,7 +802,7 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
 
 
 def test_refresh_copy_is_user_friendly_and_interval_hidden(client):
-    html = client.get("/").text
+    html = client.get("/?lang=ja").text
     text = visible_text(html)
     assert "市場データ" in text
     assert "ライブ" in text
@@ -760,8 +819,8 @@ def test_refresh_copy_is_user_friendly_and_interval_hidden(client):
 
 
 def test_live_refresh_intervals_are_data_only_and_not_visible_copy(client, sample_markets):
-    index_html = client.get("/").text
-    detail_html = client.get(f"/markets/{sample_markets[0]['market_id']}").text
+    index_html = client.get("/?lang=ja").text
+    detail_html = client.get(f"/markets/{sample_markets[0]['market_id']}?lang=ja").text
     assert 'data-quick-refresh-seconds="5"' in index_html
     assert 'data-detail-refresh-seconds="3"' in index_html
     assert 'data-quick-refresh-seconds="5"' in detail_html
@@ -835,14 +894,14 @@ def test_demo_wallet_page_shows_non_cashable_non_transferable_non_exchangeable_n
 
 
 def test_last_updated_rendering_is_not_raw_iso(client):
-    html = client.get("/").text
+    html = client.get("/?lang=ja").text
     assert "T" not in html.split('id="latest-update">', 1)[1].split("</strong>", 1)[0]
     assert "+00:00" not in html
     assert "最終更新" in html
 
 
 def test_market_cards_hide_internal_transport_status(client):
-    html = client.get("/").text
+    html = client.get("/?lang=ja").text
     text = visible_text(html)
     assert "デモ参加可" in text
     assert "外部の公開データを参照しています" in text
