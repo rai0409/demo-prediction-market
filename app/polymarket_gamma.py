@@ -65,9 +65,7 @@ def gamma_events_url(limit: int = 100) -> str:
     params = {
         "active": "true",
         "closed": "false",
-        "order": "volume_24hr",
-        "ascending": "false",
-        "limit": str(max(limit, 100)),
+        "limit": str(max(1, limit)),
     }
     return f"{GAMMA_EVENTS_BASE_URL}?{urlencode(params)}"
 
@@ -393,7 +391,10 @@ def fetch_live_markets(limit: int = 50, timeout: float = 8.0) -> FetchResult:
         if response.status_code != 200:
             error = f"Gamma API returned HTTP {response.status_code}"
             _write_text(GAMMA_ERROR_PATH, error)
-            result = FetchResult(False, "live_failed", error, 0, 0, [], attempted_at, url, http_status)
+            status = "rate_limited" if response.status_code == 429 else (
+                "upstream_5xx" if response.status_code >= 500 else "upstream_4xx"
+            )
+            result = FetchResult(False, status, error, 0, 0, [], attempted_at, url, http_status)
             write_status_file(result, live_enabled=True)
             return result
         try:
@@ -401,7 +402,7 @@ def fetch_live_markets(limit: int = 50, timeout: float = 8.0) -> FetchResult:
         except json.JSONDecodeError as exc:
             error = f"Gamma API JSON parse failed: {exc}"
             _write_text(GAMMA_ERROR_PATH, error)
-            result = FetchResult(False, "live_failed", error, 0, 0, [], attempted_at, url, http_status)
+            result = FetchResult(False, "invalid_response", error, 0, 0, [], attempted_at, url, http_status)
             write_status_file(result, live_enabled=True)
             return result
 
@@ -413,7 +414,7 @@ def fetch_live_markets(limit: int = 50, timeout: float = 8.0) -> FetchResult:
             error = f"Gamma API normalization failed: {exc}"
             _write_text(GAMMA_ERROR_PATH, error)
             result = FetchResult(
-                False, "live_failed", error, len(raw_items), 0, [], attempted_at, url, http_status
+                False, "invalid_response", error, len(raw_items), 0, [], attempted_at, url, http_status
             )
             write_status_file(result, live_enabled=True)
             return result
@@ -432,13 +433,18 @@ def fetch_live_markets(limit: int = 50, timeout: float = 8.0) -> FetchResult:
         )
         write_status_file(result, live_enabled=True)
         return result
+    except httpx.TimeoutException as exc:
+        error = f"Gamma API request timed out: {exc}"
+        status = "timeout"
     except httpx.HTTPError as exc:
         error = f"Gamma API request failed: {exc}"
+        status = "live_failed"
     except Exception as exc:
         error = f"Gamma API fetch failed: {exc}"
+        status = "live_failed"
 
     _write_text(GAMMA_ERROR_PATH, error)
-    result = FetchResult(False, "live_failed", error, 0, 0, [], attempted_at, url, http_status)
+    result = FetchResult(False, status, error, 0, 0, [], attempted_at, url, http_status)
     write_status_file(result, live_enabled=True)
     return result
 

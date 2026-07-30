@@ -128,6 +128,19 @@ scripts/run_live.sh
 
 Open `http://127.0.0.1:8093`.
 
+## Read-only one-shot Polymarket synchronization
+
+The application default remains `DEMO_PREDICTION_LIVE=0`; it does not start periodic synchronization. To explicitly fetch public Polymarket market-data once and safely upsert changed records, run:
+
+```bash
+python scripts/sync_polymarket_markets.py
+python scripts/sync_polymarket_markets.py --json
+python scripts/sync_polymarket_markets.py --dry-run --json
+python scripts/sync_polymarket_markets.py --limit 50
+```
+
+Exit code `0` means a complete sync (or dry run), `1` means valid records were saved while some records were skipped, and `2` means an API, response, configuration, or storage failure. API failures retain existing market data. This command uses the Polymarket public market-data API read-only; it never submits orders, connects a wallet, performs deposits or withdrawals, or starts polling.
+
 ## Operation settings
 
 `.env.example` lists the local operation variables. Set `DEMO_ADMIN_TOKEN` to a strong random management code before enabling internal operations. The management code is accepted by the internal header, the management-code form, or the short-lived HttpOnly admin cookie; it is not accepted from URL query parameters.

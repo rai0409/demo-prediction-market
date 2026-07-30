@@ -421,6 +421,10 @@ def test_debug_source_status_returns_expected_keys(client):
         "runtime_status_file_exists",
         "runtime_response_file_exists",
         "runtime_error_file_exists",
+        "last_sync_attempt_at",
+        "last_sync_success_at",
+        "last_sync_status",
+        "last_sync_error_code",
     }
     assert expected.issubset(payload.keys())
 

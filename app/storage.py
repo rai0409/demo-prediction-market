@@ -73,6 +73,23 @@ def init_db(conn: sqlite3.Connection) -> None:
             status text not null,
             market_count integer not null
         );
+        create table if not exists market_sync_runs (
+            id integer primary key autoincrement,
+            provider text not null,
+            attempted_at text not null,
+            successful_at text,
+            status text not null,
+            error_code text,
+            requested integer not null,
+            received integer not null,
+            valid integer not null,
+            inserted integer not null,
+            updated integer not null,
+            unchanged integer not null,
+            skipped integer not null,
+            failed integer not null,
+            error_counts_json text not null
+        );
         create table if not exists market_translations (
             market_id text not null,
             language text not null,
@@ -781,6 +798,61 @@ def store_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> No
         (fetched_at, status, len(markets)),
     )
     conn.commit()
+
+
+def record_market_sync_run(conn: sqlite3.Connection, summary: dict[str, Any], *, commit: bool = True) -> None:
+    """Persist safe, aggregate state for a one-shot external market sync."""
+    conn.execute(
+        """insert into market_sync_runs(
+            provider, attempted_at, successful_at, status, error_code,
+            requested, received, valid, inserted, updated, unchanged, skipped,
+            failed, error_counts_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(summary["provider"]),
+            str(summary["retrieved_at"]),
+            summary.get("last_sync_success_at"),
+            str(summary["status"]),
+            summary.get("error_code"),
+            int(summary["requested"]),
+            int(summary["received"]),
+            int(summary["valid"]),
+            int(summary["inserted"]),
+            int(summary["updated"]),
+            int(summary["unchanged"]),
+            int(summary["skipped"]),
+            int(summary["failed"]),
+            json.dumps(summary["error_counts"], ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_latest_market_sync_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    row = conn.execute("select * from market_sync_runs order by id desc limit 1").fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    try:
+        result["error_counts"] = json.loads(result.pop("error_counts_json"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        result["error_counts"] = {}
+    return result
+
+
+def get_last_successful_market_sync_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    row = conn.execute(
+        "select * from market_sync_runs where successful_at is not null order by id desc limit 1"
+    ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    try:
+        result["error_counts"] = json.loads(result.pop("error_counts_json"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        result["error_counts"] = {}
+    return result
 
 
 def replace_markets(conn: sqlite3.Connection, markets: list[dict[str, Any]]) -> None:
