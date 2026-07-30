@@ -32,6 +32,8 @@ def test_translation_ja_en():
     assert t("en", "market.live") == "Live"
     assert t("ja", "market.updated") == "最終更新"
     assert t("en", "market.updated") == "Updated"
+    assert t("en", "market.freshness_current") == "External reference data is current."
+    assert t("en", "market.freshness_unavailable") == "External reference data is currently unavailable."
     assert t("ja", "market.catalog_title") == "全マーケット"
     assert t("en", "market.catalog_title") == "All markets"
     assert t("ja", "pagination.previous") == "前へ"

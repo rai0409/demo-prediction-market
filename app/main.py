@@ -20,6 +20,7 @@ from app.config import Settings, get_settings
 from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, reverse_demo_ledger_entry, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response, public_market_view
+from app.market_freshness import classify_market_freshness
 from app.realtime import (
     attach_realtime_updates,
     ensure_fresh_markets,
@@ -42,6 +43,7 @@ from app.storage import (
     ensure_demo_user,
     get_balance,
     get_latest_resolution_candidate,
+    get_last_successful_market_sync_run,
     get_market,
     init_db,
     list_admin_audit_events,
@@ -352,12 +354,21 @@ def template_context(request: Request, conn: sqlite3.Connection, user_id: str, *
     return context
 
 
-def public_market(market: dict, request: Request) -> dict:
-    return public_market_view(market, summary=template_i18n_context(request)["t"]("market.research_summary"))
+def market_freshness(conn: sqlite3.Connection) -> dict:
+    latest_success = get_last_successful_market_sync_run(conn) or {}
+    return classify_market_freshness(latest_success.get("successful_at"))
 
 
-def public_market_response(response: dict, request: Request) -> dict:
-    return {**response, "markets": [public_market(market, request) for market in response["markets"]]}
+def public_market(market: dict, request: Request, freshness: dict) -> dict:
+    return public_market_view(
+        market,
+        summary=template_i18n_context(request)["t"]("market.research_summary"),
+        freshness=freshness,
+    )
+
+
+def public_market_response(response: dict, request: Request, freshness: dict) -> dict:
+    return {**response, "markets": [public_market(market, request, freshness) for market in response["markets"]]}
 
 
 def set_lang_cookie_if_needed(response, request: Request):
@@ -825,7 +836,7 @@ async def index(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
         language=detect_lang(request),
         enabled=settings.translation_enabled,
     )
-    market_response = public_market_response(filtered_market_response(all_markets), request)
+    market_response = public_market_response(filtered_market_response(all_markets), request, market_freshness(conn))
     response = templates.TemplateResponse(
         request,
         "index.html",
@@ -878,9 +889,10 @@ async def market_catalog(request: Request, conn: sqlite3.Connection = Depends(ge
         language=detect_lang(request),
         enabled=settings.translation_enabled,
     )
+    freshness = market_freshness(conn)
     rendered_markets = []
     for market in markets:
-        item = public_market(enrich_market_for_display(market), request)
+        item = public_market(enrich_market_for_display(market), request, freshness)
         item["catalog_status"] = "active" if catalog_market_is_active(item) else "closed"
         item["catalog_question"] = catalog_question(item.get("display_question"))
         rendered_markets.append(item)
@@ -930,7 +942,7 @@ async def market_detail(request: Request, market_id: str, conn: sqlite3.Connecti
         language=detect_lang(request),
         enabled=settings.translation_enabled,
     )
-    market = public_market(market, request)
+    market = public_market(market, request, market_freshness(conn))
     snapshots = list_snapshots(conn, market_id, limit=12)
     response = templates.TemplateResponse(
         request,
@@ -1285,7 +1297,7 @@ async def api_markets(
         include_expired=include_expired,
         include_inactive=include_inactive,
         include_all=include_all,
-    ), request)
+    ), request, market_freshness(conn))
 
 
 LIVE_MARKET_FIELDS = (
@@ -1343,7 +1355,7 @@ async def api_market(request: Request, market_id: str, conn: sqlite3.Connection 
     if market is None:
         raise HTTPException(status_code=404, detail="market not found")
     market = attach_realtime_updates(conn, [market], settings)[0]
-    return public_market(enrich_market_for_display(market), request)
+    return public_market(enrich_market_for_display(market), request, market_freshness(conn))
 
 
 @app.get("/api/markets/{market_id}/snapshots")
@@ -1351,7 +1363,7 @@ async def api_snapshots(request: Request, market_id: str, conn: sqlite3.Connecti
     snapshots = list_snapshots(conn, market_id)
     return {
         "snapshots": [
-            {"fetched_at": snapshot.get("fetched_at"), "market": public_market(snapshot.get("market") or {}, request)}
+            {"fetched_at": snapshot.get("fetched_at"), "market": public_market(snapshot.get("market") or {}, request, market_freshness(conn))}
             for snapshot in snapshots
         ]
     }

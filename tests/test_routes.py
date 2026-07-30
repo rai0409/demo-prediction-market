@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 from html.parser import HTMLParser
@@ -13,6 +14,7 @@ from app.storage import (
     insert_realtime_update,
     list_ledger,
     verify_audit_chain,
+    record_market_sync_run,
 )
 from app.storage import replace_markets
 
@@ -67,6 +69,43 @@ def test_api_markets(client):
     assert "best_bid" in payload["markets"][0]
     assert "best_ask" in payload["markets"][0]
     assert "last_trade_price" in payload["markets"][0]
+    assert payload["markets"][0]["freshness_status"] == "unavailable"
+    assert payload["markets"][0]["last_sync_success_at"] is None
+
+
+def test_public_market_freshness_is_shared_by_list_detail_and_api(client, db_conn, sample_markets):
+    successful_at = datetime.now(timezone.utc).isoformat()
+    record_market_sync_run(
+        db_conn,
+        {
+            "provider": "polymarket_public_market_data_api",
+            "retrieved_at": successful_at,
+            "last_sync_success_at": successful_at,
+            "status": "success",
+            "error_code": None,
+            "requested": 1,
+            "received": 1,
+            "valid": 1,
+            "inserted": 0,
+            "updated": 0,
+            "unchanged": 1,
+            "skipped": 0,
+            "failed": 0,
+            "error_counts": {},
+        },
+    )
+    market_id = sample_markets[0]["market_id"]
+    listing = client.get("/?lang=en").text
+    catalog = client.get("/markets?lang=en").text
+    detail = client.get(f"/markets/{market_id}?lang=en").text
+    listed = client.get("/api/markets").json()["markets"][0]
+    detailed = client.get(f"/api/markets/{market_id}").json()
+
+    assert "External reference data is current." in listing
+    assert "External reference data is current." in catalog
+    assert "External reference data is current." in detail
+    assert listed["freshness_status"] == detailed["freshness_status"] == "current"
+    assert listed["last_sync_success_at"] == detailed["last_sync_success_at"]
 
 
 def test_public_market_views_allowlist_content_and_preserve_raw_storage(client, db_conn, sample_markets):

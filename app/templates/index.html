@@ -70,12 +70,14 @@
     {% for market in markets %}
     <article class="market-card" data-market-id="{{ market.market_id }}">
       <div class="card-meta">
+        <span class="badge subtle">{{ t("market.freshness_" ~ market.freshness_status) }}</span>
         {% if market.demo_participation_allowed %}
           <span class="badge subtle">{% if lang == "en" %}Demo eligible{% else %}デモ参加可{% endif %}</span>
         {% else %}
           <span class="badge subtle">{% if lang == "en" %}Not eligible{% else %}デモ参加対象外{% endif %}</span>
         {% endif %}
         <span>{{ t("market.updated") }}: <span data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>
+        {% if market.last_sync_success_at %}<span>{{ t("market.updated") }}: {{ market.last_sync_success_at|date }}</span>{% endif %}
       </div>
 
       <h3>{{ market.display_title }}</h3>

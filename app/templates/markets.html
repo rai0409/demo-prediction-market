@@ -62,9 +62,11 @@
   {% for market in markets %}
   <article class="market-card" data-market-id="{{ market.market_id }}">
     <div class="card-meta">
+      <span class="badge subtle">{{ t("market.freshness_" ~ market.freshness_status) }}</span>
       <span class="badge subtle">{% if market.catalog_status == "active" %}{{ t("market.filter_active") }}{% else %}{{ t("market.filter_closed") }}{% endif %}</span>
       <span class="badge subtle">{% if market.demo_participation_allowed %}{{ t("market.demo_eligible") }}{% else %}{{ t("market.not_eligible") }}{% endif %}</span>
       <span>{{ t("market.updated") }}: <span data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>
+      {% if market.last_sync_success_at %}<span>{{ t("market.updated") }}: {{ market.last_sync_success_at|date }}</span>{% endif %}
     </div>
     <h2>{{ market.display_title }}</h2>
     <p class="catalog-question">{{ market.catalog_question }}</p>

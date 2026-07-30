@@ -14,7 +14,7 @@ def _truncate_public_text(value: Any, maximum: int) -> str:
     return text if len(text) <= maximum else f"{text[:maximum - 1].rstrip()}…"
 
 
-def public_market_view(market: dict[str, Any], *, summary: str) -> dict[str, Any]:
+def public_market_view(market: dict[str, Any], *, summary: str, freshness: dict[str, Any]) -> dict[str, Any]:
     """Return the allowlisted market shape used by public HTML and APIs.
 
     Stored payloads intentionally remain untouched for audit, settlement, and
@@ -44,6 +44,8 @@ def public_market_view(market: dict[str, Any], *, summary: str) -> dict[str, Any
         "closed": bool(market.get("closed")),
         "resolved_outcome": market.get("winning_outcome") or market.get("resolved_outcome"),
         "fetched_at": market.get("fetched_at"),
+        "freshness_status": freshness["freshness_status"],
+        "last_sync_success_at": freshness["last_sync_success_at"],
         "ws_last_event_at": market.get("ws_last_event_at"),
         "data_source_status": market.get("data_source_status"),
         "display_status": market.get("display_status"),

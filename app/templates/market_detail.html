@@ -9,7 +9,7 @@
 
 <section class="detail-layout">
   <article class="market-detail" data-detail-market-id="{{ market.market_id }}">
-    <p class="card-meta"><span class="badge subtle">{{ t("market.live") }}</span><span>{{ t("market.updated") }}: <span id="detail-updated-at" data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span></p>
+    <p class="card-meta"><span class="badge subtle">{{ t("market.freshness_" ~ market.freshness_status) }}</span><span>{{ t("market.updated") }}: <span id="detail-updated-at" data-live-field="updated_at">{{ (market.ws_last_event_at or market.fetched_at)|date }}</span></span>{% if market.last_sync_success_at %}<span>{{ t("market.updated") }}: {{ market.last_sync_success_at|date }}</span>{% endif %}</p>
     <h1>{{ market.display_title }}</h1>
     <h2>{{ market.display_question }}</h2>
     <section class="description-block">
