@@ -1,0 +1,17 @@
+[
+  {"id":"by-date","source":"Will any country leave NATO by December 31, 2026?","required_tokens":["NATO"],"required_numbers":["31","2026"],"risk_category":"by"},
+  {"id":"before","source":"Will the Federal Reserve cut interest rates before September 2026?","required_tokens":[],"required_numbers":["2026"],"risk_category":"before"},
+  {"id":"on-or-before","source":"This market resolves to Yes only if the event occurs on or before July 31, 2026.","required_tokens":[],"required_numbers":["31","2026"],"risk_category":"on or before"},
+  {"id":"after","source":"Will Bitcoin be above $100,000 after January 1, 2027?","required_tokens":["Bitcoin","$100,000"],"required_numbers":["100,000","1","2027"],"risk_category":"after"},
+  {"id":"at-least","source":"Will at least three countries officially recognize the agreement?","required_tokens":[],"required_numbers":[],"risk_category":"at least"},
+  {"id":"more-than","source":"Will more than 50% of voters approve the proposal?","required_tokens":["%"],"required_numbers":["50"],"risk_category":"more than"},
+  {"id":"less-than","source":"Will inflation be less than 2.5% in 2026?","required_tokens":["%"],"required_numbers":["2.5","2026"],"risk_category":"less than"},
+  {"id":"no-more-than","source":"Will no more than 10 countries join the coalition by 2028?","required_tokens":[],"required_numbers":["10","2028"],"risk_category":"no more than"},
+  {"id":"negation","source":"Will the agreement not enter into force before 2027?","required_tokens":[],"required_numbers":["2027"],"risk_category":"negation"},
+  {"id":"date","source":"Will Japan hold an election on November 3, 2026?","required_tokens":["Japan"],"required_numbers":["3","2026"],"risk_category":"date"},
+  {"id":"money","source":"Will the company report revenue above $1,000,000?","required_tokens":["$1,000,000"],"required_numbers":["1,000,000"],"risk_category":"money"},
+  {"id":"organization","source":"Will the United Nations adopt the resolution by 2026?","required_tokens":[],"required_numbers":["2026"],"risk_category":"organization"},
+  {"id":"multiple-conditions","source":"Will Alice and Bob sign the agreement before June 30, 2026?","required_tokens":["Alice","Bob"],"required_numbers":["30","2026"],"risk_category":"multiple conditions"},
+  {"id":"url","source":"Will https://example.com/report be published by March 2027?","required_tokens":["https://example.com/report"],"required_numbers":["2027"],"risk_category":"URL"},
+  {"id":"resolution","source":"This market resolves to Yes only if no more than 5% of ballots are rejected.","required_tokens":["%"],"required_numbers":["5"],"risk_category":"resolution condition"}
+]

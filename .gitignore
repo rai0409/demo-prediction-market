@@ -37,6 +37,11 @@ build/
 .claude/
 .uv-cache/
 
+# Optional Hugging Face translation model cache
+.hf-cache/
+hf-cache/
+models/
+
 # OS / editor
 .DS_Store
 .vscode/

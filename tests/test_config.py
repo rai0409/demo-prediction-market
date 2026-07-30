@@ -97,6 +97,10 @@ def test_translation_config_defaults_and_bounds(monkeypatch):
         "DEMO_TRANSLATION_PROVIDER",
         "DEMO_TRANSLATION_TARGET_LANGUAGE",
         "DEMO_TRANSLATION_MAX_CHARS",
+        "DEMO_TRANSLATION_MODEL",
+        "DEMO_TRANSLATION_DEVICE",
+        "DEMO_TRANSLATION_BATCH_SIZE",
+        "DEMO_TRANSLATION_LOCAL_FILES_ONLY",
     ]:
         monkeypatch.delenv(name, raising=False)
     settings = get_settings()

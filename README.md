@@ -78,6 +78,18 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+## Optional offline English-to-Japanese translation
+
+The web app never downloads or runs translation models. To generate saved Japanese translation cache entries locally, install the optional dependencies and run the CLI jobs:
+
+```bash
+python -m pip install -r requirements-translation.txt
+python scripts/download_translation_model.py --model-id Helsinki-NLP/opus-mt-en-jap
+DEMO_TRANSLATION_ENABLED=1 DEMO_TRANSLATION_PROVIDER=local_marian python scripts/translate_markets.py --language ja --limit 20
+```
+
+Downloaded model files remain in the Hugging Face cache and must not be committed.
+
 ## Port policy
 
 `demo-prediction-market` uses the 8090 port range.
