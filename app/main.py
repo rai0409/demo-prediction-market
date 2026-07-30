@@ -21,6 +21,7 @@ from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, reverse_demo_ledger_entry, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response, public_market_view
 from app.market_freshness import classify_market_freshness
+from app.diagnostics import external_data_summary, readiness_check
 from app.realtime import (
     attach_realtime_updates,
     ensure_fresh_markets,
@@ -1274,7 +1275,15 @@ async def api_auth_me(request: Request, conn: sqlite3.Connection = Depends(get_c
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "title": app.title}
+    return {"status": "ok", "ok": True}
+
+
+@app.get("/ready")
+async def ready(conn: sqlite3.Connection = Depends(get_conn)):
+    result = readiness_check(conn)
+    if not result["ready"]:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "error_code": result["error_code"]})
+    return {"status": "ready", "database": "ok", "schema": "compatible", **external_data_summary(conn)}
 
 
 @app.get("/api/markets")

@@ -53,6 +53,31 @@ def test_health(client):
     assert response.json()["ok"] is True
 
 
+def test_health_is_independent_from_database_diagnostics(client, monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main, "readiness_check", lambda _conn: (_ for _ in ()).throw(AssertionError("not called")))
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "ok": True}
+
+
+def test_ready_is_safe_and_external_status_does_not_change_readiness(client, monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main, "external_data_summary", lambda _conn: {"freshness_status": "unavailable", "last_sync_success_at": None, "last_sync_status": "timeout"})
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready", "database": "ok", "schema": "compatible", "freshness_status": "unavailable", "last_sync_success_at": None, "last_sync_status": "timeout"}
+
+
+def test_ready_returns_safe_503_for_database_failure(client, monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main, "readiness_check", lambda _conn: {"ready": False, "error_code": "database_unavailable"})
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "error_code": "database_unavailable"}
+    assert "sqlite" not in response.text.lower()
+
+
 def test_api_markets(client):
     response = client.get("/api/markets")
     assert response.status_code == 200
