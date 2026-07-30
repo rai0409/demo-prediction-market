@@ -5,6 +5,9 @@ import io
 import json
 from pathlib import Path
 from contextlib import redirect_stdout
+import subprocess
+import sys
+import time
 
 import httpx
 import pytest
@@ -18,6 +21,7 @@ from app.storage import (
     get_market,
     init_db,
     list_snapshots,
+    connect,
 )
 
 
@@ -207,3 +211,29 @@ def test_gamma_fetch_classifies_mocked_timeout(monkeypatch, tmp_path):
     result = fetch_live_markets(limit=1)
     assert result.ok is False
     assert result.status == "timeout"
+
+
+def test_process_lock_rejects_second_sync_without_fetching_or_writing(tmp_path):
+    db_path = tmp_path / "shared.sqlite"
+    conn = connect(str(db_path))
+    init_db(conn)
+    settings = Settings(live=False, poll_seconds=30, limit=5, db_path=str(db_path))
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import fcntl,sys,time; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(5)", str(db_path.resolve()) + ".sync.lock"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "locked"
+        called = False
+        def fetcher(**_):
+            nonlocal called
+            called = True
+            return _result([_market("should-not-fetch")])
+        before = conn.execute("select count(*) from market_sync_runs").fetchone()[0]
+        summary = sync_polymarket_markets(conn, settings, dry_run=True, fetcher=fetcher)
+        assert summary["status"] == summary["error_code"] == "sync_already_running"
+        assert called is False
+        assert conn.execute("select count(*) from market_sync_runs").fetchone()[0] == before
+    finally:
+        holder.terminate(); holder.wait(timeout=5); conn.close()

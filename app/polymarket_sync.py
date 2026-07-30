@@ -11,6 +11,7 @@ from typing import Any, Callable
 from app.config import Settings
 from app.polymarket_gamma import FetchResult, fetch_live_markets, utc_now_iso
 from app.storage import record_market_sync_run
+from app.sync_lock import try_sync_lock
 
 
 PROVIDER = "polymarket_public_market_data_api"
@@ -74,6 +75,24 @@ def _record_failure(conn: sqlite3.Connection, summary: dict[str, Any]) -> dict[s
 
 
 def sync_polymarket_markets(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    fetcher: Callable[..., FetchResult] = fetch_live_markets,
+) -> dict[str, Any]:
+    requested = min(max(1, int(limit or settings.limit)), MAX_SYNC_LIMIT)
+    started = monotonic()
+    with try_sync_lock(settings.db_path) as acquired:
+        if not acquired:
+            summary = _summary(requested=requested, retrieved_at=utc_now_iso(), dry_run=dry_run)
+            summary.update(status="sync_already_running", error_code="sync_already_running", failed=1, error_counts={"sync_already_running": 1})
+            return _finish(summary, started)
+        return _sync_polymarket_markets(conn, settings, limit=limit, dry_run=dry_run, fetcher=fetcher)
+
+
+def _sync_polymarket_markets(
     conn: sqlite3.Connection,
     settings: Settings,
     *,
