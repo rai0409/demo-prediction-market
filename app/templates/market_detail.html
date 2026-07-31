@@ -13,6 +13,12 @@
     <h1>{{ market.display_title }}</h1>
     <h2>{{ market.display_question }}</h2>
     <section class="description-block">
+      <h3>{{ t("market.external_market_reference") }}</h3>
+      <p>{{ t("market.reference_explanation") }}</p>
+      <p>{{ t("market.external_source") }}</p>
+      <p>{{ t("market.non_affiliation") }}</p>
+    </section>
+    <section class="description-block">
       <h3>{{ t("market.description") }}</h3>
       <p>{{ market.public_summary }}</p>
     </section>
@@ -32,11 +38,12 @@
       <div><dt>直近参考値</dt><dd data-live-field="last_trade_price">{{ market.last_trade_price|number }}</dd></div>
     </dl>
     <div class="outcome-stack outcome-cards">
+      <h3>{{ t("market.external_market_reference") }}</h3>
       {% for outcome in market.outcomes %}
       <div>
         <span>{{ outcome }}</span>
         <strong data-live-probability="{{ outcome }}">{{ market.probabilities[outcome]|percent }}</strong>
-        <div class="probability-bar" aria-label="{{ outcome }} probability">
+        <div class="probability-bar" aria-label="{{ outcome }} {{ t('market.external_market_reference') }}">
           <span data-live-probability-bar="{{ outcome }}" style="width: {{ market.probabilities[outcome] * 100 }}%"></span>
         </div>
       </div>

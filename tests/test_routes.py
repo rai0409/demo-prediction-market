@@ -91,9 +91,8 @@ def test_api_markets(client):
     assert "hidden_no_liquidity_count" in payload
     assert "hidden_resolved_probability_count" in payload
     assert "filters_applied" in payload
-    assert "best_bid" in payload["markets"][0]
-    assert "best_ask" in payload["markets"][0]
-    assert "last_trade_price" in payload["markets"][0]
+    assert payload["markets"][0]["reference_type"] == "external_market_reference"
+    assert payload["markets"][0]["source_provider"] == "Polymarket public market data"
     assert payload["markets"][0]["freshness_status"] == "unavailable"
     assert payload["markets"][0]["last_sync_success_at"] is None
 
@@ -175,16 +174,36 @@ def test_public_market_html_has_no_external_trading_navigation_and_shows_boundar
     for term in ["deposit", "withdraw", "trade", "order"]:
         assert term not in targets
     assert "This is a free, non-commercial forecasting and simulation project." in html
-    assert "This project is not affiliated with, sponsored by, endorsed by, or operated by Polymarket." in html
+    assert "This is an independent service and is not affiliated with, endorsed by, or operated by Polymarket. No Polymarket trading or order execution is provided." in html
     assert "No real-money wagers, cryptocurrency transactions, wallet connections, deposits, withdrawals, prizes, or Polymarket orders are available through this project." in html
-    assert "External reference data source: Polymarket public market-data API" in html
+    assert "Market data source: Polymarket public market data." in html
 
 
 def test_public_market_boundary_notice_has_japanese_copy(client):
     html = client.get("/?lang=ja").text
     assert "本サービスは、完全無料・非商用の予測研究およびシミュレーションプロジェクトです。" in html
-    assert "本サービスはPolymarketとは提携、後援、承認その他の関係を有しません。" in html
+    assert "本サービスはPolymarketとは独立しており、提携、公認または運営を受けていません。本サービスからPolymarket上の注文・売買はできません。" in html
     assert "本サービスでは、現金を用いた賭け、暗号資産取引、ウォレット接続、入出金、賞品提供、Polymarketへの注文はできません。" in html
+
+
+def test_public_market_reference_copy_is_consistent_across_html_and_api(client, sample_markets):
+    market_id = sample_markets[0]["market_id"]
+    pages = [
+        client.get("/?lang=ja").text,
+        client.get("/markets?lang=ja").text,
+        client.get(f"/markets/{market_id}?lang=ja").text,
+    ]
+    for html in pages:
+        assert "外部市場参考値" in html
+        assert "Polymarket参考確率" not in visible_text(html)
+        assert "AI予測として" not in visible_text(html)
+        assert "リアルタイム確率" not in visible_text(html)
+
+    detail = client.get(f"/api/markets/{market_id}").json()
+    assert detail["reference_type"] == "external_market_reference"
+    assert detail["source_provider"] == "Polymarket public market data"
+    for forbidden in ("description", "resolution", "slug", "url", "image", "logo", "raw_payload"):
+        assert forbidden not in detail
 
 
 LIVE_MARKET_FIELDS = {
@@ -872,8 +891,8 @@ def test_public_pages_avoid_developer_realtime_and_finance_labels(client):
 def test_refresh_copy_is_user_friendly_and_interval_hidden(client):
     html = client.get("/?lang=ja").text
     text = visible_text(html)
-    assert "市場データ" in text
-    assert "ライブ" in text
+    assert "外部市場参考値" in text
+    assert "更新済み" in text
     assert "最終更新" in text
     assert "表示中に静かに更新します" not in text
     assert "参考データの更新確認" not in text
@@ -972,7 +991,7 @@ def test_market_cards_hide_internal_transport_status(client):
     html = client.get("/?lang=ja").text
     text = visible_text(html)
     assert "デモ参加可" in text
-    assert "外部の公開データを参照しています" in text
+    assert "外部市場参考値は、実際の発生確率や当サービス独自のAI予測ではありません" in text
     for phrase in [
         "外部予測市場の公開参考データ",
         "RESTのみ",

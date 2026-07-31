@@ -25,6 +25,8 @@ def public_market_view(market: dict[str, Any], *, summary: str, freshness: dict[
     question = _truncate_public_text(market.get("display_question") or market.get("question"), PUBLIC_QUESTION_MAX_LENGTH)
     projected = {
         "market_id": market.get("market_id"),
+        "reference_type": "external_market_reference",
+        "source_provider": "Polymarket public market data",
         "title": title,
         "question": question,
         "display_title": title,

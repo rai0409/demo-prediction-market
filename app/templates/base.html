@@ -39,11 +39,13 @@
     <footer class="disclaimer public-boundary-notice">
       {% if lang == "ja" %}
       <p>本サービスは、完全無料・非商用の予測研究およびシミュレーションプロジェクトです。</p>
-      <p>一部の外部参考データには、Polymarketの公開市場データAPIから取得した情報が含まれる場合があります。本サービスはPolymarketとは提携、後援、承認その他の関係を有しません。</p>
+      <p>{{ t("market.external_source") }}</p>
+      <p>{{ t("market.non_affiliation") }}</p>
       <p>本サービスでは、現金を用いた賭け、暗号資産取引、ウォレット接続、入出金、賞品提供、Polymarketへの注文はできません。</p>
       {% else %}
       <p>This is a free, non-commercial forecasting and simulation project.</p>
-      <p>External reference data may include information obtained from Polymarket public market-data APIs. This project is not affiliated with, sponsored by, endorsed by, or operated by Polymarket.</p>
+      <p>{{ t("market.external_source") }}</p>
+      <p>{{ t("market.non_affiliation") }}</p>
       <p>No real-money wagers, cryptocurrency transactions, wallet connections, deposits, withdrawals, prizes, or Polymarket orders are available through this project.</p>
       {% endif %}
     </footer>
