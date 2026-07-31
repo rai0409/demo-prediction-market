@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-CURRENT_SECONDS = 2 * 60
-DELAYED_SECONDS = 10 * 60
+CURRENT_SECONDS = 7 * 60
+DELAYED_SECONDS = 15 * 60
 STALE_SECONDS = 24 * 60 * 60
 
 
