@@ -138,6 +138,8 @@ The adjacent `demo-prediction-market-sync.service` runs the existing locked one-
 
 `scripts/check_sync_health.py --json` is a read-only local evaluator for sync history and freshness. It returns exit 0 for healthy/not initialized, 1 for warning, 2 for critical, and 3 for check errors; it sends no notifications.
 
+`demo-prediction-market-sync-alert.service` and its five-minute timer run that evaluator after normal synchronization and write its safe JSON to journald. They do not send email, Slack, or webhook notifications; future integrations can consume the non-zero exit codes and JSON. Installation, enable/start, and journal checks remain deployment operations and are not performed in this repository.
+
 ## Read-only one-shot Polymarket synchronization
 
 The application default remains `DEMO_PREDICTION_LIVE=0`; it does not start periodic synchronization. To explicitly fetch public Polymarket market-data once and safely upsert changed records, run:

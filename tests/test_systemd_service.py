@@ -21,3 +21,14 @@ def test_sync_oneshot_service_and_timer_are_bounded_and_locked_by_cli():
     assert "Restart=" not in service and "bash -c" not in service
     assert "OnBootSec=2min" in timer and "OnUnitActiveSec=5min" in timer
     assert "Persistent=true" in timer and "Unit=demo-prediction-market-sync.service" in timer
+
+
+def test_sync_alert_units_preserve_evaluator_failures_without_notifications():
+    service = Path("deploy/systemd/demo-prediction-market-sync-alert.service").read_text()
+    timer = Path("deploy/systemd/demo-prediction-market-sync-alert.timer").read_text()
+    assert "Type=oneshot" in service and "check_sync_health.py --json" in service
+    assert "Environment=DEMO_PREDICTION_LIVE=0" in service
+    assert "SuccessExitStatus" not in service and "Restart=" not in service and "webhook" not in service.lower()
+    assert "ReadWritePaths=/home/rai/demo-prediction-market/data" in service
+    assert "OnBootSec=4min" in timer and "OnUnitActiveSec=5min" in timer
+    assert "AccuracySec=30s" in timer and "Persistent=true" in timer
