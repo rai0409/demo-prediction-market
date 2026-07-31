@@ -46,3 +46,5 @@ models/
 .DS_Store
 .vscode/
 .idea/
+*.sync-alert-state.json
+*.sync-alert-state.json.lock
