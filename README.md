@@ -136,6 +136,8 @@ The service writes only the application `data` directory for SQLite/runtime stat
 
 The adjacent `demo-prediction-market-sync.service` runs the existing locked one-shot CLI once with `--json`; `demo-prediction-market-sync.timer` requests it after two minutes from boot and then every five minutes. Deployment operators must review the user, group, checkout path, `.env`, and `data` path before any future `daemon-reload`, enable, start, journal, timer-status, or manual service commands. None are run by this repository. `DEMO_PREDICTION_LIVE=0` remains set and the sync lock prevents overlapping manual/timer runs. Freshness is `current` below seven minutes, `delayed` below fifteen minutes, `stale` below 24 hours, and `unavailable` thereafter; the seven-minute window allows one normal five-minute timer interval plus scheduling tolerance.
 
+`scripts/check_sync_health.py --json` is a read-only local evaluator for sync history and freshness. It returns exit 0 for healthy/not initialized, 1 for warning, 2 for critical, and 3 for check errors; it sends no notifications.
+
 ## Read-only one-shot Polymarket synchronization
 
 The application default remains `DEMO_PREDICTION_LIVE=0`; it does not start periodic synchronization. To explicitly fetch public Polymarket market-data once and safely upsert changed records, run:
