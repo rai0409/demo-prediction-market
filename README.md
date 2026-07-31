@@ -134,6 +134,8 @@ Open `http://127.0.0.1:8093`.
 
 The service writes only the application `data` directory for SQLite/runtime state; logs go to journald. Validate the template with `systemd-analyze verify deploy/systemd/demo-prediction-market.service` before any manual installation. This repository does not install, enable, start, or restart the service.
 
+The adjacent `demo-prediction-market-sync.service` runs the existing locked one-shot CLI once with `--json`; `demo-prediction-market-sync.timer` requests it after two minutes from boot and then every five minutes. Deployment operators must review the user, group, checkout path, `.env`, and `data` path before any future `daemon-reload`, enable, start, journal, timer-status, or manual service commands. None are run by this repository. `DEMO_PREDICTION_LIVE=0` remains set and the sync lock prevents overlapping manual/timer runs. A five-minute interval is longer than the current two-minute `current` freshness window, so normal operation will spend time in `delayed`; reconcile that operational mismatch before production use.
+
 ## Read-only one-shot Polymarket synchronization
 
 The application default remains `DEMO_PREDICTION_LIVE=0`; it does not start periodic synchronization. To explicitly fetch public Polymarket market-data once and safely upsert changed records, run:
