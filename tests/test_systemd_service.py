@@ -23,12 +23,20 @@ def test_sync_oneshot_service_and_timer_are_bounded_and_locked_by_cli():
     assert "Persistent=true" in timer and "Unit=demo-prediction-market-sync.service" in timer
 
 
-def test_sync_alert_units_preserve_evaluator_failures_without_notifications():
+def test_sync_alert_units_deliver_webhook_notifications_without_masking_failures():
     service = Path("deploy/systemd/demo-prediction-market-sync-alert.service").read_text()
     timer = Path("deploy/systemd/demo-prediction-market-sync-alert.timer").read_text()
-    assert "Type=oneshot" in service and "check_sync_health.py --json" in service
+    assert "Type=oneshot" in service
+    assert "run_sync_alert_notification.py --json" in service
+    assert "check_sync_health.py" not in service
+    assert "EnvironmentFile=/home/rai/demo-prediction-market/.env" in service
     assert "Environment=DEMO_PREDICTION_LIVE=0" in service
-    assert "SuccessExitStatus" not in service and "Restart=" not in service and "webhook" not in service.lower()
+    assert "SuccessExitStatus" not in service and "Restart=" not in service
     assert "ReadWritePaths=/home/rai/demo-prediction-market/data" in service
+    for secret_marker in ("DEMO_SYNC_ALERT_WEBHOOK_URL=", "token=", "credential=", "api_key="):
+        assert secret_marker not in service.lower()
     assert "OnBootSec=4min" in timer and "OnUnitActiveSec=5min" in timer
     assert "AccuracySec=30s" in timer and "Persistent=true" in timer
+    assert "Unit=demo-prediction-market-sync-alert.service" in timer
+    assert Path("scripts/check_sync_health.py").is_file()
+    assert Path("scripts/run_sync_alert_notification.py").is_file()

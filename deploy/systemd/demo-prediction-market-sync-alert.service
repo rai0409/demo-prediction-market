@@ -1,5 +1,5 @@
 [Unit]
-Description=Demo Prediction Market synchronization health check
+Description=Demo Prediction Market synchronization health webhook notification delivery
 After=network.target
 
 [Service]
@@ -10,7 +10,7 @@ WorkingDirectory=/home/rai/demo-prediction-market
 EnvironmentFile=/home/rai/demo-prediction-market/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=DEMO_PREDICTION_LIVE=0
-ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/check_sync_health.py --json
+ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/run_sync_alert_notification.py --json
 TimeoutStartSec=30s
 StandardOutput=journal
 StandardError=journal
