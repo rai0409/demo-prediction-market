@@ -48,3 +48,6 @@ models/
 .idea/
 *.sync-alert-state.json
 *.sync-alert-state.json.lock
+
+# Runtime synchronization lock files
+data/*.sync.lock
