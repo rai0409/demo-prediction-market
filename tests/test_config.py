@@ -9,6 +9,26 @@ def test_env_example_lists_limited_operation_controls():
     assert "DEMO_ADMIN_TOKEN=" in text
     assert "DEMO_PREDICTION_MAX_DEMO_STAKE=" in text
     assert "DEMO_COOKIE_SECURE=" in text
+    assert "DEMO_SYNC_ALERT_WEBHOOK_ENABLED=" in text
+    assert "DEMO_SYNC_ALERT_WEBHOOK_URL=" in text
+    assert "DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS=" in text
+
+
+def test_sync_alert_webhook_config_defaults_and_bounds(monkeypatch):
+    for name in [
+        "DEMO_SYNC_ALERT_WEBHOOK_ENABLED",
+        "DEMO_SYNC_ALERT_WEBHOOK_URL",
+        "DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    settings = get_settings()
+    assert settings.sync_alert_webhook_enabled is False
+    assert settings.sync_alert_webhook_url == ""
+    assert settings.sync_alert_webhook_timeout_seconds == 10
+    monkeypatch.setenv("DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS", "0")
+    assert get_settings().sync_alert_webhook_timeout_seconds == 1
+    monkeypatch.setenv("DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS", "999")
+    assert get_settings().sync_alert_webhook_timeout_seconds == 120
 
 
 def test_live_env_parsing_enabled_values(monkeypatch):

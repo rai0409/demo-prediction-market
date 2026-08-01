@@ -55,6 +55,9 @@ class Settings:
     azure_translator_timeout_seconds: int = 15
     azure_translator_max_retries: int = 3
     azure_translator_batch_size: int = 20
+    sync_alert_webhook_enabled: bool = False
+    sync_alert_webhook_url: str = ""
+    sync_alert_webhook_timeout_seconds: int = 10
 
 
 def _int_env(name: str, default: int) -> int:
@@ -167,4 +170,7 @@ def get_settings() -> Settings:
         azure_translator_timeout_seconds=max(1, min(120, _int_env("AZURE_TRANSLATOR_TIMEOUT_SECONDS", 15))),
         azure_translator_max_retries=max(0, min(10, _int_env("AZURE_TRANSLATOR_MAX_RETRIES", 3))),
         azure_translator_batch_size=max(1, min(100, _int_env("AZURE_TRANSLATOR_BATCH_SIZE", 20))),
+        sync_alert_webhook_enabled=_bool_env("DEMO_SYNC_ALERT_WEBHOOK_ENABLED", False),
+        sync_alert_webhook_url=os.getenv("DEMO_SYNC_ALERT_WEBHOOK_URL", "").strip(),
+        sync_alert_webhook_timeout_seconds=max(1, min(120, _int_env("DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS", 10))),
     )
