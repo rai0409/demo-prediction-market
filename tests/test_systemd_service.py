@@ -29,8 +29,10 @@ def test_sync_oneshot_service_and_timer_are_bounded_and_locked_by_cli():
     assert _read_write_paths(service) == {DATA_PATH, RUNTIME_PATH}
     assert "ProtectHome=read-only" in service
     assert "Restart=" not in service and "bash -c" not in service
-    assert "OnBootSec=2min" in timer and "OnUnitActiveSec=5min" in timer
-    assert "Persistent=true" in timer and "Unit=demo-prediction-market-sync.service" in timer
+    assert "OnBootSec=2min" in timer and "OnUnitInactiveSec=5min" in timer
+    assert "OnUnitActiveSec" not in timer
+    assert "AccuracySec=30s" in timer and "Persistent=true" in timer
+    assert "Unit=demo-prediction-market-sync.service" in timer and "WantedBy=timers.target" in timer
 
 
 def test_sync_alert_units_deliver_webhook_notifications_without_masking_failures():
