@@ -35,6 +35,7 @@ RestrictRealtime=true
 SystemCallArchitectures=native
 UMask=0077
 ReadWritePaths=/home/rai/demo-prediction-market/data
+ReadWritePaths=/home/rai/demo-prediction-market/runtime
 
 [Install]
 WantedBy=multi-user.target

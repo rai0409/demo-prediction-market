@@ -22,6 +22,9 @@ credentials/
 *.sqlite3
 *.db
 runtime/
+!runtime/
+runtime/*
+!runtime/.gitkeep
 logs/
 tmp/
 temp/
