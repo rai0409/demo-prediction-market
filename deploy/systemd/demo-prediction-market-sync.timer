@@ -2,10 +2,9 @@
 Description=Run Demo Prediction Market synchronization every five minutes
 
 [Timer]
-OnBootSec=2min
+OnActiveSec=2min
 OnUnitInactiveSec=5min
 AccuracySec=30s
-Persistent=true
 Unit=demo-prediction-market-sync.service
 
 [Install]
