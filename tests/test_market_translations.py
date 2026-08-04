@@ -163,11 +163,9 @@ def test_japanese_views_use_saved_translation_and_english_uses_original(client, 
     assert "保存済み日本語タイトル" in client.get("/markets?lang=ja").text
     detail = client.get(f"/markets/{market['market_id']}?lang=ja").text
     assert "保存済み日本語タイトル" in detail
-    assert market["title"] in detail
-    assert "この日本語文は機械翻訳です。正式な判定条件は原文をご確認ください。" in detail
-    assert 'aria-selected="true"' in detail
-    assert 'data-translation-panel="original" hidden' in detail
-    assert "<noscript>" in detail
+    assert market["description"] not in detail
+    assert "この研究版では、外部市場の詳細条件全文を再掲載していません。" in detail
+    assert "data-translation-panel" not in detail
     english = client.get(f"/markets/{market['market_id']}?lang=en").text
     assert market["title"] in english
     assert "保存済み日本語タイトル" not in english

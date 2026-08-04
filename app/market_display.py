@@ -5,6 +5,59 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+PUBLIC_TITLE_MAX_LENGTH = 160
+PUBLIC_QUESTION_MAX_LENGTH = 220
+
+
+def _truncate_public_text(value: Any, maximum: int) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= maximum else f"{text[:maximum - 1].rstrip()}…"
+
+
+def public_market_view(market: dict[str, Any], *, summary: str, freshness: dict[str, Any]) -> dict[str, Any]:
+    """Return the allowlisted market shape used by public HTML and APIs.
+
+    Stored payloads intentionally remain untouched for audit, settlement, and
+    translation workflows. Descriptions, rules, source URLs, slugs, and source
+    imagery are deliberately excluded from this public projection.
+    """
+    title = _truncate_public_text(market.get("display_title") or market.get("title"), PUBLIC_TITLE_MAX_LENGTH)
+    question = _truncate_public_text(market.get("display_question") or market.get("question"), PUBLIC_QUESTION_MAX_LENGTH)
+    projected = {
+        "market_id": market.get("market_id"),
+        "reference_type": "external_market_reference",
+        "source_provider": "Polymarket public market data",
+        "title": title,
+        "question": question,
+        "display_title": title,
+        "display_question": question,
+        "public_summary": summary,
+        "outcomes": market.get("outcomes") or [],
+        "probabilities": market.get("probabilities") or {},
+        "volume": market.get("volume"),
+        "volume_24hr": market.get("volume_24hr"),
+        "liquidity": market.get("liquidity"),
+        "best_bid": market.get("best_bid"),
+        "best_ask": market.get("best_ask"),
+        "last_trade_price": market.get("last_trade_price"),
+        "realtime_spread": market.get("realtime_spread"),
+        "end_date": market.get("end_date"),
+        "active": bool(market.get("active")),
+        "closed": bool(market.get("closed")),
+        "resolved_outcome": market.get("winning_outcome") or market.get("resolved_outcome"),
+        "fetched_at": market.get("fetched_at"),
+        "freshness_status": freshness["freshness_status"],
+        "last_sync_success_at": freshness["last_sync_success_at"],
+        "ws_last_event_at": market.get("ws_last_event_at"),
+        "data_source_status": market.get("data_source_status"),
+        "display_status": market.get("display_status"),
+        "display_reasons": market.get("display_reasons") or [],
+        "demo_participation_allowed": bool(market.get("demo_participation_allowed")),
+        "demo_participation_block_reason": market.get("demo_participation_block_reason") or "",
+    }
+    return projected
+
+
 @dataclass(frozen=True)
 class MarketDisplayClassification:
     is_displayable: bool

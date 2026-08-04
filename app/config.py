@@ -33,6 +33,11 @@ class Settings:
     auth_password_max_length: int = 256
     auth_login_rate_limit: int = 5
     auth_login_rate_window_seconds: int = 300
+    commercial_use_enabled: bool = False
+    advertising_enabled: bool = False
+    paid_features_enabled: bool = False
+    prizes_enabled: bool = False
+    external_trading_enabled: bool = False
     translation_enabled: bool = False
     translation_provider: str = "noop"
     translation_target_language: str = "ja"
@@ -50,6 +55,9 @@ class Settings:
     azure_translator_timeout_seconds: int = 15
     azure_translator_max_retries: int = 3
     azure_translator_batch_size: int = 20
+    sync_alert_webhook_enabled: bool = False
+    sync_alert_webhook_url: str = ""
+    sync_alert_webhook_timeout_seconds: int = 10
 
 
 def _int_env(name: str, default: int) -> int:
@@ -140,6 +148,11 @@ def get_settings() -> Settings:
         auth_password_max_length=password_max,
         auth_login_rate_limit=_auth_int_env("AUTH_LOGIN_RATE_LIMIT", 5, minimum=1, maximum=100),
         auth_login_rate_window_seconds=_auth_int_env("AUTH_LOGIN_RATE_WINDOW_SECONDS", 300, minimum=1, maximum=86400),
+        commercial_use_enabled=_bool_env("DEMO_COMMERCIAL_USE_ENABLED", False),
+        advertising_enabled=_bool_env("DEMO_ADVERTISING_ENABLED", False),
+        paid_features_enabled=_bool_env("DEMO_PAID_FEATURES_ENABLED", False),
+        prizes_enabled=_bool_env("DEMO_PRIZES_ENABLED", False),
+        external_trading_enabled=_bool_env("DEMO_EXTERNAL_TRADING_ENABLED", False),
         translation_enabled=_bool_env("DEMO_TRANSLATION_ENABLED", False),
         translation_provider=os.getenv("DEMO_TRANSLATION_PROVIDER", "noop").strip().lower() or "noop",
         translation_target_language=os.getenv("DEMO_TRANSLATION_TARGET_LANGUAGE", "ja").strip().lower() or "ja",
@@ -157,4 +170,7 @@ def get_settings() -> Settings:
         azure_translator_timeout_seconds=max(1, min(120, _int_env("AZURE_TRANSLATOR_TIMEOUT_SECONDS", 15))),
         azure_translator_max_retries=max(0, min(10, _int_env("AZURE_TRANSLATOR_MAX_RETRIES", 3))),
         azure_translator_batch_size=max(1, min(100, _int_env("AZURE_TRANSLATOR_BATCH_SIZE", 20))),
+        sync_alert_webhook_enabled=_bool_env("DEMO_SYNC_ALERT_WEBHOOK_ENABLED", False),
+        sync_alert_webhook_url=os.getenv("DEMO_SYNC_ALERT_WEBHOOK_URL", "").strip(),
+        sync_alert_webhook_timeout_seconds=max(1, min(120, _int_env("DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS", 10))),
     )

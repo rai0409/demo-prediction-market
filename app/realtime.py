@@ -16,7 +16,13 @@ from app.polymarket_gamma import (
     write_status_file,
 )
 from app.market_display import filtered_market_response
-from app.storage import get_last_fetch_run, list_markets, replace_markets
+from app.storage import (
+    get_last_fetch_run,
+    get_last_successful_market_sync_run,
+    get_latest_market_sync_run,
+    list_markets,
+    replace_markets,
+)
 from app.storage import latest_realtime_status, list_latest_realtime_updates
 
 
@@ -163,6 +169,8 @@ def realtime_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, A
 def source_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     status_file = read_status_file() or {}
     fetch_run = get_last_fetch_run(conn) or {}
+    sync_run = get_latest_market_sync_run(conn) or {}
+    last_successful_sync = get_last_successful_market_sync_run(conn) or {}
     markets = list_markets(conn)
     sample_market_count = sum(1 for market in markets if market.get("source") == "sample")
     filter_summary = filtered_market_response(markets)
@@ -194,4 +202,8 @@ def source_status(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any
         "runtime_status_file_exists": Path(GAMMA_STATUS_PATH).exists(),
         "runtime_response_file_exists": Path(GAMMA_RESPONSE_PATH).exists(),
         "runtime_error_file_exists": Path(GAMMA_ERROR_PATH).exists(),
+        "last_sync_attempt_at": sync_run.get("attempted_at"),
+        "last_sync_success_at": last_successful_sync.get("successful_at"),
+        "last_sync_status": sync_run.get("status"),
+        "last_sync_error_code": sync_run.get("error_code"),
     }

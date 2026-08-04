@@ -6,8 +6,14 @@ FastAPIベースのローカル検証プロダクトです。外部予測市場�
 
 このリポジトリは技術検証用のローカルシミュレーションです。
 
+- 既定では完全無料・非商用で、広告、課金、賞品、実取引はありません。
+- Polymarket APIは読み取り専用の外部参考データとしてのみ利用します。外部注文、ウォレット接続、入出金はありません。
+- 画面上のPolymarket由来の価格・implied probabilityは「外部市場参考値」と表示します。これは実際の発生確率や当サービス独自のAI予測ではありません。
+- Polymarket由来のraw description全文は一般公開画面に再掲載しません。
+- 翻訳は既定で無効です。商用利用へ変更する場合は、別途法務確認とデータ利用許諾確認が必要です。
 - Polymarketへ注文を送信しません。
 - Polymarket公式・提携・公認サービスではありません。
+- 外部市場参考値の定期同期は5分周期のREST one-shotです。既存のWebSocket表示更新は別機能であり、本責務では変更していません。商用・有料利用は今回の対象外です。
 - ウォレット接続を実装していません。
 - 入金、出金、換金、外部ポイント交換をサポートしません。
 - 秘密鍵、シードフレーズ、APIキー、APIシークレットなどの private credentials を使いません。
@@ -78,6 +84,18 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+## Optional offline English-to-Japanese translation
+
+The web app never downloads or runs translation models. To generate saved Japanese translation cache entries locally, install the optional dependencies and run the CLI jobs:
+
+```bash
+python -m pip install -r requirements-translation.txt
+python scripts/download_translation_model.py --model-id Helsinki-NLP/opus-mt-en-jap
+DEMO_TRANSLATION_ENABLED=1 DEMO_TRANSLATION_PROVIDER=local_marian python scripts/translate_markets.py --language ja --limit 20
+```
+
+Downloaded model files remain in the Hugging Face cache and must not be committed.
+
 ## Port policy
 
 `demo-prediction-market` uses the 8090 port range.
@@ -111,6 +129,31 @@ scripts/run_live.sh
 ```
 
 Open `http://127.0.0.1:8093`.
+
+## systemd web application service
+
+`deploy/systemd/demo-prediction-market.service` is a repository-specific template for this checkout at `/home/rai/demo-prediction-market` and user/group `rai`. Review and adapt those three path/user values before installation on another host. It runs the existing single-process Uvicorn command on `127.0.0.1:8093`, reads secrets only from the untracked `.env`, and explicitly keeps `DEMO_PREDICTION_LIVE=0`. It does not run synchronization, timers, migrations, backups, or restores.
+
+The service writes only the application `data` directory for SQLite/runtime state; logs go to journald. Validate the template with `systemd-analyze verify deploy/systemd/demo-prediction-market.service` before any manual installation. This repository does not install, enable, start, or restart the service.
+
+The adjacent `demo-prediction-market-sync.service` runs the existing locked one-shot CLI once with `--json`; `demo-prediction-market-sync.timer` requests it after two minutes from boot and then every five minutes. Deployment operators must review the user, group, checkout path, `.env`, and `data` path before any future `daemon-reload`, enable, start, journal, timer-status, or manual service commands. None are run by this repository. `DEMO_PREDICTION_LIVE=0` remains set and the sync lock prevents overlapping manual/timer runs. Freshness is `current` below seven minutes, `delayed` below fifteen minutes, `stale` below 24 hours, and `unavailable` thereafter; the seven-minute window allows one normal five-minute timer interval plus scheduling tolerance.
+
+`scripts/check_sync_health.py --json` is a read-only local evaluator for sync history and freshness. It returns exit 0 for healthy/not initialized, 1 for warning, 2 for critical, and 3 for check errors; it sends no notifications.
+
+`demo-prediction-market-sync-alert.service` and its five-minute timer deliver pending sync-health notifications through the generic HTTPS webhook runner and write safe JSON to journald. Enable its timer only when `DEMO_SYNC_ALERT_WEBHOOK_ENABLED=1` and `DEMO_SYNC_ALERT_WEBHOOK_URL` are configured; an unset or disabled webhook exits non-zero and is not treated as success. Installation, enable/start, and journal checks remain deployment operations and are not performed in this repository. `scripts/check_sync_health.py` remains the manual diagnostic CLI.
+
+## Read-only one-shot Polymarket synchronization
+
+The application default remains `DEMO_PREDICTION_LIVE=0`; it does not start periodic synchronization. To explicitly fetch public Polymarket market-data once and safely upsert changed records, run:
+
+```bash
+python scripts/sync_polymarket_markets.py
+python scripts/sync_polymarket_markets.py --json
+python scripts/sync_polymarket_markets.py --dry-run --json
+python scripts/sync_polymarket_markets.py --limit 50
+```
+
+Exit code `0` means a complete sync (or dry run), `1` means valid records were saved while some records were skipped, and `2` means an API, response, configuration, or storage failure. API failures retain existing market data. This command uses the Polymarket public market-data API read-only; it never submits orders, connects a wallet, performs deposits or withdrawals, or starts polling.
 
 ## Operation settings
 

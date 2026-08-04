@@ -3,7 +3,7 @@ from __future__ import annotations
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 SUPPORTED_LANGS = {"ja", "en"}
-DEFAULT_LANG = "ja"
+DEFAULT_LANG = "en"
 LANG_COOKIE_NAME = "demo_lang"
 
 
@@ -39,10 +39,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # Market
         "market.title": "マーケット",
         "market.data_status": "データ状態",
-        "market.data": "市場データ",
-        "market.live": "ライブ",
+        "market.data": "外部市場参考値",
+        "market.live": "更新済み",
         "market.updated": "最終更新",
-        "market.public_data_note": "市場情報は外部の公開データを参照しています。",
+        "market.external_market_reference": "外部市場参考値",
+        "market.reference_short": "外部予測市場の価格情報を基にした参考値です。",
+        "market.reference_explanation": "外部予測市場の価格情報を基にした参考値です。実際の発生確率、当サービス独自のAI予測、または取引可能価格を示すものではありません。",
+        "market.public_data_note": "外部市場参考値は、実際の発生確率や当サービス独自のAI予測ではありません。",
+        "market.research_summary": "この研究版では、外部市場の詳細条件全文を再掲載していません。",
+        "market.external_source": "データ出典：Polymarket公開市場データ",
+        "market.non_affiliation": "本サービスはPolymarketとは独立しており、提携、公認または運営を受けていません。本サービスからPolymarket上の注文・売買はできません。",
+        "market.freshness_current": "外部参考データは最新です。",
+        "market.freshness_delayed": "外部参考データの更新が遅れています。",
+        "market.freshness_stale": "外部参考データは古くなっています。",
+        "market.freshness_unavailable": "外部参考データは現在利用できません。",
         "market.volume": "出来高",
         "market.volume_24h": "24時間出来高",
         "market.liquidity": "流動性",
@@ -225,10 +235,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # Market
         "market.title": "Market",
         "market.data_status": "Data status",
-        "market.data": "Market data",
-        "market.live": "Live",
+        "market.data": "External market reference",
+        "market.live": "Updated",
         "market.updated": "Updated",
-        "market.public_data_note": "Market information references external public data.",
+        "market.external_market_reference": "External market reference",
+        "market.reference_short": "A reference value based on external prediction-market price information.",
+        "market.reference_explanation": "This is a reference value based on external prediction-market price information. It does not represent the actual probability of an event, this service's own AI prediction, or a tradable price.",
+        "market.public_data_note": "External market references are not actual event probabilities or this service's own AI predictions.",
+        "market.research_summary": "Detailed market conditions are not republished in this research version.",
+        "market.external_source": "Market data source: Polymarket public market data.",
+        "market.non_affiliation": "This is an independent service and is not affiliated with, endorsed by, or operated by Polymarket. No Polymarket trading or order execution is provided.",
+        "market.freshness_current": "External reference data is current.",
+        "market.freshness_delayed": "External reference data is delayed.",
+        "market.freshness_stale": "External reference data is stale.",
+        "market.freshness_unavailable": "External reference data is currently unavailable.",
         "market.volume": "Volume",
         "market.volume_24h": "24h volume",
         "market.liquidity": "Liquidity",

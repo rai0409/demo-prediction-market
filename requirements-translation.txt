@@ -1,0 +1,5 @@
+# Optional offline translation dependencies. They are not required for the web app.
+torch>=2.2,<2.7
+transformers>=4.46,<4.47
+sentencepiece>=0.2,<0.3
+sacremoses>=0.1,<0.2

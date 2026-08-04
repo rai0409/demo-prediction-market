@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Demo Prediction Market synchronization every five minutes
+
+[Timer]
+OnActiveSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=demo-prediction-market-sync.service
+
+[Install]
+WantedBy=timers.target

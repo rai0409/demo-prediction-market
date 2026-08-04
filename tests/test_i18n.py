@@ -9,6 +9,7 @@ from app.i18n import (
 
 
 def test_normalize_lang():
+    assert DEFAULT_LANG == "en"
     assert normalize_lang("ja") == "ja"
     assert normalize_lang("ja-JP") == "ja"
     assert normalize_lang("en") == "en"
@@ -25,12 +26,14 @@ def test_translation_ja_en():
     assert t("en", "result.check") == "Check results"
     assert t("ja", "nav.demo_wallet") == "マイスコア"
     assert t("en", "nav.demo_wallet") == "My Score"
-    assert t("ja", "market.data") == "市場データ"
-    assert t("en", "market.data") == "Market data"
-    assert t("ja", "market.live") == "ライブ"
-    assert t("en", "market.live") == "Live"
+    assert t("ja", "market.data") == "外部市場参考値"
+    assert t("en", "market.data") == "External market reference"
+    assert t("ja", "market.live") == "更新済み"
+    assert t("en", "market.live") == "Updated"
     assert t("ja", "market.updated") == "最終更新"
     assert t("en", "market.updated") == "Updated"
+    assert t("en", "market.freshness_current") == "External reference data is current."
+    assert t("en", "market.freshness_unavailable") == "External reference data is currently unavailable."
     assert t("ja", "market.catalog_title") == "全マーケット"
     assert t("en", "market.catalog_title") == "All markets"
     assert t("ja", "pagination.previous") == "前へ"

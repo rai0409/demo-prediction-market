@@ -22,6 +22,9 @@ credentials/
 *.sqlite3
 *.db
 runtime/
+!runtime/
+runtime/*
+!runtime/.gitkeep
 logs/
 tmp/
 temp/
@@ -37,7 +40,17 @@ build/
 .claude/
 .uv-cache/
 
+# Optional Hugging Face translation model cache
+.hf-cache/
+hf-cache/
+models/
+
 # OS / editor
 .DS_Store
 .vscode/
 .idea/
+*.sync-alert-state.json
+*.sync-alert-state.json.lock
+
+# Runtime synchronization lock files
+data/*.sync.lock

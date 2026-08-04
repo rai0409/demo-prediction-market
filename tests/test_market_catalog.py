@@ -28,7 +28,7 @@ def _catalog_markets(sample_markets, count=25):
 
 
 def test_market_catalog_renders_ja_en_and_product_navigation(client):
-    japanese = client.get("/markets")
+    japanese = client.get("/markets?lang=ja")
     english = client.get("/markets?lang=en")
     assert japanese.status_code == 200
     assert "全マーケット" in japanese.text
@@ -60,7 +60,7 @@ def test_market_catalog_searches_title_question_slug_case_insensitively(client, 
     assert "NATO title" in client.get("/markets?q=nato").text
     assert "Nato question" in client.get("/markets?q=NATO").text
     assert "Slug match title" in client.get("/markets?q=nato-slug").text
-    assert "条件に一致するマーケットはありません" in client.get("/markets?q=no-such-market").text
+    assert "条件に一致するマーケットはありません" in client.get("/markets?q=no-such-market&lang=ja").text
 
 
 def test_market_catalog_search_is_escaped_and_sql_safe(client, db_conn, sample_markets):
@@ -96,19 +96,19 @@ def test_market_catalog_sorts_with_sql_allowlists(db_conn, sample_markets):
 
 def test_market_catalog_paginates_and_preserves_filters(client, db_conn, sample_markets):
     replace_markets(db_conn, _catalog_markets(sample_markets, 25))
-    first_page = client.get("/markets?q=Catalog&sort=liquidity&order=desc&page_size=10&page=1")
+    first_page = client.get("/markets?q=Catalog&sort=liquidity&order=desc&page_size=10&page=1&lang=ja")
     assert first_page.status_code == 200
     assert first_page.text.count('class="market-card"') == 10
     assert "1 / 3 ページ" in first_page.text
     assert "q=Catalog" in first_page.text
     assert "sort=liquidity" in first_page.text
     assert "page=2" in first_page.text
-    assert client.get("/markets?page_size=20").text.count('class="market-card"') == 20
-    assert client.get("/markets?page_size=50").text.count('class="market-card"') == 25
-    assert client.get("/markets?page_size=999").text.count('class="market-card"') == 20
-    assert "1 / 3 ページ" in client.get("/markets?page=0&page_size=10").text
-    assert "1 / 3 ページ" in client.get("/markets?page=-1&page_size=10").text
-    assert "3 / 3 ページ" in client.get("/markets?page=999&page_size=10").text
+    assert client.get("/markets?page_size=20&lang=ja").text.count('class="market-card"') == 20
+    assert client.get("/markets?page_size=50&lang=ja").text.count('class="market-card"') == 25
+    assert client.get("/markets?page_size=999&lang=ja").text.count('class="market-card"') == 20
+    assert "1 / 3 ページ" in client.get("/markets?page=0&page_size=10&lang=ja").text
+    assert "1 / 3 ページ" in client.get("/markets?page=-1&page_size=10&lang=ja").text
+    assert "3 / 3 ページ" in client.get("/markets?page=999&page_size=10&lang=ja").text
 
 
 def test_market_catalog_hides_internal_values_and_uses_targeted_updates(client, db_conn, sample_markets):
