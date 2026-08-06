@@ -277,6 +277,7 @@ def create_collateral_market(
         if existing is not None:
             if existing["engine_key"] != ENGINE_KEY or existing["status"] != "open":
                 raise CollateralLedgerError("market_not_open")
+            _ensure_verified(conn, market_id=market_id)
             return {"market_id": market_id, "status": "open", "idempotent_replay": True}
         source_market = get_market(conn, market_id)
         if source_market is None:
@@ -451,13 +452,18 @@ def verify_collateral_invariants(conn: sqlite3.Connection, *, market_id: str | N
         markets_sql += " and m.market_id = ?"
         params.append(market_id)
     markets = conn.execute(
-        f"select m.market_id, r.reserve_micro, r.net_complete_sets from collateral_markets m join market_reserves r on r.market_id = m.market_id {markets_sql}", params
+        f"select m.market_id, r.market_id as reserve_market_id, r.reserve_micro, r.net_complete_sets "
+        f"from collateral_markets m left join market_reserves r on r.market_id = m.market_id {markets_sql}",
+        params,
     ).fetchall()
     codes: list[str] = []
     issued, burned = int(state["issued_micro"]), int(state["burned_micro"])
     if issued - burned != account_micro + reserve_micro:
         codes.append("global_point_conservation_failed")
     for row in markets:
+        if row["reserve_market_id"] is None:
+            codes.append("market_reserve_missing")
+            continue
         sets = int(row["net_complete_sets"])
         if int(row["reserve_micro"]) != sets * POINT_SCALE:
             codes.append("reserve_complete_set_mismatch")

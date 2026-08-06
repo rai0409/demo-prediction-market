@@ -169,6 +169,49 @@ def test_invariant_verifier_detects_tampering_without_identifiers(db_conn, sampl
     assert account_id not in str(result)
 
 
+def test_invariant_verifier_detects_missing_reserve_for_scoped_market(db_conn, sample_markets):
+    _, market_id = _bootstrap_and_market(db_conn, sample_markets)
+    db_conn.execute("delete from market_reserves where market_id = ?", (market_id,))
+
+    result = verify_collateral_invariants(db_conn, market_id=market_id)
+
+    assert result["integrity_status"] == "failed"
+    assert result["market_count"] == 1
+    assert "market_reserve_missing" in result["violation_codes"]
+
+
+def test_invariant_verifier_detects_missing_reserve_globally(db_conn, sample_markets):
+    _, market_id = _bootstrap_and_market(db_conn, sample_markets)
+    db_conn.execute("delete from market_reserves where market_id = ?", (market_id,))
+
+    result = verify_collateral_invariants(db_conn)
+
+    assert result["integrity_status"] == "failed"
+    assert result["market_count"] >= 1
+    assert "market_reserve_missing" in result["violation_codes"]
+
+
+def test_existing_collateral_market_replay_rejects_missing_reserve_without_repair(db_conn, sample_markets):
+    _, market_id = _bootstrap_and_market(db_conn, sample_markets)
+    audit_count = db_conn.execute("select count(*) from demo_audit_events").fetchone()[0]
+    db_conn.execute("delete from market_reserves where market_id = ?", (market_id,))
+
+    with pytest.raises(CollateralLedgerError, match="invariant_violation"):
+        create_collateral_market(db_conn, market_id=market_id)
+
+    assert db_conn.execute("select count(*) from market_reserves where market_id = ?", (market_id,)).fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from demo_audit_events").fetchone()[0] == audit_count
+
+
+def test_existing_collateral_market_replay_verifies_healthy_market(db_conn, sample_markets):
+    _, market_id = _bootstrap_and_market(db_conn, sample_markets)
+
+    replay = create_collateral_market(db_conn, market_id=market_id)
+
+    assert replay["idempotent_replay"] is True
+    assert verify_collateral_invariants(db_conn, market_id=market_id)["integrity_status"] == "verified"
+
+
 @pytest.mark.parametrize(
     ("tamper_sql", "expected_code"),
     [
