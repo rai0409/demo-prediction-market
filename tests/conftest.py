@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -11,7 +12,13 @@ from app.storage import connect, get_market, init_db, store_markets
 
 @pytest.fixture()
 def sample_markets():
-    return load_markets(live=False, limit=50)
+    future_end_date = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    return [
+        dict(market, end_date=future_end_date)
+        if market.get("active") and not market.get("closed")
+        else market
+        for market in load_markets(live=False, limit=50)
+    ]
 
 
 @pytest.fixture()
