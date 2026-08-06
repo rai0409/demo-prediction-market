@@ -17,6 +17,7 @@ from app.storage import (
     record_market_sync_run,
 )
 from app.storage import replace_markets
+from app.collateral_ledger import POINT_SCALE, bootstrap_v2_point_supply
 
 
 class TextOnlyParser(HTMLParser):
@@ -45,6 +46,27 @@ def visible_text(html: str) -> str:
     parser = TextOnlyParser()
     parser.feed(visible_html(html))
     return " ".join(parser.parts)
+
+
+def test_admin_v2_participant_allocation_route_requires_admin_and_is_idempotent(client, db_conn):
+    bootstrap_v2_point_supply(db_conn, amount_micro=2 * POINT_SCALE, idempotency_key="bootstrap")
+    payload = {"participant_id": "participant-1", "amount_micro": POINT_SCALE, "idempotency_key": "allocation"}
+    csrf_missing = client.post("/api/admin/v2/point-allocations", json=payload, auto_security=False)
+    assert csrf_missing.status_code == 403
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 0
+    no_admin = client.post(
+        "/api/admin/v2/point-allocations", json=payload, headers={"x-demo-admin-token": "wrong"}
+    )
+    assert no_admin.status_code == 403
+    first = client.post("/api/admin/v2/point-allocations", json=payload, headers={"x-demo-admin-token": "test-admin"})
+    replay = client.post("/api/admin/v2/point-allocations", json=payload, headers={"x-demo-admin-token": "test-admin"})
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["idempotent_replay"] is False
+    assert replay.json()["idempotent_replay"] is True
+    assert "treasury" not in str(first.json()).lower()
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 1
+    conflict = client.post("/api/admin/v2/point-allocations", json={**payload, "amount_micro": 1}, headers={"x-demo-admin-token": "test-admin"})
+    assert conflict.status_code == 409
 
 
 def test_health(client):
