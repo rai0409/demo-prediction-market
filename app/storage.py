@@ -254,6 +254,127 @@ def init_db(conn: sqlite3.Connection) -> None:
         create index if not exists idx_user_sessions_user_id on user_sessions(user_id);
         create index if not exists idx_user_sessions_expires_at on user_sessions(expires_at);
         create index if not exists idx_user_sessions_revoked_at on user_sessions(revoked_at);
+        create table if not exists prediction_engines (
+            engine_key text primary key,
+            engine_version integer not null,
+            status text not null check(status in ('legacy', 'available', 'disabled')),
+            created_at text not null
+        );
+        create table if not exists point_supply_state (
+            engine_key text primary key,
+            issued_micro integer not null default 0 check(issued_micro >= 0),
+            burned_micro integer not null default 0 check(burned_micro >= 0),
+            bootstrap_completed integer not null default 0 check(bootstrap_completed in (0, 1)),
+            version integer not null default 0 check(version >= 0),
+            updated_at text not null,
+            foreign key(engine_key) references prediction_engines(engine_key)
+        );
+        create table if not exists point_supply_events (
+            id integer primary key autoincrement,
+            engine_key text not null,
+            event_type text not null check(event_type in ('bootstrap_issue', 'burn')),
+            destination_account_id text,
+            amount_micro integer not null check(amount_micro > 0),
+            idempotency_key text not null,
+            request_id text,
+            payload_hash text not null,
+            created_at text not null,
+            unique(engine_key, idempotency_key),
+            foreign key(engine_key) references prediction_engines(engine_key)
+        );
+        create table if not exists point_accounts (
+            account_id text primary key,
+            engine_key text not null,
+            owner_type text not null check(owner_type in ('participant', 'operator', 'system')),
+            owner_id text not null,
+            available_micro integer not null default 0 check(available_micro >= 0),
+            locked_micro integer not null default 0 check(locked_micro >= 0),
+            version integer not null default 0 check(version >= 0),
+            created_at text not null,
+            updated_at text not null,
+            unique(engine_key, owner_type, owner_id),
+            foreign key(engine_key) references prediction_engines(engine_key)
+        );
+        create table if not exists collateral_markets (
+            market_id text primary key,
+            engine_key text not null,
+            status text not null check(status in ('draft', 'open', 'frozen', 'closed', 'resolved', 'void')),
+            point_scale integer not null check(point_scale = 10000),
+            version integer not null default 0 check(version >= 0),
+            created_at text not null,
+            updated_at text not null,
+            foreign key(engine_key) references prediction_engines(engine_key)
+        );
+        create table if not exists market_reserves (
+            market_id text primary key,
+            reserve_micro integer not null default 0 check(reserve_micro >= 0),
+            net_complete_sets integer not null default 0 check(net_complete_sets >= 0),
+            version integer not null default 0 check(version >= 0),
+            updated_at text not null,
+            check(reserve_micro = net_complete_sets * 10000),
+            foreign key(market_id) references collateral_markets(market_id)
+        );
+        create table if not exists outcome_positions (
+            account_id text not null,
+            market_id text not null,
+            outcome text not null check(outcome in ('YES', 'NO')),
+            available_shares integer not null default 0 check(available_shares >= 0),
+            locked_shares integer not null default 0 check(locked_shares >= 0),
+            version integer not null default 0 check(version >= 0),
+            updated_at text not null,
+            primary key(account_id, market_id, outcome),
+            foreign key(account_id) references point_accounts(account_id),
+            foreign key(market_id) references collateral_markets(market_id)
+        );
+        create table if not exists reserve_events (
+            id integer primary key autoincrement,
+            engine_key text not null,
+            market_id text not null,
+            account_id text not null,
+            event_type text not null check(event_type in ('split', 'merge')),
+            quantity integer not null check(quantity > 0),
+            points_micro integer not null check(points_micro > 0),
+            reserve_before_micro integer not null check(reserve_before_micro >= 0),
+            reserve_after_micro integer not null check(reserve_after_micro >= 0),
+            idempotency_key text not null,
+            request_id text,
+            payload_hash text not null,
+            created_at text not null,
+            unique(engine_key, account_id, idempotency_key),
+            foreign key(engine_key) references prediction_engines(engine_key),
+            foreign key(market_id) references collateral_markets(market_id),
+            foreign key(account_id) references point_accounts(account_id)
+        );
+        create table if not exists collateral_ledger_entries (
+            id integer primary key autoincrement,
+            engine_key text not null,
+            account_id text,
+            market_id text,
+            entry_type text not null check(entry_type in (
+                'bootstrap_issue', 'split_account_debit', 'split_reserve_credit',
+                'merge_reserve_debit', 'merge_account_credit'
+            )),
+            amount_micro integer not null,
+            account_available_before_micro integer,
+            account_available_after_micro integer,
+            reserve_before_micro integer,
+            reserve_after_micro integer,
+            reference_type text not null,
+            reference_id text not null,
+            request_id text,
+            created_at text not null,
+            foreign key(engine_key) references prediction_engines(engine_key)
+        );
+        create index if not exists idx_point_accounts_owner
+            on point_accounts(engine_key, owner_type, owner_id);
+        create index if not exists idx_outcome_positions_market_outcome
+            on outcome_positions(market_id, outcome);
+        create index if not exists idx_reserve_events_market_created
+            on reserve_events(market_id, created_at, id);
+        create index if not exists idx_collateral_ledger_reference
+            on collateral_ledger_entries(reference_type, reference_id);
+        create index if not exists idx_collateral_ledger_market_created
+            on collateral_ledger_entries(market_id, created_at, id);
         """
     )
     _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
@@ -268,6 +389,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "simulated_orders", "request_id", "text")
     _ensure_column(conn, "simulated_positions", "idempotency_key", "text")
     _ensure_column(conn, "simulated_positions", "request_id", "text")
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)",
+        ("fixed_odds_v1", 1, "legacy", now),
+    )
+    conn.execute(
+        "insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)",
+        ("collateralized_clob_v2", 2, "available", now),
+    )
+    conn.execute(
+        "insert or ignore into point_supply_state(engine_key, updated_at) values (?, ?)",
+        ("collateralized_clob_v2", now),
+    )
     existing = conn.execute("select user_id from demo_users where user_id = ?", (DEMO_USER_ID,)).fetchone()
     if existing is None:
         conn.execute("insert into demo_users(user_id, balance) values (?, ?)", (DEMO_USER_ID, INITIAL_DEMO_POINTS))

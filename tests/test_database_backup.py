@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 
 from app.database_backup import BackupError, create_backup, metadata_path, restore_backup
+from app.collateral_ledger import POINT_SCALE, bootstrap_v2_point_supply, create_collateral_market, split_complete_sets, verify_collateral_invariants
 from app.storage import connect, get_market, init_db, store_markets
 
 
@@ -74,3 +75,21 @@ def test_backup_rejects_foreign_key_violations(tmp_path, sample_markets):
     with pytest.raises(BackupError, match="foreign_key_failed"):
         create_backup(source, backup)
     assert not backup.exists()
+
+
+def test_backup_restore_preserves_v2_collateral_ledger(tmp_path, sample_markets):
+    source, backup, restored = tmp_path / "source.db", tmp_path / "backup.sqlite", tmp_path / "restored.db"
+    make_db(source, sample_markets)
+    conn = connect(str(source))
+    treasury = bootstrap_v2_point_supply(conn, amount_micro=10_000 * POINT_SCALE, idempotency_key="bootstrap")
+    market_id = sample_markets[0]["market_id"]
+    create_collateral_market(conn, market_id=market_id)
+    split_complete_sets(conn, account_id=treasury["destination_account_id"], market_id=market_id, quantity=250, idempotency_key="split")
+    conn.close()
+    create_backup(source, backup)
+    restore_backup(backup, restored, production_db=source)
+    restored_conn = connect(str(restored))
+    assert verify_collateral_invariants(restored_conn, market_id=market_id)["integrity_status"] == "verified"
+    assert restored_conn.execute("select count(*) from reserve_events").fetchone()[0] == 1
+    assert restored_conn.execute("select count(*) from demo_users").fetchone()[0] == 1
+    restored_conn.close()
