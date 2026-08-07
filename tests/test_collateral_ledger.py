@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
 
 import pytest
 
@@ -337,8 +338,92 @@ def test_concurrent_participant_allocations_cannot_overspend_treasury(tmp_path):
     assert verify_conn.execute("select available_micro from point_accounts where account_id = ?", (f"{ENGINE_KEY}:operator:operator-treasury",)).fetchone()[0] == 0
     assert verify_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 1
     assert verify_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 2
+    assert verify_conn.execute("select coalesce(sum(available_micro), 0) from point_accounts where owner_type = 'participant' and engine_key = ?", (ENGINE_KEY,)).fetchone()[0] == 1
+    assert verify_conn.execute("select sum(amount_micro) from point_allocation_events").fetchone()[0] == 1
+    debit, credit = tuple(verify_conn.execute(
+        "select coalesce(sum(case when entry_type = 'participant_allocation_debit' then amount_micro end), 0), "
+        "coalesce(sum(case when entry_type = 'participant_allocation_credit' then amount_micro end), 0) "
+        "from collateral_ledger_entries where reference_type = 'point_allocation_event'"
+    ).fetchone())
+    assert (debit, credit) == (-1, 1)
+    assert abs(debit) == credit
     assert verify_collateral_invariants(verify_conn)["integrity_status"] == "verified"
     verify_conn.close()
+
+
+def test_participant_allocation_rolls_back_when_event_insert_fails(db_conn):
+    treasury = bootstrap_v2_point_supply(db_conn, amount_micro=POINT_SCALE, idempotency_key="bootstrap")
+    db_conn.execute("create trigger fail_allocation_event before insert on point_allocation_events begin select raise(abort, 'event failure'); end")
+    with pytest.raises(sqlite3.IntegrityError, match="event failure"):
+        allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=1, idempotency_key="allocation")
+    assert db_conn.execute("select available_micro from point_accounts where account_id = ?", (treasury["destination_account_id"],)).fetchone()[0] == POINT_SCALE
+    assert db_conn.execute("select count(*) from point_accounts where owner_type = 'participant' and engine_key = ?", (ENGINE_KEY,)).fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from demo_audit_events where event_type = 'v2_participant_points_allocated'").fetchone()[0] == 0
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+
+
+def test_participant_allocation_rolls_back_when_audit_or_postwrite_invariant_fails(db_conn, monkeypatch):
+    treasury = bootstrap_v2_point_supply(db_conn, amount_micro=POINT_SCALE, idempotency_key="bootstrap")
+    monkeypatch.setattr("app.collateral_ledger.insert_audit_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit failure")))
+    with pytest.raises(RuntimeError, match="audit failure"):
+        allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=1, idempotency_key="audit")
+    monkeypatch.undo()
+    calls = iter(({"integrity_status": "verified"}, {"integrity_status": "failed"}))
+    monkeypatch.setattr("app.collateral_ledger.verify_collateral_invariants", lambda *args, **kwargs: next(calls))
+    with pytest.raises(CollateralLedgerError, match="invariant_violation"):
+        allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=1, idempotency_key="postwrite")
+    assert db_conn.execute("select available_micro from point_accounts where account_id = ?", (treasury["destination_account_id"],)).fetchone()[0] == POINT_SCALE
+    assert db_conn.execute("select count(*) from point_accounts where owner_type = 'participant' and engine_key = ?", (ENGINE_KEY,)).fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from demo_audit_events where event_type = 'v2_participant_points_allocated'").fetchone()[0] == 0
+
+
+def test_participant_allocation_rejects_destination_overflow_without_writes(db_conn, monkeypatch):
+    treasury = bootstrap_v2_point_supply(db_conn, amount_micro=1, idempotency_key="bootstrap")
+    destination_id = f"{ENGINE_KEY}:participant:{DEMO_USER_ID}"
+    db_conn.execute(
+        "insert into point_accounts(account_id, engine_key, owner_type, owner_id, available_micro, created_at, updated_at) values (?, ?, 'participant', ?, ?, 'x', 'x')",
+        (destination_id, ENGINE_KEY, DEMO_USER_ID, SQLITE_INTEGER_MAX),
+    )
+    monkeypatch.setattr("app.collateral_ledger.verify_collateral_invariants", lambda *args, **kwargs: {"integrity_status": "verified"})
+    with pytest.raises(CollateralLedgerError, match="integer_overflow"):
+        allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=1, idempotency_key="overflow")
+    assert db_conn.execute("select available_micro from point_accounts where account_id = ?", (destination_id,)).fetchone()[0] == SQLITE_INTEGER_MAX
+    assert db_conn.execute("select available_micro from point_accounts where account_id = ?", (treasury["destination_account_id"],)).fetchone()[0] == 1
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from demo_audit_events where event_type = 'v2_participant_points_allocated'").fetchone()[0] == 0
+
+
+def test_participant_allocation_idempotency_key_cannot_target_another_participant(db_conn):
+    bootstrap_v2_point_supply(db_conn, amount_micro=2, idempotency_key="bootstrap")
+    db_conn.execute("insert into demo_users(user_id, balance) values ('participant-2', 0)")
+    first = allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=1, idempotency_key="same-key")
+    with pytest.raises(CollateralLedgerError, match="idempotency_conflict"):
+        allocate_v2_points_to_participant(db_conn, participant_id="participant-2", amount_micro=1, idempotency_key="same-key")
+    assert db_conn.execute("select count(*) from point_accounts where account_id = ?", (f"{ENGINE_KEY}:participant:participant-2",)).fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 1
+    assert db_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 2
+    assert db_conn.execute("select count(*) from demo_audit_events where event_type = 'v2_participant_points_allocated'").fetchone()[0] == 1
+    assert first["participant_available_micro"] == 1
+
+
+def test_participant_allocation_account_can_split_and_merge_complete_sets(db_conn, sample_markets):
+    bootstrap_v2_point_supply(db_conn, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="allocation")
+    market_id = _market_id(sample_markets)
+    create_collateral_market(db_conn, market_id=market_id)
+    split_complete_sets(db_conn, account_id=allocation["destination_account_id"], market_id=market_id, quantity=2, idempotency_key="split")
+    merge_complete_sets(db_conn, account_id=allocation["destination_account_id"], market_id=market_id, quantity=1, idempotency_key="merge")
+    assert db_conn.execute("select available_micro from point_accounts where account_id = ?", (allocation["destination_account_id"],)).fetchone()[0] == POINT_SCALE
+    assert _position(db_conn, allocation["destination_account_id"], market_id, "YES") == (1, 0)
+    assert _position(db_conn, allocation["destination_account_id"], market_id, "NO") == (1, 0)
+    assert tuple(db_conn.execute("select reserve_micro, net_complete_sets from market_reserves where market_id = ?", (market_id,)).fetchone()) == (POINT_SCALE, 1)
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+    assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
 
 
 @pytest.mark.parametrize(

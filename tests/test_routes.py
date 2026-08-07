@@ -69,6 +69,42 @@ def test_admin_v2_participant_allocation_route_requires_admin_and_is_idempotent(
     assert conflict.status_code == 409
 
 
+def test_admin_v2_participant_allocation_route_rejects_unbootstrapped_and_unknown_participant(client, db_conn):
+    headers = {"x-demo-admin-token": "test-admin"}
+    payload = {"participant_id": "participant-1", "amount_micro": POINT_SCALE, "idempotency_key": "allocation"}
+    unbootstrapped = client.post("/api/admin/v2/point-allocations", json=payload, headers=headers)
+    assert unbootstrapped.status_code == 409
+    assert unbootstrapped.json() == {"detail": "bootstrap_required"}
+    assert db_conn.execute("select count(*) from point_accounts where owner_type = 'participant'").fetchone()[0] == 0
+    bootstrap_v2_point_supply(db_conn, amount_micro=POINT_SCALE, idempotency_key="bootstrap")
+    unknown = client.post("/api/admin/v2/point-allocations", json={**payload, "participant_id": "unknown-user", "idempotency_key": "unknown"}, headers=headers)
+    assert unknown.status_code == 404
+    assert unknown.json() == {"detail": "participant_missing"}
+    assert db_conn.execute("select count(*) from point_accounts where owner_type = 'participant'").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 0
+    assert db_conn.execute("select count(*) from demo_audit_events where event_type = 'v2_participant_points_allocated'").fetchone()[0] == 0
+
+
+def test_admin_v2_participant_allocation_route_response_is_exact_public_boundary(client, db_conn):
+    bootstrap_v2_point_supply(db_conn, amount_micro=POINT_SCALE, idempotency_key="bootstrap")
+    response = client.post(
+        "/api/admin/v2/point-allocations",
+        json={"participant_id": "participant-1", "amount_micro": POINT_SCALE, "idempotency_key": "allocation"},
+        headers={"x-demo-admin-token": "test-admin"},
+    )
+    replay = client.post(
+        "/api/admin/v2/point-allocations",
+        json={"participant_id": "participant-1", "amount_micro": POINT_SCALE, "idempotency_key": "allocation"},
+        headers={"x-demo-admin-token": "test-admin"},
+    )
+    expected = {"event_id", "participant_id", "destination_account_id", "amount_micro", "participant_available_micro", "idempotent_replay"}
+    for payload in (response.json(), replay.json()):
+        assert set(payload) == expected
+        serialized = str(payload).lower()
+        assert not any(value in serialized for value in ("treasury", "password", "token", "session", "cookie", "admin", "email", "header"))
+
+
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
