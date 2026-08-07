@@ -352,7 +352,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             market_id text,
             entry_type text not null check(entry_type in (
                 'bootstrap_issue', 'split_account_debit', 'split_reserve_credit',
-                'merge_reserve_debit', 'merge_account_credit'
+                'merge_reserve_debit', 'merge_account_credit',
+                'participant_allocation_debit', 'participant_allocation_credit'
             )),
             amount_micro integer not null,
             account_available_before_micro integer,
@@ -365,6 +366,29 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at text not null,
             foreign key(engine_key) references prediction_engines(engine_key)
         );
+        create table if not exists point_allocation_events (
+            id integer primary key autoincrement,
+            engine_key text not null,
+            source_account_id text not null,
+            destination_account_id text not null,
+            participant_id text not null,
+            amount_micro integer not null check(amount_micro > 0),
+            source_before_micro integer not null check(source_before_micro >= 0),
+            source_after_micro integer not null check(source_after_micro >= 0),
+            destination_before_micro integer not null check(destination_before_micro >= 0),
+            destination_after_micro integer not null check(destination_after_micro >= 0),
+            idempotency_key text not null,
+            request_id text,
+            payload_hash text not null,
+            created_at text not null,
+            check(source_account_id <> destination_account_id),
+            check(source_before_micro - amount_micro = source_after_micro),
+            check(destination_before_micro + amount_micro = destination_after_micro),
+            unique(engine_key, idempotency_key),
+            foreign key(engine_key) references prediction_engines(engine_key),
+            foreign key(source_account_id) references point_accounts(account_id),
+            foreign key(destination_account_id) references point_accounts(account_id)
+        );
         create index if not exists idx_point_accounts_owner
             on point_accounts(engine_key, owner_type, owner_id);
         create index if not exists idx_outcome_positions_market_outcome
@@ -375,8 +399,15 @@ def init_db(conn: sqlite3.Connection) -> None:
             on collateral_ledger_entries(reference_type, reference_id);
         create index if not exists idx_collateral_ledger_market_created
             on collateral_ledger_entries(market_id, created_at, id);
+        create index if not exists idx_point_allocation_participant_created
+            on point_allocation_events(participant_id, created_at, id);
+        create index if not exists idx_point_allocation_source_created
+            on point_allocation_events(source_account_id, created_at, id);
+        create index if not exists idx_point_allocation_destination_created
+            on point_allocation_events(destination_account_id, created_at, id);
         """
     )
+    _migrate_collateral_ledger_entries(conn)
     _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
     _ensure_column(conn, "demo_point_ledger", "reference_type", "text")
     _ensure_column(conn, "demo_point_ledger", "reference_id", "text")
@@ -410,6 +441,65 @@ def init_db(conn: sqlite3.Connection) -> None:
             (DEMO_USER_ID, INITIAL_DEMO_POINTS, INITIAL_DEMO_POINTS, "initial", "initial demo points"),
         )
     conn.commit()
+
+
+def _migrate_collateral_ledger_entries(conn: sqlite3.Connection) -> None:
+    """Add allocation entry types without altering existing ledger rows or IDs."""
+    row = conn.execute(
+        "select sql from sqlite_master where type = 'table' and name = 'collateral_ledger_entries'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("collateral ledger table missing")
+    if "participant_allocation_debit" in (row["sql"] or "") and "participant_allocation_credit" in (row["sql"] or ""):
+        return
+    columns = [item["name"] for item in conn.execute("pragma table_info(collateral_ledger_entries)")]
+    expected = [
+        "id", "engine_key", "account_id", "market_id", "entry_type", "amount_micro",
+        "account_available_before_micro", "account_available_after_micro", "reserve_before_micro",
+        "reserve_after_micro", "reference_type", "reference_id", "request_id", "created_at",
+    ]
+    if columns != expected:
+        raise RuntimeError("unsupported collateral ledger schema")
+    conn.executescript(
+        """
+        create table collateral_ledger_entries_migrating (
+            id integer primary key autoincrement,
+            engine_key text not null,
+            account_id text,
+            market_id text,
+            entry_type text not null check(entry_type in (
+                'bootstrap_issue', 'split_account_debit', 'split_reserve_credit',
+                'merge_reserve_debit', 'merge_account_credit',
+                'participant_allocation_debit', 'participant_allocation_credit'
+            )),
+            amount_micro integer not null,
+            account_available_before_micro integer,
+            account_available_after_micro integer,
+            reserve_before_micro integer,
+            reserve_after_micro integer,
+            reference_type text not null,
+            reference_id text not null,
+            request_id text,
+            created_at text not null,
+            foreign key(engine_key) references prediction_engines(engine_key)
+        );
+        """
+    )
+    column_list = ", ".join(expected)
+    conn.execute(
+        f"insert into collateral_ledger_entries_migrating ({column_list}) "
+        f"select {column_list} from collateral_ledger_entries"
+    )
+    conn.execute("drop table collateral_ledger_entries")
+    conn.execute("alter table collateral_ledger_entries_migrating rename to collateral_ledger_entries")
+    conn.execute(
+        "create index if not exists idx_collateral_ledger_reference "
+        "on collateral_ledger_entries(reference_type, reference_id)"
+    )
+    conn.execute(
+        "create index if not exists idx_collateral_ledger_market_created "
+        "on collateral_ledger_entries(market_id, created_at, id)"
+    )
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:

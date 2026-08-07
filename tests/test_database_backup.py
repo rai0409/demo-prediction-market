@@ -4,8 +4,8 @@ import sqlite3
 import pytest
 
 from app.database_backup import BackupError, create_backup, metadata_path, restore_backup
-from app.collateral_ledger import POINT_SCALE, bootstrap_v2_point_supply, create_collateral_market, split_complete_sets, verify_collateral_invariants
-from app.storage import connect, get_market, init_db, store_markets
+from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, create_collateral_market, split_complete_sets, verify_collateral_invariants
+from app.storage import DEMO_USER_ID, connect, get_market, init_db, store_markets, verify_audit_chain
 
 
 def make_db(path, sample_markets):
@@ -82,6 +82,7 @@ def test_backup_restore_preserves_v2_collateral_ledger(tmp_path, sample_markets)
     make_db(source, sample_markets)
     conn = connect(str(source))
     treasury = bootstrap_v2_point_supply(conn, amount_micro=10_000 * POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(conn, participant_id=DEMO_USER_ID, amount_micro=POINT_SCALE, idempotency_key="allocation")
     market_id = sample_markets[0]["market_id"]
     create_collateral_market(conn, market_id=market_id)
     split_complete_sets(conn, account_id=treasury["destination_account_id"], market_id=market_id, quantity=250, idempotency_key="split")
@@ -91,5 +92,9 @@ def test_backup_restore_preserves_v2_collateral_ledger(tmp_path, sample_markets)
     restored_conn = connect(str(restored))
     assert verify_collateral_invariants(restored_conn, market_id=market_id)["integrity_status"] == "verified"
     assert restored_conn.execute("select count(*) from reserve_events").fetchone()[0] == 1
+    assert restored_conn.execute("select count(*) from point_allocation_events").fetchone()[0] == 1
+    assert restored_conn.execute("select count(*) from collateral_ledger_entries where reference_type = 'point_allocation_event'").fetchone()[0] == 2
+    assert restored_conn.execute("select available_micro from point_accounts where account_id = ?", (allocation["destination_account_id"],)).fetchone()[0] == POINT_SCALE
+    assert verify_audit_chain(restored_conn)["integrity_status"] == "verified"
     assert restored_conn.execute("select count(*) from demo_users").fetchone()[0] == 1
     restored_conn.close()

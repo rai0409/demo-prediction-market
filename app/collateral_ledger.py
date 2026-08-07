@@ -13,7 +13,7 @@ import json
 import sqlite3
 from typing import Any, Iterator
 
-from app.storage import get_market, insert_audit_event
+from app.storage import get_market, insert_audit_event, normalize_demo_user_id
 
 
 ENGINE_KEY = "collateralized_clob_v2"
@@ -148,6 +148,18 @@ def _supply_replay(conn: sqlite3.Connection, *, idempotency_key: str, payload_ha
     return event
 
 
+def _allocation_replay(conn: sqlite3.Connection, *, idempotency_key: str, payload_hash: str) -> sqlite3.Row | None:
+    event = conn.execute(
+        "select * from point_allocation_events where engine_key = ? and idempotency_key = ?",
+        (ENGINE_KEY, idempotency_key),
+    ).fetchone()
+    if event is None:
+        return None
+    if event["payload_hash"] != payload_hash:
+        raise CollateralLedgerError("idempotency_conflict")
+    return event
+
+
 def _result_from_event(event: sqlite3.Row, *, replay: bool) -> dict[str, Any]:
     return {
         "event_id": int(event["id"]),
@@ -192,6 +204,134 @@ def _ensure_verified(conn: sqlite3.Connection, market_id: str) -> None:
     result = verify_collateral_invariants(conn, market_id=market_id)
     if result["integrity_status"] != "verified":
         raise CollateralLedgerError("invariant_violation")
+
+
+def _participant_id(value: Any) -> str:
+    if not isinstance(value, str):
+        raise CollateralLedgerError("invalid_participant_id")
+    raw = value.strip()
+    if not raw or normalize_demo_user_id(raw) != raw or raw == OPERATOR_TREASURY_OWNER_ID:
+        raise CollateralLedgerError("invalid_participant_id")
+    return raw
+
+
+def _participant_account_id(participant_id: str) -> str:
+    return f"{ENGINE_KEY}:participant:{participant_id}"
+
+
+def _allocation_result(event: sqlite3.Row, *, replay: bool) -> dict[str, Any]:
+    return {
+        "event_id": int(event["id"]),
+        "participant_id": event["participant_id"],
+        "destination_account_id": event["destination_account_id"],
+        "amount_micro": int(event["amount_micro"]),
+        "participant_available_micro": int(event["destination_after_micro"]),
+        "idempotent_replay": replay,
+    }
+
+
+def allocate_v2_points_to_participant(
+    conn: sqlite3.Connection,
+    *,
+    participant_id: str,
+    amount_micro: int,
+    idempotency_key: str,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    participant = _participant_id(participant_id)
+    amount = _positive_integer(amount_micro, "invalid_amount")
+    if amount > SQLITE_INTEGER_MAX:
+        raise CollateralLedgerError("integer_overflow")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise CollateralLedgerError("idempotency_conflict")
+    payload_hash = _payload_hash({
+        "operation": "participant_allocation", "participant_id": participant, "amount_micro": amount,
+    })
+
+    with _write_transaction(conn):
+        _require_engine(conn)
+        _ensure_verified(conn, market_id="")
+        replay = _allocation_replay(conn, idempotency_key=idempotency_key, payload_hash=payload_hash)
+        if replay is not None:
+            _ensure_verified(conn, market_id="")
+            return _allocation_result(replay, replay=True)
+        state = conn.execute(
+            "select bootstrap_completed from point_supply_state where engine_key = ?", (ENGINE_KEY,)
+        ).fetchone()
+        if state is None or not state["bootstrap_completed"]:
+            raise CollateralLedgerError("bootstrap_required")
+        participant_exists = conn.execute(
+            "select 1 from demo_users where user_id = ? union all "
+            "select 1 from user_accounts where participant_id = ? and account_status = 'active' limit 1",
+            (participant, participant),
+        ).fetchone()
+        if participant_exists is None:
+            raise CollateralLedgerError("participant_missing")
+        treasury_id = _treasury_account_id()
+        treasury = conn.execute("select * from point_accounts where account_id = ?", (treasury_id,)).fetchone()
+        if treasury is None:
+            raise CollateralLedgerError("bootstrap_required")
+        if treasury["engine_key"] != ENGINE_KEY or treasury["owner_type"] != "operator" or treasury["owner_id"] != OPERATOR_TREASURY_OWNER_ID:
+            raise CollateralLedgerError("invariant_violation")
+        now = _now()
+        destination_id = _participant_account_id(participant)
+        conn.execute(
+            "insert or ignore into point_accounts(account_id, engine_key, owner_type, owner_id, created_at, updated_at) "
+            "values (?, ?, 'participant', ?, ?, ?)",
+            (destination_id, ENGINE_KEY, participant, now, now),
+        )
+        destination = conn.execute("select * from point_accounts where account_id = ?", (destination_id,)).fetchone()
+        if destination is None or destination["engine_key"] != ENGINE_KEY or destination["owner_type"] != "participant" or destination["owner_id"] != participant:
+            raise CollateralLedgerError("account_owner_conflict")
+        source_before = int(treasury["available_micro"])
+        destination_before = int(destination["available_micro"])
+        if source_before < amount:
+            raise CollateralLedgerError("insufficient_points")
+        if destination_before > SQLITE_INTEGER_MAX - amount:
+            raise CollateralLedgerError("integer_overflow")
+        source_after, destination_after = source_before - amount, destination_before + amount
+        if conn.execute(
+            "update point_accounts set available_micro = ?, version = version + 1, updated_at = ? "
+            "where account_id = ? and available_micro = ?",
+            (source_after, now, treasury_id, source_before),
+        ).rowcount != 1:
+            raise CollateralLedgerError("invariant_violation")
+        if conn.execute(
+            "update point_accounts set available_micro = ?, version = version + 1, updated_at = ? "
+            "where account_id = ? and available_micro = ?",
+            (destination_after, now, destination_id, destination_before),
+        ).rowcount != 1:
+            raise CollateralLedgerError("invariant_violation")
+        cursor = conn.execute(
+            """insert into point_allocation_events(
+                engine_key, source_account_id, destination_account_id, participant_id, amount_micro,
+                source_before_micro, source_after_micro, destination_before_micro, destination_after_micro,
+                idempotency_key, request_id, payload_hash, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ENGINE_KEY, treasury_id, destination_id, participant, amount, source_before, source_after,
+             destination_before, destination_after, idempotency_key, request_id, payload_hash, now),
+        )
+        reference_id = str(cursor.lastrowid)
+        _record_ledger(
+            conn, account_id=treasury_id, market_id=None, entry_type="participant_allocation_debit",
+            amount_micro=-amount, account_before=source_before, account_after=source_after,
+            reserve_before=None, reserve_after=None, reference_type="point_allocation_event",
+            reference_id=reference_id, request_id=request_id, now=now,
+        )
+        _record_ledger(
+            conn, account_id=destination_id, market_id=None, entry_type="participant_allocation_credit",
+            amount_micro=amount, account_before=destination_before, account_after=destination_after,
+            reserve_before=None, reserve_after=None, reference_type="point_allocation_event",
+            reference_id=reference_id, request_id=request_id, now=now,
+        )
+        insert_audit_event(
+            conn, event_type="v2_participant_points_allocated", user_id=participant, request_id=request_id,
+            reference_type="point_allocation_event", reference_id=reference_id,
+            after={"engine_key": ENGINE_KEY, "amount_micro": amount},
+            note="v2 participant points allocated",
+        )
+        _ensure_verified(conn, market_id="")
+        return _allocation_result(conn.execute("select * from point_allocation_events where id = ?", (cursor.lastrowid,)).fetchone(), replay=False)
 
 
 def bootstrap_v2_point_supply(

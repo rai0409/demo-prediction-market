@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import sqlite3
 
 from app.config import Settings, get_settings
+from app.collateral_ledger import CollateralLedgerError, allocate_v2_points_to_participant
 from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, reverse_demo_ledger_entry, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response, public_market_view
@@ -144,6 +145,12 @@ class LedgerReversalRequest(BaseModel):
     ledger_entry_id: int
     reason: str
     idempotency_key: str | None = None
+
+
+class V2ParticipantAllocationRequest(BaseModel):
+    participant_id: str
+    amount_micro: int
+    idempotency_key: str
 
 
 class AuthRegisterRequest(BaseModel):
@@ -1429,6 +1436,43 @@ async def api_demo_balance(request: Request, conn: sqlite3.Connection = Depends(
 async def api_demo_wallet(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     user_id = current_demo_user_id(request, conn)
     return wallet_snapshot(conn, user_id)
+
+
+@app.post("/api/admin/v2/point-allocations", include_in_schema=False)
+async def api_admin_v2_point_allocations(
+    request: Request,
+    payload: V2ParticipantAllocationRequest,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    rate_error = rate_limit_post("admin", "v2-participant-point-allocation")
+    if rate_error:
+        return rate_error
+    try:
+        result = allocate_v2_points_to_participant(
+            conn,
+            participant_id=payload.participant_id,
+            amount_micro=payload.amount_micro,
+            idempotency_key=payload.idempotency_key,
+            request_id=request.headers.get("x-request-id"),
+        )
+    except CollateralLedgerError as exc:
+        status_code = 404 if exc.code == "participant_missing" else 400 if exc.code in {
+            "invalid_participant_id", "invalid_amount"
+        } else 409
+        return JSONResponse(status_code=status_code, content={"detail": exc.code})
+    return {
+        key: result[key]
+        for key in (
+            "event_id", "participant_id", "destination_account_id", "amount_micro",
+            "participant_available_micro", "idempotent_replay",
+        )
+    }
 
 
 @app.post("/api/demo/wallet/add-points")
