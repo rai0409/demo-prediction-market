@@ -4,6 +4,8 @@ from dataclasses import replace
 from pathlib import Path
 from html.parser import HTMLParser
 
+import pytest
+
 from app.storage import (
     INITIAL_DEMO_POINTS,
     get_balance,
@@ -17,7 +19,7 @@ from app.storage import (
     record_market_sync_run,
 )
 from app.storage import replace_markets
-from app.collateral_ledger import POINT_SCALE, bootstrap_v2_point_supply
+from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, create_collateral_market
 
 
 class TextOnlyParser(HTMLParser):
@@ -103,6 +105,36 @@ def test_admin_v2_participant_allocation_route_response_is_exact_public_boundary
         assert set(payload) == expected
         serialized = str(payload).lower()
         assert not any(value in serialized for value in ("treasury", "password", "token", "session", "cookie", "admin", "email", "header"))
+
+
+def test_v2_order_collateral_routes_enforce_csrf_ownership_admin_and_response_boundary(client, db_conn, sample_markets):
+    bootstrap_v2_point_supply(db_conn, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(db_conn, participant_id="participant-1", amount_micro=POINT_SCALE, idempotency_key="fund")
+    market_id = sample_markets[0]["market_id"]
+    create_collateral_market(db_conn, market_id=market_id)
+    payload = {"market_id": market_id, "side": "BUY", "outcome": "YES", "quantity": 1, "limit_price_micro": 1000, "idempotency_key": "reserve"}
+    assert client.post("/api/v2/order-collateral/reservations", json=payload, auto_security=False).status_code == 403
+    response = client.post("/api/v2/order-collateral/reservations", json=payload)
+    assert response.status_code == 200
+    expected = {"reservation_id", "market_id", "side", "outcome", "quantity", "limit_price_micro", "collateral_type", "collateral_amount", "status", "release_reason", "idempotent_replay"}
+    assert set(response.json()) == expected
+    reservation_id = response.json()["reservation_id"]
+    assert client.post(f"/api/admin/v2/order-collateral/reservations/{reservation_id}/reject", json={"idempotency_key": "reject"}, headers={"x-demo-admin-token": "wrong"}).status_code == 403
+    rejected = client.post(f"/api/admin/v2/order-collateral/reservations/{reservation_id}/reject", json={"idempotency_key": "reject"}, headers={"x-demo-admin-token": "test-admin"})
+    assert rejected.status_code == 200 and set(rejected.json()) == expected
+
+
+@pytest.mark.parametrize("field,value", [("quantity", "1"), ("quantity", 1.0), ("quantity", True), ("unexpected", "x")])
+def test_v2_order_collateral_route_uses_strict_body_validation(client, db_conn, sample_markets, field, value):
+    bootstrap_v2_point_supply(db_conn, amount_micro=2 * POINT_SCALE, idempotency_key="bootstrap-strict")
+    allocate_v2_points_to_participant(db_conn, participant_id="participant-1", amount_micro=POINT_SCALE, idempotency_key="fund-strict")
+    market_id = sample_markets[0]["market_id"]
+    create_collateral_market(db_conn, market_id=market_id)
+    payload = {"market_id": market_id, "side": "BUY", "outcome": "YES", "quantity": 1, "limit_price_micro": 1000, "idempotency_key": "strict"}
+    payload[field] = value
+    response = client.post("/api/v2/order-collateral/reservations", json=payload)
+    assert response.status_code == 422
+    assert db_conn.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 0
 
 
 def test_health(client):

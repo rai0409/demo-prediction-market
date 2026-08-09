@@ -13,11 +13,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, StrictInt
 import sqlite3
 
 from app.config import Settings, get_settings
-from app.collateral_ledger import CollateralLedgerError, allocate_v2_points_to_participant
+from app.collateral_ledger import CollateralLedgerError, allocate_v2_points_to_participant, cancel_v2_order_collateral, reject_v2_order_collateral, reserve_v2_order_collateral
 from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, reverse_demo_ledger_entry, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response, public_market_view
@@ -150,6 +150,21 @@ class LedgerReversalRequest(BaseModel):
 class V2ParticipantAllocationRequest(BaseModel):
     participant_id: str
     amount_micro: int
+    idempotency_key: str
+
+
+class V2OrderCollateralReservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    market_id: str
+    side: str
+    outcome: str
+    quantity: StrictInt
+    limit_price_micro: StrictInt
+    idempotency_key: str
+
+
+class V2OrderCollateralReleaseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     idempotency_key: str
 
 
@@ -1473,6 +1488,65 @@ async def api_admin_v2_point_allocations(
             "participant_available_micro", "idempotent_replay",
         )
     }
+
+
+def _order_collateral_error(exc: CollateralLedgerError) -> JSONResponse:
+    if exc.code in {"market_missing", "reservation_missing", "position_missing"}:
+        status = 404
+    elif exc.code == "reservation_not_owned":
+        status = 403
+    elif exc.code.startswith("invalid_"):
+        status = 400
+    else:
+        status = 409
+    return JSONResponse(status_code=status, content={"detail": exc.code})
+
+
+@app.post("/api/v2/order-collateral/reservations")
+async def api_v2_order_collateral_reserve(request: Request, payload: V2OrderCollateralReservationRequest, conn: sqlite3.Connection = Depends(get_conn)):
+    participant = current_demo_user_id(request, conn)
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    rate_error = rate_limit_post(participant, "v2-order-collateral-reserve")
+    if rate_error:
+        return rate_error
+    try:
+        return reserve_v2_order_collateral(conn, participant_id=participant, market_id=payload.market_id, side=payload.side, outcome=payload.outcome, quantity=payload.quantity, limit_price_micro=payload.limit_price_micro, idempotency_key=payload.idempotency_key, request_id=request.headers.get("x-request-id"))
+    except CollateralLedgerError as exc:
+        return _order_collateral_error(exc)
+
+
+@app.post("/api/v2/order-collateral/reservations/{reservation_id}/cancel")
+async def api_v2_order_collateral_cancel(reservation_id: int, request: Request, payload: V2OrderCollateralReleaseRequest, conn: sqlite3.Connection = Depends(get_conn)):
+    participant = current_demo_user_id(request, conn)
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    rate_error = rate_limit_post(participant, "v2-order-collateral-cancel")
+    if rate_error:
+        return rate_error
+    try:
+        return cancel_v2_order_collateral(conn, participant_id=participant, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=request.headers.get("x-request-id"))
+    except CollateralLedgerError as exc:
+        return _order_collateral_error(exc)
+
+
+@app.post("/api/admin/v2/order-collateral/reservations/{reservation_id}/reject", include_in_schema=False)
+async def api_admin_v2_order_collateral_reject(reservation_id: int, request: Request, payload: V2OrderCollateralReleaseRequest, conn: sqlite3.Connection = Depends(get_conn)):
+    csrf_error = require_csrf(request)
+    if csrf_error:
+        return csrf_error
+    admin_error = require_admin(request)
+    if admin_error:
+        return admin_error
+    rate_error = rate_limit_post("admin", "v2-order-collateral-reject")
+    if rate_error:
+        return rate_error
+    try:
+        return reject_v2_order_collateral(conn, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=request.headers.get("x-request-id"))
+    except CollateralLedgerError as exc:
+        return _order_collateral_error(exc)
 
 
 @app.post("/api/demo/wallet/add-points")

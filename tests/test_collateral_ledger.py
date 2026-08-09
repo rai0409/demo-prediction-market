@@ -9,9 +9,12 @@ from app.collateral_ledger import (
     SQLITE_INTEGER_MAX,
     CollateralLedgerError,
     allocate_v2_points_to_participant,
+    cancel_v2_order_collateral,
     bootstrap_v2_point_supply,
     create_collateral_market,
     merge_complete_sets,
+    reject_v2_order_collateral,
+    reserve_v2_order_collateral,
     split_complete_sets,
     verify_collateral_invariants,
 )
@@ -35,6 +38,14 @@ def _position(conn, account_id, market_id, outcome):
         (account_id, market_id, outcome),
     ).fetchone()
     return tuple(row) if row else (0, 0)
+
+
+def _funded_order_account(conn, sample_markets, amount=4 * POINT_SCALE):
+    bootstrap_v2_point_supply(conn, amount_micro=amount, idempotency_key="bootstrap-order")
+    allocation = allocate_v2_points_to_participant(conn, participant_id=DEMO_USER_ID, amount_micro=amount, idempotency_key="fund-order")
+    market_id = _market_id(sample_markets)
+    create_collateral_market(conn, market_id=market_id)
+    return allocation["destination_account_id"], market_id
 
 
 def test_bootstrap_credits_only_operator_treasury_and_conserves_points(db_conn):
@@ -426,6 +437,71 @@ def test_participant_allocation_account_can_split_and_merge_complete_sets(db_con
     assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
 
 
+def test_order_collateral_buy_reserve_cancel_and_reject_preserve_invariants(db_conn, sample_markets):
+    bootstrap_v2_point_supply(db_conn, amount_micro=4 * POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="fund")
+    market_id = _market_id(sample_markets)
+    create_collateral_market(db_conn, market_id=market_id)
+    reserved = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=2, limit_price_micro=1000, idempotency_key="reserve")
+    assert reserved["collateral_amount"] == 2000 and reserved["status"] == "reserved"
+    cancelled = cancel_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, reservation_id=reserved["reservation_id"], idempotency_key="cancel")
+    assert cancelled["status"] == "released" and cancelled["release_reason"] == "cancelled"
+    assert cancel_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, reservation_id=reserved["reservation_id"], idempotency_key="cancel")["idempotent_replay"]
+    second = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="NO", quantity=1, limit_price_micro=1000, idempotency_key="reserve-2")
+    assert reject_v2_order_collateral(db_conn, reservation_id=second["reservation_id"], idempotency_key="reject")["release_reason"] == "rejected"
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+    assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
+
+
+def test_order_collateral_sell_reserve_and_cancel(db_conn, sample_markets):
+    bootstrap_v2_point_supply(db_conn, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="fund")
+    market_id = _market_id(sample_markets)
+    create_collateral_market(db_conn, market_id=market_id)
+    split_complete_sets(db_conn, account_id=allocation["destination_account_id"], market_id=market_id, quantity=2, idempotency_key="split")
+    reserved = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="SELL", outcome="YES", quantity=2, limit_price_micro=POINT_SCALE, idempotency_key="sell")
+    assert _position(db_conn, allocation["destination_account_id"], market_id, "YES") == (0, 2)
+    cancel_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, reservation_id=reserved["reservation_id"], idempotency_key="cancel")
+    assert _position(db_conn, allocation["destination_account_id"], market_id, "YES") == (2, 0)
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+
+
+@pytest.mark.parametrize("side,outcome,quantity,price,code", [
+    ("buy", "YES", 1, 1, "invalid_side"), ("BUY", "yes", 1, 1, "invalid_outcome"),
+    ("BUY", "YES", 0, 1, "invalid_quantity"), ("BUY", "YES", 1, 0, "invalid_limit_price"),
+    ("BUY", "YES", True, 1, "invalid_quantity"), ("BUY", "YES", 1, "1", "invalid_limit_price"),
+])
+def test_order_collateral_rejects_strict_inputs(db_conn, sample_markets, side, outcome, quantity, price, code):
+    _funded_order_account(db_conn, sample_markets)
+    with pytest.raises(CollateralLedgerError, match=code):
+        reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=_market_id(sample_markets), side=side, outcome=outcome, quantity=quantity, limit_price_micro=price, idempotency_key="key")
+
+
+def test_order_collateral_reserve_replay_conflicts_and_tamper_detection(db_conn, sample_markets):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    first = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="same")
+    assert reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="same")["idempotent_replay"]
+    with pytest.raises(CollateralLedgerError, match="idempotency_conflict"):
+        reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="NO", quantity=1, limit_price_micro=100, idempotency_key="same")
+    db_conn.execute("update point_accounts set locked_micro = 0 where account_id = ?", (account_id,))
+    result = verify_collateral_invariants(db_conn)
+    assert "buy_locked_points_mismatch" in result["violation_codes"]
+    assert account_id not in str(result) and DEMO_USER_ID not in str(result)
+    assert first["reservation_id"] == 1
+
+
+def test_order_collateral_release_rolls_back_on_event_failure(db_conn, sample_markets):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="reserve")
+    db_conn.execute("create trigger fail_release_event before insert on order_collateral_events when new.event_type = 'release' begin select raise(abort, 'release event failure'); end")
+    with pytest.raises(sqlite3.IntegrityError, match="release event failure"):
+        cancel_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, reservation_id=reservation["reservation_id"], idempotency_key="cancel")
+    row = db_conn.execute("select status, release_reason, released_at from order_collateral_reservations where id = ?", (reservation["reservation_id"],)).fetchone()
+    assert tuple(row) == ("reserved", None, None)
+    assert db_conn.execute("select locked_micro from point_accounts where account_id = ?", (account_id,)).fetchone()[0] == 100
+    assert db_conn.execute("select count(*) from order_collateral_events where event_type = 'release'").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize(
     ("tamper_sql", "expected_code"),
     [
@@ -482,3 +558,480 @@ def test_concurrent_split_cannot_overspend(tmp_path, sample_markets):
     assert verify_collateral_invariants(verify_conn, market_id=market_id)["integrity_status"] == "verified"
     assert verify_conn.execute("select reserve_micro from market_reserves where market_id = ?", (market_id,)).fetchone()[0] == POINT_SCALE
     verify_conn.close()
+
+
+def test_concurrent_order_collateral_buy_overspend_and_cancel_reject_release_once(tmp_path, sample_markets):
+    path = tmp_path / "order-collateral-buy.db"
+    setup = connect(str(path)); init_db(setup); store_markets(setup, sample_markets)
+    bootstrap_v2_point_supply(setup, amount_micro=POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(setup, participant_id=DEMO_USER_ID, amount_micro=POINT_SCALE, idempotency_key="fund")
+    market_id = _market_id(sample_markets); create_collateral_market(setup, market_id=market_id); setup.close()
+
+    def reserve(key):
+        conn = connect(str(path))
+        try:
+            return reserve_v2_order_collateral(conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=POINT_SCALE, idempotency_key=key)["reservation_id"]
+        except CollateralLedgerError as exc:
+            return exc.code
+        finally: conn.close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(reserve, ("buy-a", "buy-b")))
+    assert sum(isinstance(value, int) for value in results) == 1
+    assert next(value for value in results if not isinstance(value, int)) in {"insufficient_points", "concurrent_update"}
+    reservation_id = next(value for value in results if isinstance(value, int))
+
+    def release(kind):
+        conn = connect(str(path))
+        try:
+            return (cancel_v2_order_collateral if kind == "cancel" else reject_v2_order_collateral)(conn, **({"participant_id": DEMO_USER_ID} if kind == "cancel" else {}), reservation_id=reservation_id, idempotency_key=kind)["release_reason"]
+        except CollateralLedgerError as exc:
+            return exc.code
+        finally: conn.close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        releases = list(pool.map(release, ("cancel", "reject")))
+    assert sum(value in {"cancelled", "rejected"} for value in releases) == 1
+    assert next(value for value in releases if value not in {"cancelled", "rejected"}) in {"reservation_not_reserved", "concurrent_update"}
+    verify = connect(str(path))
+    assert tuple(verify.execute("select available_micro, locked_micro from point_accounts where account_id = ?", (allocation["destination_account_id"],)).fetchone()) == (POINT_SCALE, 0)
+    assert verify.execute("select count(*) from order_collateral_events where event_type = 'release'").fetchone()[0] == 1
+    assert verify.execute("select count(*) from order_collateral_ledger_entries where event_id in (select id from order_collateral_events where event_type = 'release')").fetchone()[0] == 2
+    assert verify_collateral_invariants(verify)["integrity_status"] == "verified"
+    assert verify_audit_chain(verify)["integrity_status"] == "verified"
+    verify.close()
+
+
+def test_concurrent_order_collateral_sell_oversell_keeps_exactly_one_lock(tmp_path, sample_markets):
+    path = tmp_path / "order-collateral-sell.db"
+    setup = connect(str(path)); init_db(setup); store_markets(setup, sample_markets)
+    bootstrap_v2_point_supply(setup, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap")
+    allocation = allocate_v2_points_to_participant(setup, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="fund")
+    market_id = _market_id(sample_markets); create_collateral_market(setup, market_id=market_id)
+    split_complete_sets(setup, account_id=allocation["destination_account_id"], market_id=market_id, quantity=2, idempotency_key="split")
+    setup.close()
+    def reserve(key):
+        conn = connect(str(path))
+        try:
+            return reserve_v2_order_collateral(conn, participant_id=DEMO_USER_ID, market_id=market_id, side="SELL", outcome="YES", quantity=2, limit_price_micro=POINT_SCALE, idempotency_key=key)["reservation_id"]
+        except CollateralLedgerError as exc:
+            return exc.code
+        finally: conn.close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(reserve, ("sell-a", "sell-b")))
+    assert sum(isinstance(value, int) for value in results) == 1
+    assert next(value for value in results if not isinstance(value, int)) in {"insufficient_shares", "concurrent_update"}
+    verify = connect(str(path))
+    assert _position(verify, allocation["destination_account_id"], market_id, "YES") == (0, 2)
+    assert verify.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 1
+    assert verify.execute("select count(*) from order_collateral_events where event_type = 'reserve'").fetchone()[0] == 1
+    assert verify.execute("select count(*) from order_collateral_ledger_entries").fetchone()[0] == 2
+    assert verify.execute("select count(*) from demo_audit_events where event_type = 'v2_order_collateral_reserved'").fetchone()[0] == 1
+    assert verify_collateral_invariants(verify)["integrity_status"] == "verified"
+    assert verify_audit_chain(verify)["integrity_status"] == "verified"
+    verify.close()
+
+
+def _reserved_order_for_rollback(conn, sample_markets, side):
+    account_id, market_id = _funded_order_account(conn, sample_markets)
+    if side == "SELL":
+        split_complete_sets(conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="rollback-split")
+    reservation = reserve_v2_order_collateral(conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES", quantity=1, limit_price_micro=100, idempotency_key=f"rollback-{side}")
+    return account_id, market_id, reservation
+
+
+@pytest.mark.parametrize("side,operation", [("BUY", "cancel"), ("SELL", "cancel"), ("BUY", "reject"), ("SELL", "reject")])
+@pytest.mark.parametrize("stage", ["resource_cas", "reservation_cas", "event_insert", "first_ledger", "second_ledger", "audit", "post_invariant"])
+def test_order_collateral_release_write_stages_roll_back_exactly(db_conn, sample_markets, monkeypatch, side, operation, stage):
+    account_id, market_id, reservation = _reserved_order_for_rollback(db_conn, sample_markets, side)
+    before_reservation = tuple(db_conn.execute("select status, release_reason, released_at, version from order_collateral_reservations where id=?", (reservation["reservation_id"],)).fetchone())
+    if side == "BUY":
+        before_resource = tuple(db_conn.execute("select available_micro, locked_micro from point_accounts where account_id=?", (account_id,)).fetchone())
+    else:
+        before_resource = _position(db_conn, account_id, market_id, "YES")
+    before_counts = tuple(db_conn.execute("select (select count(*) from order_collateral_events), (select count(*) from order_collateral_ledger_entries), (select count(*) from demo_audit_events)").fetchone())
+    if stage == "event_insert":
+        db_conn.execute("create trigger fail_release_event_stage before insert on order_collateral_events when new.event_type='release' begin select raise(abort, 'event stage'); end")
+        expected = sqlite3.IntegrityError
+    elif stage in {"first_ledger", "second_ledger"}:
+        target = "available" if stage == "first_ledger" else "locked"
+        db_conn.execute(f"create trigger fail_{target}_ledger_stage before insert on order_collateral_ledger_entries when new.balance_bucket='{target}' begin select raise(abort, '{target} stage'); end")
+        expected = sqlite3.IntegrityError
+    elif stage == "audit":
+        monkeypatch.setattr("app.collateral_ledger.insert_audit_event", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("audit stage")))
+        expected = RuntimeError
+    elif stage == "post_invariant":
+        monkeypatch.setattr(
+            "app.collateral_ledger.verify_collateral_invariants",
+            lambda *a, **k: {"integrity_status": "failed"},
+        )
+        expected = CollateralLedgerError
+    elif stage == "resource_cas":
+        table = "point_accounts" if side == "BUY" else "outcome_positions"
+        db_conn.execute(f"create trigger fail_{stage}_{side} before update on {table} begin select raise(abort, '{stage}'); end")
+        expected = sqlite3.IntegrityError
+    else:
+        db_conn.execute("create trigger fail_reservation_release_cas before update on order_collateral_reservations begin select raise(abort, 'reservation cas'); end")
+        expected = sqlite3.IntegrityError
+    release = cancel_v2_order_collateral if operation == "cancel" else reject_v2_order_collateral
+    kwargs = {"reservation_id": reservation["reservation_id"], "idempotency_key": f"{operation}-{stage}"}
+    if operation == "cancel": kwargs["participant_id"] = DEMO_USER_ID
+    with pytest.raises(expected):
+        release(db_conn, **kwargs)
+    assert tuple(db_conn.execute("select status, release_reason, released_at, version from order_collateral_reservations where id=?", (reservation["reservation_id"],)).fetchone()) == before_reservation
+    current = tuple(db_conn.execute("select available_micro, locked_micro from point_accounts where account_id=?", (account_id,)).fetchone()) if side == "BUY" else _position(db_conn, account_id, market_id, "YES")
+    assert current == before_resource
+    assert tuple(db_conn.execute("select (select count(*) from order_collateral_events), (select count(*) from order_collateral_ledger_entries), (select count(*) from demo_audit_events)").fetchone()) == before_counts
+    assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"], ids=["buy", "sell"])
+@pytest.mark.parametrize("stage", ["resource_cas", "reservation_insert", "event_insert", "available_ledger_insert", "locked_ledger_insert", "audit_insert", "post_invariant"], ids=["resource-cas", "reservation-insert", "event-insert", "available-ledger-insert", "locked-ledger-insert", "audit-insert", "post-invariant"])
+def test_order_collateral_reserve_write_stages_roll_back_exactly(db_conn, sample_markets, monkeypatch, side, stage):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    if side == "SELL":
+        split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="reserve-rollback-split")
+        before_resource = _position(db_conn, account_id, market_id, "YES")
+        resource_table = "outcome_positions"
+    else:
+        before_resource = tuple(db_conn.execute("select available_micro, locked_micro from point_accounts where account_id=?", (account_id,)).fetchone())
+        resource_table = "point_accounts"
+    before_counts = tuple(db_conn.execute(
+        "select (select count(*) from order_collateral_reservations), (select count(*) from order_collateral_events), "
+        "(select count(*) from order_collateral_ledger_entries), (select count(*) from demo_audit_events)"
+    ).fetchone())
+    if stage == "resource_cas":
+        db_conn.execute(f"create trigger fail_reserve_resource_{side} before update on {resource_table} begin select raise(abort, 'resource cas'); end")
+        expected = sqlite3.IntegrityError
+    elif stage == "reservation_insert":
+        db_conn.execute("create trigger fail_reserve_reservation before insert on order_collateral_reservations begin select raise(abort, 'reservation insert'); end")
+        expected = sqlite3.IntegrityError
+    elif stage == "event_insert":
+        db_conn.execute("create trigger fail_reserve_event before insert on order_collateral_events when new.event_type='reserve' begin select raise(abort, 'event insert'); end")
+        expected = sqlite3.IntegrityError
+    elif stage in {"available_ledger_insert", "locked_ledger_insert"}:
+        bucket = "available" if stage == "available_ledger_insert" else "locked"
+        db_conn.execute(f"create trigger fail_reserve_{bucket}_ledger before insert on order_collateral_ledger_entries when new.balance_bucket='{bucket}' begin select raise(abort, '{bucket} ledger'); end")
+        expected = sqlite3.IntegrityError
+    elif stage == "audit_insert":
+        monkeypatch.setattr("app.collateral_ledger.insert_audit_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit insert")))
+        expected = RuntimeError
+    else:
+        # reserve_v2_order_collateral verifies once before mutation and once after all writes.
+        outcomes = iter(({"integrity_status": "verified"}, {"integrity_status": "failed"}))
+        monkeypatch.setattr("app.collateral_ledger.verify_collateral_invariants", lambda *args, **kwargs: next(outcomes))
+        expected = CollateralLedgerError
+    with pytest.raises(expected):
+        reserve_v2_order_collateral(
+            db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES",
+            quantity=1, limit_price_micro=100, idempotency_key=f"reserve-{side}-{stage}",
+        )
+    current_resource = _position(db_conn, account_id, market_id, "YES") if side == "SELL" else tuple(db_conn.execute("select available_micro, locked_micro from point_accounts where account_id=?", (account_id,)).fetchone())
+    assert current_resource == before_resource
+    assert tuple(db_conn.execute(
+        "select (select count(*) from order_collateral_reservations), (select count(*) from order_collateral_events), "
+        "(select count(*) from order_collateral_ledger_entries), (select count(*) from demo_audit_events)"
+    ).fetchone()) == before_counts
+    assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"], ids=["buy", "sell"])
+@pytest.mark.parametrize("tamper", ["missing_reserve_event", "unexpected_release_event"], ids=["missing-reserve-event", "unexpected-release-event"])
+def test_order_collateral_reservation_event_tamper_is_detected_without_identifier_leak(db_conn, sample_markets, side, tamper):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    if side == "SELL":
+        split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="tamper-split")
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES", quantity=1, limit_price_micro=100, idempotency_key=f"tamper-{side}")
+    if tamper == "missing_reserve_event":
+        db_conn.execute("delete from order_collateral_events where reservation_id=?", (reservation["reservation_id"],))
+    else:
+        event = db_conn.execute("select * from order_collateral_events where reservation_id=?", (reservation["reservation_id"],)).fetchone()
+        db_conn.execute("insert into order_collateral_events(engine_key,reservation_id,account_id,event_type,release_reason,asset_type,asset_amount,available_before,available_after,locked_before,locked_after,idempotency_key,payload_hash,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (ENGINE_KEY,reservation["reservation_id"],account_id,"release","cancelled",event["asset_type"],event["asset_amount"],0,event["asset_amount"],event["asset_amount"],0,"extra", "hash", "x"))
+    result = verify_collateral_invariants(db_conn)
+    assert result["integrity_status"] == "failed"
+    assert "reservation_event_state_mismatch" in result["violation_codes"]
+    assert not any(value in str(result).lower() for value in (DEMO_USER_ID, account_id.lower(), "email", "authorization", "cookie", "token", "admin_token"))
+
+
+@pytest.mark.parametrize("side,operation,bucket", [("BUY", "reserve", "available"), ("BUY", "reserve", "locked"), ("SELL", "reserve", "available"), ("SELL", "reserve", "locked"), ("BUY", "cancel", "available"), ("BUY", "reject", "locked"), ("SELL", "cancel", "available"), ("SELL", "reject", "locked")], ids=["buy-reserve-available", "buy-reserve-locked", "sell-reserve-available", "sell-reserve-locked", "buy-cancel-available", "buy-reject-locked", "sell-cancel-available", "sell-reject-locked"])
+def test_order_collateral_ledger_row_tamper_is_detected(db_conn, sample_markets, side, operation, bucket):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    if side == "SELL":
+        split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="ledger-split")
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="ledger-reserve")
+    if operation != "reserve":
+        (cancel_v2_order_collateral if operation == "cancel" else reject_v2_order_collateral)(db_conn, **({"participant_id": DEMO_USER_ID} if operation == "cancel" else {}), reservation_id=reservation["reservation_id"], idempotency_key=f"ledger-{operation}")
+    event_id = db_conn.execute("select id from order_collateral_events where reservation_id=? and event_type=?", (reservation["reservation_id"], "reserve" if operation == "reserve" else "release")).fetchone()[0]
+    db_conn.execute("delete from order_collateral_ledger_entries where event_id=? and balance_bucket=?", (event_id, bucket))
+    result = verify_collateral_invariants(db_conn)
+    assert result["integrity_status"] == "failed"
+    assert "order_collateral_ledger_mismatch" in result["violation_codes"]
+    assert not any(value in str(result).lower() for value in (DEMO_USER_ID, account_id.lower(), "email", "authorization", "cookie", "token", "admin_token"))
+
+
+@pytest.mark.parametrize("side,operation,removed_event", [("BUY", "cancel", "reserve"), ("SELL", "cancel", "release"), ("BUY", "reject", "release"), ("SELL", "reject", "reserve")], ids=["buy-cancel-missing-reserve", "sell-cancel-missing-release", "buy-reject-missing-release", "sell-reject-missing-reserve"])
+def test_released_order_collateral_event_state_tamper_is_detected(db_conn, sample_markets, side, operation, removed_event):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    if side == "SELL":
+        split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="released-tamper-split")
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="released-tamper-reserve")
+    (cancel_v2_order_collateral if operation == "cancel" else reject_v2_order_collateral)(db_conn, **({"participant_id": DEMO_USER_ID} if operation == "cancel" else {}), reservation_id=reservation["reservation_id"], idempotency_key="released-tamper-release")
+    db_conn.execute("delete from order_collateral_events where reservation_id=? and event_type=?", (reservation["reservation_id"], removed_event))
+    result = verify_collateral_invariants(db_conn)
+    assert result["integrity_status"] == "failed"
+    assert "reservation_event_state_mismatch" in result["violation_codes"]
+    assert not any(value in str(result).lower() for value in (DEMO_USER_ID, account_id.lower(), "email", "authorization", "cookie", "token", "admin_token"))
+
+
+def test_released_order_collateral_extra_release_event_is_detected(db_conn, sample_markets):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="extra-release-reserve")
+    cancel_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, reservation_id=reservation["reservation_id"], idempotency_key="extra-release-cancel")
+    release = db_conn.execute("select * from order_collateral_events where reservation_id=? and event_type='release'", (reservation["reservation_id"],)).fetchone()
+    db_conn.execute(
+        """insert into order_collateral_events(
+            engine_key,reservation_id,account_id,event_type,release_reason,asset_type,asset_amount,
+            available_before,available_after,locked_before,locked_after,idempotency_key,payload_hash,created_at
+        ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (ENGINE_KEY, reservation["reservation_id"], account_id, "release", "cancelled", release["asset_type"],
+         release["asset_amount"], release["available_before"], release["available_after"], release["locked_before"],
+         release["locked_after"], "extra-release-event", "extra-release-hash", "x"),
+    )
+    result = verify_collateral_invariants(db_conn)
+    assert result["integrity_status"] == "failed"
+    assert "reservation_event_state_mismatch" in result["violation_codes"]
+    assert not any(value in str(result).lower() for value in (DEMO_USER_ID, account_id.lower(), "email", "authorization", "cookie", "token", "admin_token"))
+
+
+def test_order_collateral_orphan_point_and_share_locks_are_detected(db_conn, sample_markets):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    db_conn.execute("update point_accounts set available_micro = available_micro - 1, locked_micro = locked_micro + 1 where account_id=?", (account_id,))
+    point_result = verify_collateral_invariants(db_conn)
+    assert point_result["integrity_status"] == "failed"
+    assert "buy_locked_points_mismatch" in point_result["violation_codes"]
+    db_conn.execute("update point_accounts set available_micro = available_micro + 1, locked_micro = locked_micro - 1 where account_id=?", (account_id,))
+    split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="orphan-split")
+    db_conn.execute("update outcome_positions set available_shares = available_shares - 1, locked_shares = locked_shares + 1 where account_id=? and market_id=? and outcome='YES'", (account_id, market_id))
+    share_result = verify_collateral_invariants(db_conn)
+    assert share_result["integrity_status"] == "failed"
+    assert "sell_locked_shares_mismatch" in share_result["violation_codes"]
+    for result in (point_result, share_result):
+        assert not any(value in str(result).lower() for value in (DEMO_USER_ID, account_id.lower(), "email", "authorization", "cookie", "token", "admin_token"))
+
+
+@pytest.mark.parametrize("sql,params,code", [
+    ("update point_accounts set locked_micro = 0 where account_id = ?", lambda r, a: (a,), "buy_locked_points_mismatch"),
+    ("update point_accounts set locked_micro = locked_micro + 1 where account_id = ?", lambda r, a: (a,), "buy_locked_points_mismatch"),
+])
+def test_order_collateral_buy_tamper_variants_are_detected(db_conn, sample_markets, sql, params, code):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="reserve")
+    db_conn.execute(sql, params(reservation, account_id))
+    result = verify_collateral_invariants(db_conn)
+    assert result["violation_codes"] == [code] or code in result["violation_codes"]
+    assert not any(secret in str(result).lower() for secret in (DEMO_USER_ID, account_id.lower(), "email", "token", "cookie", "authorization"))
+
+
+@pytest.mark.parametrize("sql,params", [
+    ("update outcome_positions set locked_shares = 0 where account_id = ? and market_id = ? and outcome = 'YES'", lambda r, a, m: (a, m)),
+    ("update outcome_positions set locked_shares = locked_shares + 1 where account_id = ? and market_id = ? and outcome = 'YES'", lambda r, a, m: (a, m)),
+])
+def test_order_collateral_sell_tamper_variants_are_detected(db_conn, sample_markets, sql, params):
+    account_id, market_id = _funded_order_account(db_conn, sample_markets)
+    split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="split")
+    reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="SELL", outcome="YES", quantity=1, limit_price_micro=POINT_SCALE, idempotency_key="reserve")
+    db_conn.execute(sql, params(reservation, account_id, market_id))
+    assert "sell_locked_shares_mismatch" in verify_collateral_invariants(db_conn)["violation_codes"]
+
+
+def _order_ledger_row_for_semantic_tamper(conn, sample_markets, *, side, operation, bucket):
+    """Create one healthy order-event ledger row through the production API."""
+    account_id, market_id = _funded_order_account(conn, sample_markets)
+    if side == "SELL":
+        split_complete_sets(conn, account_id=account_id, market_id=market_id, quantity=2, idempotency_key="semantic-tamper-split")
+    reservation = reserve_v2_order_collateral(
+        conn,
+        participant_id=DEMO_USER_ID,
+        market_id=market_id,
+        side=side,
+        outcome="YES",
+        quantity=1,
+        limit_price_micro=100,
+        idempotency_key="semantic-tamper-reserve",
+    )
+    if operation != "reserve":
+        release = cancel_v2_order_collateral if operation == "cancel" else reject_v2_order_collateral
+        kwargs = {"reservation_id": reservation["reservation_id"], "idempotency_key": f"semantic-tamper-{operation}"}
+        if operation == "cancel":
+            kwargs["participant_id"] = DEMO_USER_ID
+        release(conn, **kwargs)
+    event_type = "reserve" if operation == "reserve" else "release"
+    row = conn.execute(
+        """select l.* from order_collateral_ledger_entries l
+           join order_collateral_events e on e.id = l.event_id
+           where e.reservation_id = ? and e.event_type = ? and l.balance_bucket = ?""",
+        (reservation["reservation_id"], event_type, bucket),
+    ).fetchone()
+    assert row is not None
+    return account_id, market_id, reservation, row
+
+
+def _assert_order_ledger_semantic_tamper_detected(conn, account_id):
+    result = verify_collateral_invariants(conn)
+    assert result["integrity_status"] == "failed"
+    assert "order_collateral_ledger_mismatch" in result["violation_codes"]
+    serialized = str(result).lower()
+    assert not any(value in serialized for value in (
+        DEMO_USER_ID,
+        account_id.lower(),
+        "participant_id",
+        "account_id",
+        "email",
+        "authorization",
+        "cookie",
+        "token",
+        "admin_token",
+    ))
+
+
+@pytest.mark.parametrize(
+    "side,operation,bucket",
+    [
+        ("BUY", "reserve", "available"),
+        ("SELL", "reserve", "locked"),
+        ("BUY", "cancel", "locked"),
+        ("SELL", "reject", "available"),
+    ],
+    ids=[
+        "buy-reserve-delta-available-debit",
+        "sell-reserve-delta-locked-credit",
+        "buy-cancel-delta-locked-debit",
+        "sell-reject-delta-available-credit",
+    ],
+)
+def test_order_collateral_ledger_delta_semantic_tamper_is_detected(
+    db_conn, sample_markets, side, operation, bucket
+):
+    account_id, _, _, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side=side, operation=operation, bucket=bucket
+    )
+    # The arithmetic CHECK requires balance_after to follow the changed delta.
+    db_conn.execute(
+        """update order_collateral_ledger_entries
+           set delta = ?, balance_after = ? where id = ?""",
+        (row["delta"] + 1, row["balance_after"] + 1, row["id"]),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)
+
+
+@pytest.mark.parametrize(
+    "side,operation,bucket",
+    [("SELL", "cancel", "available")],
+    ids=["sell-cancel-balance-before-available-credit"],
+)
+def test_order_collateral_ledger_balance_before_semantic_tamper_is_detected(
+    db_conn, sample_markets, side, operation, bucket
+):
+    account_id, _, _, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side=side, operation=operation, bucket=bucket
+    )
+    # balance_after is the minimum companion change required by the arithmetic CHECK.
+    db_conn.execute(
+        """update order_collateral_ledger_entries
+           set balance_before = ?, balance_after = ? where id = ?""",
+        (row["balance_before"] + 1, row["balance_after"] + 1, row["id"]),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)
+
+
+@pytest.mark.parametrize(
+    "side,operation,bucket",
+    [("BUY", "reject", "locked")],
+    ids=["buy-reject-balance-after-locked-debit"],
+)
+def test_order_collateral_ledger_balance_after_semantic_tamper_is_detected(
+    db_conn, sample_markets, side, operation, bucket
+):
+    account_id, _, _, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side=side, operation=operation, bucket=bucket
+    )
+    # balance_before is the minimum companion change required by the arithmetic CHECK.
+    db_conn.execute(
+        """update order_collateral_ledger_entries
+           set balance_before = ?, balance_after = ? where id = ?""",
+        (row["balance_before"] + 1, row["balance_after"] + 1, row["id"]),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)
+
+
+@pytest.mark.parametrize(
+    "side,operation,bucket,replacement_asset",
+    [("BUY", "reserve", "available", "share"), ("SELL", "cancel", "locked", "point")],
+    ids=["buy-reserve-asset-type-point-to-share", "sell-cancel-asset-type-share-to-point"],
+)
+def test_order_collateral_ledger_asset_type_semantic_tamper_is_detected(
+    db_conn, sample_markets, side, operation, bucket, replacement_asset
+):
+    account_id, _, _, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side=side, operation=operation, bucket=bucket
+    )
+    db_conn.execute(
+        "update order_collateral_ledger_entries set asset_type = ? where id = ?",
+        (replacement_asset, row["id"]),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)
+
+
+def test_order_collateral_ledger_reservation_linkage_semantic_tamper_is_detected(db_conn, sample_markets):
+    account_id, market_id, reservation, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side="BUY", operation="reserve", bucket="available"
+    )
+    alternate = reserve_v2_order_collateral(
+        db_conn,
+        participant_id=DEMO_USER_ID,
+        market_id=market_id,
+        side="BUY",
+        outcome="NO",
+        quantity=1,
+        limit_price_micro=100,
+        idempotency_key="semantic-tamper-alternate-reservation",
+    )
+    assert alternate["reservation_id"] != reservation["reservation_id"]
+    db_conn.execute(
+        "update order_collateral_ledger_entries set reservation_id = ? where id = ?",
+        (alternate["reservation_id"], row["id"]),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)
+
+
+def test_order_collateral_ledger_market_linkage_semantic_tamper_is_detected(db_conn, sample_markets):
+    account_id, market_id, _, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side="SELL", operation="reserve", bucket="available"
+    )
+    source_market = next(market for market in sample_markets if market["market_id"] == market_id)
+    alternate_market = {**source_market, "market_id": f"{market_id}-ledger-tamper"}
+    store_markets(db_conn, [alternate_market])
+    create_collateral_market(db_conn, market_id=alternate_market["market_id"])
+    db_conn.execute(
+        "update order_collateral_ledger_entries set market_id = ? where id = ?",
+        (alternate_market["market_id"], row["id"]),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)
+
+
+@pytest.mark.parametrize(
+    "side,operation,bucket",
+    [("BUY", "reject", "available")],
+    ids=["buy-reject-outcome-yes-to-no"],
+)
+def test_order_collateral_ledger_outcome_linkage_semantic_tamper_is_detected(
+    db_conn, sample_markets, side, operation, bucket
+):
+    account_id, _, _, row = _order_ledger_row_for_semantic_tamper(
+        db_conn, sample_markets, side=side, operation=operation, bucket=bucket
+    )
+    db_conn.execute(
+        "update order_collateral_ledger_entries set outcome = 'NO' where id = ?",
+        (row["id"],),
+    )
+    _assert_order_ledger_semantic_tamper_detected(db_conn, account_id)

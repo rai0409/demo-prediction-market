@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from app.database_backup import BackupError, create_backup, metadata_path, restore_backup
-from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, create_collateral_market, split_complete_sets, verify_collateral_invariants
+from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, cancel_v2_order_collateral, create_collateral_market, reserve_v2_order_collateral, split_complete_sets, verify_collateral_invariants
 from app.storage import DEMO_USER_ID, connect, get_market, init_db, store_markets, verify_audit_chain
 
 
@@ -97,4 +97,32 @@ def test_backup_restore_preserves_v2_collateral_ledger(tmp_path, sample_markets)
     assert restored_conn.execute("select available_micro from point_accounts where account_id = ?", (allocation["destination_account_id"],)).fetchone()[0] == POINT_SCALE
     assert verify_audit_chain(restored_conn)["integrity_status"] == "verified"
     assert restored_conn.execute("select count(*) from demo_users").fetchone()[0] == 1
+    restored_conn.close()
+
+
+def test_backup_restore_preserves_v2_order_collateral_rows_and_locks(tmp_path, sample_markets):
+    source, backup, restored = tmp_path / "source.db", tmp_path / "backup.sqlite", tmp_path / "restored.db"
+    make_db(source, sample_markets)
+    conn = connect(str(source))
+    bootstrap_v2_point_supply(conn, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap-order")
+    allocation = allocate_v2_points_to_participant(conn, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="fund-order")
+    market_id = sample_markets[0]["market_id"]
+    create_collateral_market(conn, market_id=market_id)
+    reserved = reserve_v2_order_collateral(conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=1000, idempotency_key="reserve-order")
+    released = reserve_v2_order_collateral(conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="NO", quantity=1, limit_price_micro=1000, idempotency_key="release-order")
+    cancel_v2_order_collateral(conn, participant_id=DEMO_USER_ID, reservation_id=released["reservation_id"], idempotency_key="cancel-order")
+    expected_reservations = [tuple(row) for row in conn.execute("select id, status, release_reason, created_at, released_at from order_collateral_reservations order by id")]
+    expected_events = [tuple(row) for row in conn.execute("select reservation_id, event_type, asset_amount from order_collateral_events order by id")]
+    expected_balance = tuple(conn.execute("select available_micro, locked_micro from point_accounts where account_id = ?", (allocation["destination_account_id"],)).fetchone())
+    conn.close()
+    create_backup(source, backup)
+    restore_backup(backup, restored, production_db=source)
+    restored_conn = connect(str(restored))
+    assert [tuple(row) for row in restored_conn.execute("select id, status, release_reason, created_at, released_at from order_collateral_reservations order by id")] == expected_reservations
+    assert [tuple(row) for row in restored_conn.execute("select reservation_id, event_type, asset_amount from order_collateral_events order by id")] == expected_events
+    assert tuple(restored_conn.execute("select available_micro, locked_micro from point_accounts where account_id = ?", (allocation["destination_account_id"],)).fetchone()) == expected_balance
+    assert verify_audit_chain(restored_conn)["integrity_status"] == "verified"
+    assert verify_collateral_invariants(restored_conn)["integrity_status"] == "verified"
+    assert restored_conn.execute("pragma foreign_key_check").fetchone() is None
+    assert reserved["status"] == "reserved"
     restored_conn.close()

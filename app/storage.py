@@ -389,6 +389,50 @@ def init_db(conn: sqlite3.Connection) -> None:
             foreign key(source_account_id) references point_accounts(account_id),
             foreign key(destination_account_id) references point_accounts(account_id)
         );
+        create table if not exists order_collateral_reservations (
+            id integer primary key autoincrement, engine_key text not null, account_id text not null,
+            participant_id text not null, market_id text not null, side text not null check(side in ('BUY','SELL')),
+            outcome text not null check(outcome in ('YES','NO')), quantity integer not null check(quantity > 0),
+            limit_price_micro integer not null check(limit_price_micro between 1 and 10000),
+            collateral_type text not null check(collateral_type in ('point','share')),
+            collateral_amount integer not null check(collateral_amount > 0),
+            status text not null check(status in ('reserved','released')),
+            release_reason text check(release_reason is null or release_reason in ('cancelled','rejected')),
+            version integer not null default 0 check(version >= 0), created_at text not null, updated_at text not null, released_at text,
+            check((side = 'BUY' and collateral_type = 'point' and collateral_amount = quantity * limit_price_micro) or (side = 'SELL' and collateral_type = 'share' and collateral_amount = quantity)),
+            check((status = 'reserved' and release_reason is null and released_at is null) or (status = 'released' and release_reason is not null and released_at is not null)),
+            foreign key(engine_key) references prediction_engines(engine_key), foreign key(account_id) references point_accounts(account_id), foreign key(market_id) references collateral_markets(market_id)
+        );
+        create table if not exists order_collateral_events (
+            id integer primary key autoincrement, engine_key text not null, reservation_id integer not null, account_id text not null,
+            event_type text not null check(event_type in ('reserve','release')), release_reason text check(release_reason is null or release_reason in ('cancelled','rejected')),
+            asset_type text not null check(asset_type in ('point','share')), asset_amount integer not null check(asset_amount > 0),
+            available_before integer not null check(available_before >= 0), available_after integer not null check(available_after >= 0),
+            locked_before integer not null check(locked_before >= 0), locked_after integer not null check(locked_after >= 0),
+            idempotency_key text not null, request_id text, payload_hash text not null, created_at text not null,
+            check((event_type = 'reserve' and release_reason is null and available_after = available_before - asset_amount and locked_after = locked_before + asset_amount) or (event_type = 'release' and release_reason is not null and available_after = available_before + asset_amount and locked_after = locked_before - asset_amount)),
+            unique(engine_key, account_id, idempotency_key), foreign key(engine_key) references prediction_engines(engine_key), foreign key(reservation_id) references order_collateral_reservations(id), foreign key(account_id) references point_accounts(account_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_collateral_event_reservation
+        ON order_collateral_events(reservation_id);
+        CREATE INDEX IF NOT EXISTS idx_order_collateral_event_account
+        ON order_collateral_events(account_id);
+        create table if not exists order_collateral_ledger_entries (
+            id integer primary key autoincrement, engine_key text not null, reservation_id integer not null, event_id integer not null,
+            account_id text not null, market_id text not null, outcome text not null check(outcome in ('YES','NO')),
+            asset_type text not null check(asset_type in ('point','share')), balance_bucket text not null check(balance_bucket in ('available','locked')),
+            delta integer not null check(delta <> 0), balance_before integer not null check(balance_before >= 0), balance_after integer not null check(balance_after >= 0), request_id text, created_at text not null,
+            check(balance_before + delta = balance_after), unique(event_id, balance_bucket),
+            foreign key(engine_key) references prediction_engines(engine_key), foreign key(reservation_id) references order_collateral_reservations(id), foreign key(event_id) references order_collateral_events(id), foreign key(account_id) references point_accounts(account_id), foreign key(market_id) references collateral_markets(market_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_collateral_ledger_reservation
+        ON order_collateral_ledger_entries(reservation_id);
+        CREATE INDEX IF NOT EXISTS idx_order_collateral_ledger_event
+        ON order_collateral_ledger_entries(event_id);
+        CREATE INDEX IF NOT EXISTS idx_order_collateral_ledger_account
+        ON order_collateral_ledger_entries(account_id);
+        CREATE INDEX IF NOT EXISTS idx_order_collateral_ledger_market
+        ON order_collateral_ledger_entries(market_id);
         create index if not exists idx_point_accounts_owner
             on point_accounts(engine_key, owner_type, owner_id);
         create index if not exists idx_outcome_positions_market_outcome
@@ -405,6 +449,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             on point_allocation_events(source_account_id, created_at, id);
         create index if not exists idx_point_allocation_destination_created
             on point_allocation_events(destination_account_id, created_at, id);
+        create index if not exists idx_order_collateral_reservation_account on order_collateral_reservations(account_id, created_at, id);
+        create index if not exists idx_order_collateral_reservation_participant on order_collateral_reservations(participant_id, created_at, id);
+        create index if not exists idx_order_collateral_reservation_market on order_collateral_reservations(market_id, created_at, id);
         """
     )
     _migrate_collateral_ledger_entries(conn)
