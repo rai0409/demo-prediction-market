@@ -574,6 +574,126 @@ def merge_complete_sets(conn: sqlite3.Connection, *, account_id: str, market_id:
     )
 
 
+def _strict_int(value: Any, code: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CollateralLedgerError(code)
+    return value
+
+
+def _reservation_key(value: Any) -> str:
+    if not isinstance(value, str) or not value or value != value.strip() or len(value) > 128:
+        raise CollateralLedgerError("invalid_idempotency_key")
+    return value
+
+
+def _reservation_result(row: sqlite3.Row, replay: bool) -> dict[str, Any]:
+    return {key: row[key] for key in ("id", "market_id", "side", "outcome", "quantity", "limit_price_micro", "collateral_type", "collateral_amount", "status", "release_reason") if key != "id"} | {"reservation_id": int(row["id"]), "idempotent_replay": replay}
+
+
+def _reservation_account(conn: sqlite3.Connection, participant: str) -> sqlite3.Row:
+    account = conn.execute("select * from point_accounts where account_id = ?", (_participant_account_id(participant),)).fetchone()
+    if account is None:
+        raise CollateralLedgerError("participant_account_missing")
+    if account["engine_key"] != ENGINE_KEY or account["owner_type"] != "participant" or account["owner_id"] != participant:
+        raise CollateralLedgerError("account_owner_conflict")
+    return account
+
+
+def _reservation_event_replay(conn: sqlite3.Connection, account_id: str, key: str, payload: str) -> sqlite3.Row | None:
+    event = conn.execute("select * from order_collateral_events where engine_key = ? and account_id = ? and idempotency_key = ?", (ENGINE_KEY, account_id, key)).fetchone()
+    if event is not None and event["payload_hash"] != payload:
+        raise CollateralLedgerError("idempotency_conflict")
+    return event
+
+
+def _write_order_event(conn: sqlite3.Connection, reservation: sqlite3.Row, event_type: str, reason: str | None, available_before: int, available_after: int, locked_before: int, locked_after: int, key: str, payload: str, request_id: str | None, now: str) -> None:
+    asset = reservation["collateral_type"]
+    cursor = conn.execute("""insert into order_collateral_events(engine_key,reservation_id,account_id,event_type,release_reason,asset_type,asset_amount,available_before,available_after,locked_before,locked_after,idempotency_key,request_id,payload_hash,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ENGINE_KEY, reservation["id"], reservation["account_id"], event_type, reason, asset, reservation["collateral_amount"], available_before, available_after, locked_before, locked_after, key, request_id, payload, now))
+    event_id = cursor.lastrowid
+    specs = (("available", available_after - available_before, available_before, available_after), ("locked", locked_after - locked_before, locked_before, locked_after))
+    for bucket, delta, before, after in specs:
+        conn.execute("insert into order_collateral_ledger_entries(engine_key,reservation_id,event_id,account_id,market_id,outcome,asset_type,balance_bucket,delta,balance_before,balance_after,request_id,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?)", (ENGINE_KEY, reservation["id"], event_id, reservation["account_id"], reservation["market_id"], reservation["outcome"], asset, bucket, delta, before, after, request_id, now))
+
+
+def reserve_v2_order_collateral(conn: sqlite3.Connection, *, participant_id: str, market_id: str, side: str, outcome: str, quantity: int, limit_price_micro: int, idempotency_key: str, request_id: str | None = None) -> dict[str, Any]:
+    participant = _participant_id(participant_id)
+    quantity = _strict_int(quantity, "invalid_quantity")
+    price = _strict_int(limit_price_micro, "invalid_limit_price")
+    if price > POINT_SCALE: raise CollateralLedgerError("invalid_limit_price")
+    if side not in ("BUY", "SELL"): raise CollateralLedgerError("invalid_side")
+    if outcome not in ("YES", "NO"): raise CollateralLedgerError("invalid_outcome")
+    key = _reservation_key(idempotency_key)
+    if side == "BUY" and quantity > SQLITE_INTEGER_MAX // price: raise CollateralLedgerError("integer_overflow")
+    amount, asset = (quantity * price, "point") if side == "BUY" else (quantity, "share")
+    payload = _payload_hash({"operation":"order_collateral_reserve","participant_id":participant,"market_id":market_id,"side":side,"outcome":outcome,"quantity":quantity,"limit_price_micro":price})
+    with _write_transaction(conn):
+        _require_engine(conn); _ensure_verified(conn, "")
+        account = _reservation_account(conn, participant)
+        replay = _reservation_event_replay(conn, account["account_id"], key, payload)
+        if replay:
+            return _reservation_result(conn.execute("select * from order_collateral_reservations where id = ?", (replay["reservation_id"],)).fetchone(), True)
+        market, _ = _get_open_market(conn, market_id)
+        now = _now()
+        if side == "BUY":
+            available, locked = int(account["available_micro"]), int(account["locked_micro"])
+            if available < amount: raise CollateralLedgerError("insufficient_points")
+            if locked > SQLITE_INTEGER_MAX - amount: raise CollateralLedgerError("integer_overflow")
+        else:
+            position = conn.execute("select * from outcome_positions where account_id=? and market_id=? and outcome=?", (account["account_id"], market_id, outcome)).fetchone()
+            if position is None: raise CollateralLedgerError("position_missing")
+            available, locked = int(position["available_shares"]), int(position["locked_shares"])
+            if available < amount: raise CollateralLedgerError("insufficient_shares")
+            if locked > SQLITE_INTEGER_MAX - amount: raise CollateralLedgerError("integer_overflow")
+        cursor = conn.execute("insert into order_collateral_reservations(engine_key,account_id,participant_id,market_id,side,outcome,quantity,limit_price_micro,collateral_type,collateral_amount,status,created_at,updated_at) values (?,?,?,?,?,?,?,?,?,?,'reserved',?,?)", (ENGINE_KEY,account["account_id"],participant,market["market_id"],side,outcome,quantity,price,asset,amount,now,now))
+        reservation = conn.execute("select * from order_collateral_reservations where id=?", (cursor.lastrowid,)).fetchone()
+        if side == "BUY":
+            updated = conn.execute("update point_accounts set available_micro=?,locked_micro=?,version=version+1,updated_at=? where account_id=? and available_micro=? and locked_micro=?", (available-amount,locked+amount,now,account["account_id"],available,locked)).rowcount
+        else:
+            updated = conn.execute("update outcome_positions set available_shares=?,locked_shares=?,version=version+1,updated_at=? where account_id=? and market_id=? and outcome=? and available_shares=? and locked_shares=?", (available-amount,locked+amount,now,account["account_id"],market_id,outcome,available,locked)).rowcount
+        if updated != 1: raise CollateralLedgerError("concurrent_update")
+        _write_order_event(conn,reservation,"reserve",None,available,available-amount,locked,locked+amount,key,payload,request_id,now)
+        insert_audit_event(conn,event_type="v2_order_collateral_reserved",user_id=participant,request_id=request_id,reference_type="order_collateral_reservation",reference_id=str(reservation["id"]),after={"market_id":market_id,"side":side,"outcome":outcome,"quantity":quantity,"limit_price_micro":price,"collateral_type":asset,"collateral_amount":amount,"status":"reserved"},note="v2 order collateral reserved")
+        _ensure_verified(conn, "")
+        return _reservation_result(reservation, False)
+
+
+def _release_v2_order_collateral(conn: sqlite3.Connection, *, participant_id: str | None, reservation_id: Any, idempotency_key: str, request_id: str | None, reason: str) -> dict[str, Any]:
+    if isinstance(reservation_id, bool) or not isinstance(reservation_id, int) or reservation_id < 1: raise CollateralLedgerError("invalid_reservation_id")
+    key = _reservation_key(idempotency_key)
+    participant = _participant_id(participant_id) if participant_id is not None else None
+    payload = _payload_hash({"operation":f"order_collateral_{'cancel' if reason == 'cancelled' else 'reject'}", **({"participant_id":participant} if participant else {}), "reservation_id":reservation_id})
+    with _write_transaction(conn):
+        _require_engine(conn)
+        reservation = conn.execute("select * from order_collateral_reservations where id=?", (reservation_id,)).fetchone()
+        if reservation is None: raise CollateralLedgerError("reservation_missing")
+        if participant is not None and reservation["participant_id"] != participant: raise CollateralLedgerError("reservation_not_owned")
+        replay = _reservation_event_replay(conn,reservation["account_id"],key,payload)
+        if replay: return _reservation_result(reservation, True)
+        if reservation["status"] != "reserved": raise CollateralLedgerError("reservation_not_reserved")
+        now, amount = _now(), int(reservation["collateral_amount"])
+        if reservation["collateral_type"] == "point":
+            resource = conn.execute("select * from point_accounts where account_id=?", (reservation["account_id"],)).fetchone(); available, locked = int(resource["available_micro"]),int(resource["locked_micro"])
+            updated = conn.execute("update point_accounts set available_micro=?,locked_micro=?,version=version+1,updated_at=? where account_id=? and available_micro=? and locked_micro=?",(available+amount,locked-amount,now,reservation["account_id"],available,locked)).rowcount
+        else:
+            resource = conn.execute("select * from outcome_positions where account_id=? and market_id=? and outcome=?",(reservation["account_id"],reservation["market_id"],reservation["outcome"])).fetchone(); available, locked = int(resource["available_shares"]),int(resource["locked_shares"])
+            updated = conn.execute("update outcome_positions set available_shares=?,locked_shares=?,version=version+1,updated_at=? where account_id=? and market_id=? and outcome=? and available_shares=? and locked_shares=?",(available+amount,locked-amount,now,reservation["account_id"],reservation["market_id"],reservation["outcome"],available,locked)).rowcount
+        if locked < amount or updated != 1: raise CollateralLedgerError("concurrent_update")
+        changed = conn.execute("update order_collateral_reservations set status='released',release_reason=?,released_at=?,updated_at=?,version=version+1 where id=? and status='reserved' and version=?",(reason,now,now,reservation_id,reservation["version"])).rowcount
+        if changed != 1: raise CollateralLedgerError("concurrent_update")
+        _write_order_event(conn,reservation,"release",reason,available,available+amount,locked,locked-amount,key,payload,request_id,now)
+        insert_audit_event(conn,event_type="v2_order_collateral_cancelled" if reason == "cancelled" else "v2_order_collateral_rejected",user_id=reservation["participant_id"],request_id=request_id,reference_type="order_collateral_reservation",reference_id=str(reservation_id),after={"market_id":reservation["market_id"],"side":reservation["side"],"outcome":reservation["outcome"],"quantity":reservation["quantity"],"limit_price_micro":reservation["limit_price_micro"],"collateral_type":reservation["collateral_type"],"collateral_amount":amount,"status":"released","release_reason":reason},note="v2 order collateral released")
+        _ensure_verified(conn, "")
+        return _reservation_result(conn.execute("select * from order_collateral_reservations where id=?",(reservation_id,)).fetchone(),False)
+
+
+def cancel_v2_order_collateral(conn: sqlite3.Connection, *, participant_id: str, reservation_id: int, idempotency_key: str, request_id: str | None = None) -> dict[str, Any]:
+    return _release_v2_order_collateral(conn,participant_id=participant_id,reservation_id=reservation_id,idempotency_key=idempotency_key,request_id=request_id,reason="cancelled")
+
+
+def reject_v2_order_collateral(conn: sqlite3.Connection, *, reservation_id: int, idempotency_key: str, request_id: str | None = None) -> dict[str, Any]:
+    return _release_v2_order_collateral(conn,participant_id=None,reservation_id=reservation_id,idempotency_key=idempotency_key,request_id=request_id,reason="rejected")
+
+
 def verify_collateral_invariants(conn: sqlite3.Connection, *, market_id: str | None = None) -> dict[str, Any]:
     """Read-only v2 accounting verification with no participant identifiers in output."""
     state = conn.execute("select issued_micro, burned_micro from point_supply_state where engine_key = ?", (ENGINE_KEY,)).fetchone()
@@ -621,6 +741,78 @@ def verify_collateral_invariants(conn: sqlite3.Connection, *, market_id: str | N
     ).fetchone()
     if negative is not None:
         codes.append("negative_balance_detected")
+    buy_locked = conn.execute(
+        """select 1 from point_accounts a where a.engine_key = ? and a.locked_micro != coalesce((
+            select sum(r.collateral_amount) from order_collateral_reservations r
+            where r.account_id = a.account_id and r.status = 'reserved' and r.side = 'BUY'
+        ), 0) limit 1""", (ENGINE_KEY,)
+    ).fetchone()
+    if buy_locked is not None:
+        codes.append("buy_locked_points_mismatch")
+    sell_locked = conn.execute(
+        """select 1 from outcome_positions p where p.locked_shares != coalesce((
+            select sum(r.quantity) from order_collateral_reservations r
+            where r.account_id = p.account_id and r.market_id = p.market_id and r.outcome = p.outcome
+            and r.status = 'reserved' and r.side = 'SELL'
+        ), 0) limit 1"""
+    ).fetchone()
+    if sell_locked is not None:
+        codes.append("sell_locked_shares_mismatch")
+    state_mismatch = conn.execute(
+        """select 1 from order_collateral_reservations r where
+            (r.status = 'reserved' and ((select count(*) from order_collateral_events e where e.reservation_id = r.id and e.event_type = 'reserve') != 1 or (select count(*) from order_collateral_events e where e.reservation_id = r.id and e.event_type = 'release') != 0))
+            or (r.status = 'released' and ((select count(*) from order_collateral_events e where e.reservation_id = r.id and e.event_type = 'reserve') != 1 or (select count(*) from order_collateral_events e where e.reservation_id = r.id and e.event_type = 'release') != 1)) limit 1"""
+    ).fetchone()
+    if state_mismatch is not None:
+        codes.append("reservation_event_state_mismatch")
+    ledger_mismatch = conn.execute(
+        """select 1
+           from order_collateral_events e
+           join order_collateral_reservations r on r.id = e.reservation_id
+           where e.engine_key != r.engine_key
+              or e.account_id != r.account_id
+              or (select count(*) from order_collateral_ledger_entries l
+                  where l.event_id = e.id) != 2
+              or (select count(*) from order_collateral_ledger_entries l
+                  where l.event_id = e.id and l.balance_bucket = 'available') != 1
+              or (select count(*) from order_collateral_ledger_entries l
+                  where l.event_id = e.id and l.balance_bucket = 'locked') != 1
+              or (select coalesce(sum(l.delta), 0)
+                  from order_collateral_ledger_entries l
+                  where l.event_id = e.id) != 0
+              or exists (
+                  select 1
+                  from order_collateral_ledger_entries l
+                  where l.event_id = e.id
+                    and (
+                        l.engine_key != e.engine_key
+                        or l.reservation_id != e.reservation_id
+                        or l.account_id != e.account_id
+                        or l.market_id != r.market_id
+                        or l.outcome != r.outcome
+                        or l.asset_type != e.asset_type
+                        or (
+                            l.balance_bucket = 'available'
+                            and (
+                                l.delta != e.available_after - e.available_before
+                                or l.balance_before != e.available_before
+                                or l.balance_after != e.available_after
+                            )
+                        )
+                        or (
+                            l.balance_bucket = 'locked'
+                            and (
+                                l.delta != e.locked_after - e.locked_before
+                                or l.balance_before != e.locked_before
+                                or l.balance_after != e.locked_after
+                            )
+                        )
+                    )
+              )
+           limit 1"""
+    ).fetchone()
+    if ledger_mismatch is not None:
+        codes.append("order_collateral_ledger_mismatch")
     unique_codes = list(dict.fromkeys(codes))
     return {
         "integrity_status": "verified" if not unique_codes else "failed",

@@ -9,7 +9,8 @@ from app.storage import DEMO_USER_ID, connect, get_balance, init_db
 V2_TABLES = {
     "prediction_engines", "point_supply_state", "point_supply_events", "point_accounts",
     "collateral_markets", "market_reserves", "outcome_positions", "reserve_events",
-    "collateral_ledger_entries", "point_allocation_events",
+    "collateral_ledger_entries", "point_allocation_events", "order_collateral_reservations",
+    "order_collateral_events", "order_collateral_ledger_entries",
 }
 
 
@@ -86,3 +87,103 @@ def test_legacy_collateral_ledger_schema_is_migrated_without_losing_row_ids():
     assert tuple(conn.execute("select id, entry_type, amount_micro from collateral_ledger_entries").fetchone()) == (1, "bootstrap_issue", 1)
     conn.execute("insert into collateral_ledger_entries(engine_key, entry_type, amount_micro, reference_type, reference_id, created_at) values (?, 'participant_allocation_credit', 1, 'point_allocation_event', '2', 'x')", (ENGINE_KEY,))
     assert conn.execute("pragma foreign_key_check").fetchone() is None
+
+
+def test_order_collateral_schema_has_lookup_indexes_and_repeated_init_preserves_rows():
+    conn = connect(":memory:")
+    init_db(conn)
+    indexes = {
+        table: {row["name"] for row in conn.execute(f"pragma index_list({table})")}
+        for table in ("order_collateral_reservations", "order_collateral_events", "order_collateral_ledger_entries")
+    }
+    assert {"idx_order_collateral_reservation_account", "idx_order_collateral_reservation_participant", "idx_order_collateral_reservation_market"} <= indexes["order_collateral_reservations"]
+    assert {"idx_order_collateral_event_reservation", "idx_order_collateral_event_account"} <= indexes["order_collateral_events"]
+    assert {"idx_order_collateral_ledger_reservation", "idx_order_collateral_ledger_event", "idx_order_collateral_ledger_account", "idx_order_collateral_ledger_market"} <= indexes["order_collateral_ledger_entries"]
+    init_db(conn)
+    assert conn.execute("pragma foreign_key_check").fetchone() is None
+
+
+def _order_constraint_fixture():
+    conn = connect(":memory:")
+    init_db(conn)
+    conn.execute("insert into point_accounts(account_id, engine_key, owner_type, owner_id, created_at, updated_at) values ('account', ?, 'participant', 'participant-1', 'x', 'x')", (ENGINE_KEY,))
+    conn.execute("insert into collateral_markets(market_id, engine_key, status, point_scale, created_at, updated_at) values ('market', ?, 'open', ?, 'x', 'x')", (ENGINE_KEY, POINT_SCALE))
+    conn.execute("insert into market_reserves(market_id, updated_at) values ('market', 'x')")
+    return conn
+
+
+def _insert_reservation(conn, **changes):
+    values = {"engine_key": ENGINE_KEY, "account_id": "account", "participant_id": "participant-1", "market_id": "market", "side": "BUY", "outcome": "YES", "quantity": 1, "limit_price_micro": 1, "collateral_type": "point", "collateral_amount": 1, "status": "reserved", "release_reason": None, "version": 0, "created_at": "x", "updated_at": "x", "released_at": None} | changes
+    columns = ", ".join(values)
+    conn.execute(f"insert into order_collateral_reservations({columns}) values ({', '.join('?' for _ in values)})", tuple(values.values()))
+
+
+@pytest.mark.parametrize("changes", [
+    {"side": "X"}, {"outcome": "X"}, {"quantity": 0}, {"quantity": -1},
+    {"limit_price_micro": 0}, {"limit_price_micro": -1}, {"limit_price_micro": 10001},
+    {"collateral_type": "cash"}, {"collateral_amount": 0}, {"collateral_amount": -1},
+    {"status": "X"}, {"release_reason": "X"}, {"version": -1},
+    {"collateral_type": "share"}, {"collateral_amount": 2},
+    {"side": "SELL", "collateral_type": "point"}, {"side": "SELL", "collateral_type": "share", "collateral_amount": 2},
+    {"release_reason": "cancelled"}, {"released_at": "x"},
+    {"status": "released", "release_reason": None, "released_at": "x"},
+    {"status": "released", "release_reason": "cancelled", "released_at": None},
+])
+def test_order_collateral_reservation_constraints_reject_every_invalid_combination(changes):
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_reservation(_order_constraint_fixture(), **changes)
+
+
+def test_order_collateral_reservation_valid_boundaries_and_release_reasons():
+    conn = _order_constraint_fixture()
+    _insert_reservation(conn, limit_price_micro=1)
+    _insert_reservation(conn, account_id="account-2", participant_id="participant-2", limit_price_micro=10000, collateral_amount=10000)
+    _insert_reservation(conn, account_id="account-3", participant_id="participant-3", side="SELL", collateral_type="share", collateral_amount=1)
+    _insert_reservation(conn, account_id="account-4", participant_id="participant-4", status="released", release_reason="cancelled", released_at="x")
+    _insert_reservation(conn, account_id="account-5", participant_id="participant-5", status="released", release_reason="rejected", released_at="x")
+    assert conn.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 5
+
+
+def _insert_event(conn, **changes):
+    _insert_reservation(conn)
+    values = {"engine_key": ENGINE_KEY, "reservation_id": 1, "account_id": "account", "event_type": "reserve", "release_reason": None, "asset_type": "point", "asset_amount": 1, "available_before": 1, "available_after": 0, "locked_before": 0, "locked_after": 1, "idempotency_key": "key", "request_id": None, "payload_hash": "hash", "created_at": "x"} | changes
+    columns = ", ".join(values)
+    conn.execute(f"insert into order_collateral_events({columns}) values ({', '.join('?' for _ in values)})", tuple(values.values()))
+
+
+@pytest.mark.parametrize("changes", [
+    {"event_type": "X"}, {"release_reason": "X"}, {"asset_type": "cash"}, {"asset_amount": 0}, {"asset_amount": -1},
+    {"available_before": -1}, {"available_after": -1}, {"locked_before": -1}, {"locked_after": -1},
+    {"available_after": 1}, {"locked_after": 0}, {"release_reason": "cancelled"},
+    {"event_type": "release", "release_reason": "cancelled", "available_after": 0, "locked_before": 1, "locked_after": 0},
+    {"event_type": "release", "release_reason": "cancelled", "available_before": 0, "available_after": 1, "locked_before": 1, "locked_after": 1},
+    {"event_type": "release", "release_reason": None, "available_before": 0, "available_after": 1, "locked_before": 1, "locked_after": 0},
+])
+def test_order_collateral_event_constraints_reject_every_invalid_combination(changes):
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_event(_order_constraint_fixture(), **changes)
+
+
+def test_order_collateral_event_valid_reserve_release_and_unique_key():
+    conn = _order_constraint_fixture(); _insert_event(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("insert into order_collateral_events(engine_key,reservation_id,account_id,event_type,asset_type,asset_amount,available_before,available_after,locked_before,locked_after,idempotency_key,payload_hash,created_at) values (?,1,'account','reserve','point',1,1,0,0,1,'key','other','x')", (ENGINE_KEY,))
+    conn.execute("update order_collateral_reservations set status='released', release_reason='cancelled', released_at='x' where id=1")
+    conn.execute("insert into order_collateral_events(engine_key,reservation_id,account_id,event_type,release_reason,asset_type,asset_amount,available_before,available_after,locked_before,locked_after,idempotency_key,payload_hash,created_at) values (?,1,'account','release','cancelled','point',1,0,1,1,0,'release','hash','x')", (ENGINE_KEY,))
+
+
+def test_order_collateral_ledger_constraints_and_valid_balance_buckets():
+    conn = _order_constraint_fixture(); _insert_event(conn)
+    base = "insert into order_collateral_ledger_entries(engine_key,reservation_id,event_id,account_id,market_id,outcome,asset_type,balance_bucket,delta,balance_before,balance_after,created_at) values (?,1,1,'account','market',?,?,?,?,?,?, 'x')"
+    for outcome, asset, bucket, delta, before, after in [("X","point","available",-1,1,0),("YES","cash","available",-1,1,0),("YES","point","bucket",-1,1,0),("YES","point","available",0,1,1),("YES","point","available",-1,-1,0),("YES","point","available",-1,1,-1),("YES","point","available",-1,1,1)]:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(base, (ENGINE_KEY,outcome,asset,bucket,delta,before,after))
+    conn.execute(base, (ENGINE_KEY,"YES","point","available",-1,1,0))
+    conn.execute(base, (ENGINE_KEY,"YES","point","locked",1,0,1))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(base, (ENGINE_KEY,"YES","point","available",-1,1,0))
+    conn.execute("update order_collateral_reservations set status='released', release_reason='cancelled', released_at='x' where id=1")
+    conn.execute("insert into order_collateral_events(engine_key,reservation_id,account_id,event_type,release_reason,asset_type,asset_amount,available_before,available_after,locked_before,locked_after,idempotency_key,payload_hash,created_at) values (?,1,'account','release','cancelled','point',1,0,1,1,0,'release','hash','x')", (ENGINE_KEY,))
+    release = base.replace("event_id,account_id", "event_id,account_id").replace("?,1,1,'account'", "?,1,2,'account'")
+    conn.execute(release, (ENGINE_KEY,"YES","point","locked",-1,1,0))
+    conn.execute(release, (ENGINE_KEY,"YES","point","available",1,0,1))
