@@ -8,6 +8,10 @@ import pytest
 
 from app.storage import (
     INITIAL_DEMO_POINTS,
+    create_user_account,
+    create_user_session,
+    disable_user_account,
+    ensure_demo_user,
     get_balance,
     get_ledger_entry,
     get_market,
@@ -17,6 +21,7 @@ from app.storage import (
     list_ledger,
     verify_audit_chain,
     record_market_sync_run,
+    revoke_user_session,
 )
 from app.storage import replace_markets
 from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, create_collateral_market
@@ -48,6 +53,37 @@ def visible_text(html: str) -> str:
     parser = TextOnlyParser()
     parser.feed(visible_html(html))
     return " ".join(parser.parts)
+
+
+def _authenticate_formal_participant(client, conn, participant_id):
+    import app.main as main
+
+    ensure_demo_user(conn, participant_id)
+    account = create_user_account(
+        conn,
+        email=f"{participant_id}@example.test",
+        password="long enough password",
+        participant_id=participant_id,
+    )
+    session, token = create_user_session(conn, user_id=account["id"], ttl_seconds=3600)
+    conn.commit()
+    client.cookies[main.auth_session_cookie_name()] = token
+    return account, session, token
+
+
+def _prepare_v2_buy_reserve(conn, sample_markets, *, participant_id="participant-1"):
+    bootstrap_v2_point_supply(conn, amount_micro=3 * POINT_SCALE, idempotency_key=f"bootstrap-{participant_id}")
+    allocate_v2_points_to_participant(conn, participant_id=participant_id, amount_micro=POINT_SCALE, idempotency_key=f"fund-{participant_id}")
+    market_id = sample_markets[0]["market_id"]
+    create_collateral_market(conn, market_id=market_id)
+    return {
+        "market_id": market_id,
+        "side": "BUY",
+        "outcome": "YES",
+        "quantity": 1,
+        "limit_price_micro": 1000,
+        "idempotency_key": "reserve",
+    }
 
 
 def test_admin_v2_participant_allocation_route_requires_admin_and_is_idempotent(client, db_conn):
@@ -107,12 +143,9 @@ def test_admin_v2_participant_allocation_route_response_is_exact_public_boundary
         assert not any(value in serialized for value in ("treasury", "password", "token", "session", "cookie", "admin", "email", "header"))
 
 
-def test_v2_order_collateral_routes_enforce_csrf_ownership_admin_and_response_boundary(client, db_conn, sample_markets):
-    bootstrap_v2_point_supply(db_conn, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap")
-    allocation = allocate_v2_points_to_participant(db_conn, participant_id="participant-1", amount_micro=POINT_SCALE, idempotency_key="fund")
-    market_id = sample_markets[0]["market_id"]
-    create_collateral_market(db_conn, market_id=market_id)
-    payload = {"market_id": market_id, "side": "BUY", "outcome": "YES", "quantity": 1, "limit_price_micro": 1000, "idempotency_key": "reserve"}
+def test_v2_order_collateral_routes_require_formal_auth_and_preserve_response_boundary(client, db_conn, sample_markets):
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
     assert client.post("/api/v2/order-collateral/reservations", json=payload, auto_security=False).status_code == 403
     response = client.post("/api/v2/order-collateral/reservations", json=payload)
     assert response.status_code == 200
@@ -126,15 +159,91 @@ def test_v2_order_collateral_routes_enforce_csrf_ownership_admin_and_response_bo
 
 @pytest.mark.parametrize("field,value", [("quantity", "1"), ("quantity", 1.0), ("quantity", True), ("unexpected", "x")])
 def test_v2_order_collateral_route_uses_strict_body_validation(client, db_conn, sample_markets, field, value):
-    bootstrap_v2_point_supply(db_conn, amount_micro=2 * POINT_SCALE, idempotency_key="bootstrap-strict")
-    allocate_v2_points_to_participant(db_conn, participant_id="participant-1", amount_micro=POINT_SCALE, idempotency_key="fund-strict")
-    market_id = sample_markets[0]["market_id"]
-    create_collateral_market(db_conn, market_id=market_id)
-    payload = {"market_id": market_id, "side": "BUY", "outcome": "YES", "quantity": 1, "limit_price_micro": 1000, "idempotency_key": "strict"}
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    payload["idempotency_key"] = "strict"
     payload[field] = value
     response = client.post("/api/v2/order-collateral/reservations", json=payload)
     assert response.status_code == 422
     assert db_conn.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 0
+
+
+def test_v2_reserve_rejects_anonymous_and_demo_identity_bypasses(client, db_conn, sample_markets):
+    ensure_demo_user(db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    no_auth_no_csrf = client.post("/api/v2/order-collateral/reservations", json=payload, auto_security=False)
+    assert no_auth_no_csrf.status_code == 401
+    assert no_auth_no_csrf.json() == {"detail": "authentication required"}
+    anonymous = client.post("/api/v2/order-collateral/reservations", json=payload)
+    assert anonymous.status_code == 401
+    assert anonymous.json() == {"detail": "authentication required"}
+    client.cookies["demo_user_id"] = "participant-1"
+    cookie_bypass = client.post("/api/v2/order-collateral/reservations", json={**payload, "idempotency_key": "demo-cookie"})
+    assert cookie_bypass.status_code == 401
+    header_bypass = client.post("/api/v2/order-collateral/reservations", json={**payload, "idempotency_key": "demo-header"}, headers={"x-demo-user": "participant-1"})
+    assert header_bypass.status_code == 401
+    assert db_conn.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("state", ["invalid", "expired", "revoked", "disabled"])
+def test_v2_reserve_rejects_invalid_formal_sessions(client, db_conn, sample_markets, state):
+    account, session, token = _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    assert client.get("/").status_code == 200
+    if state == "invalid":
+        import app.main as main
+
+        client.cookies[main.auth_session_cookie_name()] = "invalid-token"
+    elif state == "expired":
+        db_conn.execute("update user_sessions set expires_at = '2000-01-01T00:00:00+00:00' where id = ?", (session["id"],))
+        db_conn.commit()
+    elif state == "revoked":
+        assert revoke_user_session(db_conn, token)
+        db_conn.commit()
+    else:
+        assert disable_user_account(db_conn, account["id"])["account_status"] == "disabled"
+        db_conn.commit()
+    response = client.post("/api/v2/order-collateral/reservations", json=payload)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "authentication session is invalid"}
+    assert db_conn.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 0
+
+
+def test_v2_reserve_uses_formal_participant_over_conflicting_demo_identity(client, db_conn, sample_markets):
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    client.cookies["demo_user_id"] = "other-participant"
+    response = client.post("/api/v2/order-collateral/reservations", json=payload, headers={"x-demo-user": "other-participant"})
+    assert response.status_code == 200
+    reservation_id = response.json()["reservation_id"]
+    assert db_conn.execute("select participant_id from order_collateral_reservations where id = ?", (reservation_id,)).fetchone()[0] == "participant-1"
+
+
+def test_v2_cancel_requires_formal_auth_and_enforces_formal_owner(client, db_conn, sample_markets):
+    import app.main as main
+
+    _, _, owner_token = _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    reservation = client.post("/api/v2/order-collateral/reservations", json=payload)
+    assert reservation.status_code == 200
+    reservation_id = reservation.json()["reservation_id"]
+    cancel_path = f"/api/v2/order-collateral/reservations/{reservation_id}/cancel"
+    client.cookies.pop(main.auth_session_cookie_name())
+    anonymous = client.post(cancel_path, json={"idempotency_key": "cancel-anonymous"})
+    assert anonymous.status_code == 401
+    assert db_conn.execute("select status from order_collateral_reservations where id = ?", (reservation_id,)).fetchone()[0] == "reserved"
+    client.cookies[main.auth_session_cookie_name()] = "invalid-token"
+    invalid = client.post(cancel_path, json={"idempotency_key": "cancel-invalid"})
+    assert invalid.status_code == 401
+    _authenticate_formal_participant(client, db_conn, "participant-2")
+    wrong_owner = client.post(cancel_path, json={"idempotency_key": "cancel-wrong-owner"})
+    assert wrong_owner.status_code == 403
+    assert wrong_owner.json() == {"detail": "reservation_not_owned"}
+    client.cookies[main.auth_session_cookie_name()] = owner_token
+    owner = client.post(cancel_path, json={"idempotency_key": "cancel-owner"})
+    assert owner.status_code == 200
+    assert owner.json()["status"] == "released"
+    assert owner.json()["release_reason"] == "cancelled"
 
 
 def test_health(client):

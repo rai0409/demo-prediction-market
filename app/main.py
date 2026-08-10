@@ -276,17 +276,22 @@ def validate_strict_participant_code(raw_code: str | None) -> str | None:
     return code
 
 
+def require_authenticated_participant(request: Request, conn: sqlite3.Connection) -> str:
+    auth_token = request.cookies.get(auth_session_cookie_name())
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="authentication required")
+    authenticated = resolve_user_session(conn, auth_token)
+    if authenticated is None:
+        raise HTTPException(status_code=401, detail="authentication session is invalid")
+    return authenticated["participant_id"]
+
+
 def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
     cookie_name = demo_session_cookie_name()
 
     auth_token = request.cookies.get(auth_session_cookie_name())
     if auth_token:
-        authenticated = resolve_user_session(conn, auth_token)
-        if authenticated is None:
-            # A supplied invalid formal-auth cookie must never fall through to a
-            # potentially unrelated participant cookie.
-            raise HTTPException(status_code=401, detail="authentication session is invalid")
-        return ensure_demo_user(conn, authenticated["participant_id"])
+        return ensure_demo_user(conn, require_authenticated_participant(request, conn))
 
     # Development/test-only participant override. Disabled by default.
     raw_header_override = (
@@ -1513,7 +1518,7 @@ def _order_collateral_error(exc: CollateralLedgerError) -> JSONResponse:
 
 @app.post("/api/v2/order-collateral/reservations")
 async def api_v2_order_collateral_reserve(request: Request, payload: V2OrderCollateralReservationRequest, conn: sqlite3.Connection = Depends(get_conn)):
-    participant = current_demo_user_id(request, conn)
+    participant = require_authenticated_participant(request, conn)
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
@@ -1528,7 +1533,7 @@ async def api_v2_order_collateral_reserve(request: Request, payload: V2OrderColl
 
 @app.post("/api/v2/order-collateral/reservations/{reservation_id}/cancel")
 async def api_v2_order_collateral_cancel(reservation_id: int, request: Request, payload: V2OrderCollateralReleaseRequest, conn: sqlite3.Connection = Depends(get_conn)):
-    participant = current_demo_user_id(request, conn)
+    participant = require_authenticated_participant(request, conn)
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
