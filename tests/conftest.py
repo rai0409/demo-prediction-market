@@ -45,7 +45,6 @@ def client(db_conn, monkeypatch):
 
     monkeypatch.setattr(settlement_module, "fetch_market_detail_for_settlement", fresh_detail)
 
-    monkeypatch.setattr(main, "db", db_conn)
     monkeypatch.setattr(
         main,
         "settings",

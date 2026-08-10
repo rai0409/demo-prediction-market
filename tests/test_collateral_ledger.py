@@ -743,6 +743,7 @@ def test_order_collateral_reservation_event_tamper_is_detected_without_identifie
         split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="tamper-split")
     reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES", quantity=1, limit_price_micro=100, idempotency_key=f"tamper-{side}")
     if tamper == "missing_reserve_event":
+        db_conn.execute("delete from order_collateral_ledger_entries where event_id in (select id from order_collateral_events where reservation_id=?)", (reservation["reservation_id"],))
         db_conn.execute("delete from order_collateral_events where reservation_id=?", (reservation["reservation_id"],))
     else:
         event = db_conn.execute("select * from order_collateral_events where reservation_id=?", (reservation["reservation_id"],)).fetchone()
@@ -776,6 +777,7 @@ def test_released_order_collateral_event_state_tamper_is_detected(db_conn, sampl
         split_complete_sets(db_conn, account_id=account_id, market_id=market_id, quantity=1, idempotency_key="released-tamper-split")
     reservation = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side=side, outcome="YES", quantity=1, limit_price_micro=100, idempotency_key="released-tamper-reserve")
     (cancel_v2_order_collateral if operation == "cancel" else reject_v2_order_collateral)(db_conn, **({"participant_id": DEMO_USER_ID} if operation == "cancel" else {}), reservation_id=reservation["reservation_id"], idempotency_key="released-tamper-release")
+    db_conn.execute("delete from order_collateral_ledger_entries where event_id in (select id from order_collateral_events where reservation_id=? and event_type=?)", (reservation["reservation_id"], removed_event))
     db_conn.execute("delete from order_collateral_events where reservation_id=? and event_type=?", (reservation["reservation_id"], removed_event))
     result = verify_collateral_invariants(db_conn)
     assert result["integrity_status"] == "failed"
