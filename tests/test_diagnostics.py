@@ -9,6 +9,7 @@ def test_readiness_check_accepts_initialized_database(db_conn):
 
 def test_readiness_check_rejects_missing_tables_and_malformed_database(tmp_path):
     incomplete = sqlite3.connect(":memory:")
+    incomplete.execute("pragma foreign_keys = on")
     incomplete.execute("create table markets (id text)")
     assert readiness_check(incomplete) == {"ready": False, "error_code": "schema_incomplete"}
     incomplete.close()

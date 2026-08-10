@@ -114,6 +114,12 @@ def _order_constraint_fixture():
 
 def _insert_reservation(conn, **changes):
     values = {"engine_key": ENGINE_KEY, "account_id": "account", "participant_id": "participant-1", "market_id": "market", "side": "BUY", "outcome": "YES", "quantity": 1, "limit_price_micro": 1, "collateral_type": "point", "collateral_amount": 1, "status": "reserved", "release_reason": None, "version": 0, "created_at": "x", "updated_at": "x", "released_at": None} | changes
+    conn.execute(
+        """insert or ignore into point_accounts(
+            account_id, engine_key, owner_type, owner_id, created_at, updated_at
+        ) values (?, ?, 'participant', ?, 'x', 'x')""",
+        (values["account_id"], ENGINE_KEY, values["participant_id"]),
+    )
     columns = ", ".join(values)
     conn.execute(f"insert into order_collateral_reservations({columns}) values ({', '.join('?' for _ in values)})", tuple(values.values()))
 

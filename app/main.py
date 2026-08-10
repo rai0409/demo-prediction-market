@@ -73,7 +73,6 @@ from app.storage import (
 
 
 settings = get_settings()
-db = connect(settings.db_path)
 templates = Jinja2Templates(directory="app/templates")
 
 
@@ -114,8 +113,12 @@ templates.env.filters["date"] = format_datetime
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db(db)
-    ensure_markets(db, settings)
+    conn = connect(settings.db_path)
+    try:
+        init_db(conn)
+        ensure_markets(conn, settings)
+    finally:
+        conn.close()
     yield
 
 
@@ -179,8 +182,14 @@ class AuthLoginRequest(BaseModel):
     password: str
 
 
-async def get_conn() -> sqlite3.Connection:
-    return db
+async def get_conn():
+    conn = connect(settings.db_path)
+    try:
+        yield conn
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
 
 
 DEMO_USER_COOKIE = "demo_user_id"

@@ -30,9 +30,21 @@ SESSION_TOKEN_BYTES = 32
 def connect(db_path: str) -> sqlite3.Connection:
     if db_path != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("pragma foreign_keys = on")
+        if int(conn.execute("pragma foreign_keys").fetchone()[0]) != 1:
+            raise RuntimeError("sqlite foreign key enforcement unavailable")
+        conn.execute("pragma busy_timeout = 5000")
+        if int(conn.execute("pragma busy_timeout").fetchone()[0]) != 5000:
+            raise RuntimeError("sqlite busy timeout unavailable")
+        return conn
+    except Exception:
+        if conn is not None:
+            conn.close()
+        raise
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -988,6 +1000,7 @@ def create_user_session(conn: sqlite3.Connection, *, user_id: str, ttl_seconds: 
 
 
 def resolve_user_session(conn: sqlite3.Connection, token: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+    outer_transaction = conn.in_transaction
     token_hash = _session_token_hash(token)
     if token_hash is None:
         return None
@@ -1007,6 +1020,8 @@ def resolve_user_session(conn: sqlite3.Connection, token: str, *, now: datetime 
     # Avoid a write on every request while retaining an operational last-seen value.
     if current - _parse_utc_timestamp(row["last_seen_at"]) >= timedelta(minutes=5):
         conn.execute("update user_sessions set last_seen_at = ? where id = ?", (_utc_iso(current), row["id"]))
+        if not outer_transaction:
+            conn.commit()
     return dict(row)
 
 
