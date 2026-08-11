@@ -252,7 +252,7 @@ def _classify_settlement_with_candidate(
     }
 
 
-def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fetcher=None) -> dict[str, Any]:
+def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fetcher=None, request_id: str | None = None) -> dict[str, Any]:
     """Settle only after an independent, just-in-time REST confirmation.
 
     The network request deliberately occurs before ``BEGIN IMMEDIATE``; all evidence,
@@ -293,7 +293,7 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fe
             updated = update_demo_settlement(conn, settlement_id, status=mapped_status, winning_outcome=None, payout=0.0,
                                              settlement_source="fresh_rest_evidence", settlement_note=validation["status"], settled_at=None)
             insert_audit_event(conn, event_type="settlement_evidence_not_confirmed", user_id=current["user_id"],
-                               route="/api/demo/settle", reference_type="demo_settlement", reference_id=settlement_id,
+                               route="/api/demo/settle", request_id=request_id, reference_type="demo_settlement", reference_id=settlement_id,
                                after={"market_id": current["market_id"], "evidence_hash": current_hash, "fetched_at": evidence["fetched_at"],
                                       "status": validation["status"], "failure_codes": validation["failure_codes"]}, note="fresh REST evidence did not confirm settlement")
             conn.commit()
@@ -320,12 +320,14 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fe
                     note=f"demo settlement win: {marker}",
                     reference_type="demo_settlement",
                     reference_id=settlement_id,
+                    request_id=request_id,
                 )
                 insert_audit_event(
                     conn,
                     event_type="settlement_paid",
                     user_id=current["user_id"],
                     route="/api/demo/settle",
+                    request_id=request_id,
                     reference_type="demo_settlement",
                     reference_id=settlement_id,
                     before={"balance": balance_before},
@@ -345,12 +347,14 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fe
                 note=f"demo settlement loss: {marker}",
                 reference_type="demo_settlement",
                 reference_id=settlement_id,
+                request_id=request_id,
             )
             insert_audit_event(
                 conn,
                 event_type="settlement_loss",
                 user_id=current["user_id"],
                 route="/api/demo/settle",
+                request_id=request_id,
                 reference_type="demo_settlement",
                 reference_id=settlement_id,
                 before={"balance": balance_before},
@@ -366,6 +370,7 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fe
             event_type="settlement_checked",
             user_id=current["user_id"],
             route="/api/demo/settle",
+            request_id=request_id,
             reference_type="demo_settlement",
             reference_id=settlement_id,
             after={"market_id": current["market_id"], "status": status, "winning_outcome": winner,
@@ -382,7 +387,7 @@ def settle_one(conn: sqlite3.Connection, settlement_id: int, *, market_detail_fe
         raise
 
 
-def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID) -> dict[str, Any]:
+def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_ID, *, request_id: str | None = None) -> dict[str, Any]:
     pending = list_pending_settlements(conn, user_id)
     checked_count = len(pending)
     settled_win_count = 0
@@ -397,7 +402,7 @@ def settle_pending_positions(conn: sqlite3.Connection, user_id: str = DEMO_USER_
     rest_only_settled_count = 0
 
     for settlement in pending:
-        result = settle_one(conn, int(settlement["id"]))
+        result = settle_one(conn, int(settlement["id"]), request_id=request_id)
         confirmation_status = result.get("confirmation_status")
         if result.get("candidate_winning_outcome") or result.get("candidate_winning_asset_id"):
             ws_candidate_count += 1
