@@ -58,8 +58,6 @@ def client(db_conn, monkeypatch):
             allow_demo_user_header=True,
         ),
     )
-    main._post_rate_events.clear()
-    main._auth_failure_events.clear()
     async def override_conn():
         return db_conn
 

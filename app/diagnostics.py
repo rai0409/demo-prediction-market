@@ -15,6 +15,7 @@ REQUIRED_READINESS_TABLES = frozenset({
     "collateral_markets", "market_reserves", "outcome_positions", "reserve_events",
     "collateral_ledger_entries", "point_allocation_events", "order_collateral_reservations",
     "order_collateral_events", "order_collateral_ledger_entries",
+    "rate_limit_events",
 })
 
 

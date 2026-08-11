@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import time
 from typing import Any
 import uuid
 
@@ -44,6 +45,119 @@ def connect(db_path: str) -> sqlite3.Connection:
     except Exception:
         if conn is not None:
             conn.close()
+        raise
+
+
+def _rate_limit_now_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+def _require_clean_rate_limit_connection(conn: sqlite3.Connection) -> None:
+    if conn.in_transaction:
+        raise RuntimeError("rate limit operation requires clean connection")
+
+
+def _rate_limit_retry_after_ms(conn: sqlite3.Connection, *, limiter_type: str, action: str, key_hash: str, now_ms: int) -> int | None:
+    row = conn.execute(
+        """select min(expires_at_ms) from rate_limit_events
+           where limiter_type = ? and action = ? and key_hash = ? and expires_at_ms > ?""",
+        (limiter_type, action, key_hash, now_ms),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return max(1, (int(row[0]) - now_ms + 999) // 1000)
+
+
+def check_rate_limit(
+    conn: sqlite3.Connection,
+    *,
+    limiter_type: str,
+    action: str,
+    key_hash: str,
+    limit: int,
+    now_ms: int | None = None,
+) -> int | None:
+    """Return retry-after seconds when an active bucket is full without consuming a slot."""
+    _require_clean_rate_limit_connection(conn)
+    current = _rate_limit_now_ms() if now_ms is None else now_ms
+    conn.execute("begin immediate")
+    try:
+        conn.execute("delete from rate_limit_events where expires_at_ms <= ?", (current,))
+        count = int(conn.execute(
+            """select count(*) from rate_limit_events
+               where limiter_type = ? and action = ? and key_hash = ? and expires_at_ms > ?""",
+            (limiter_type, action, key_hash, current),
+        ).fetchone()[0])
+        retry_after = _rate_limit_retry_after_ms(
+            conn, limiter_type=limiter_type, action=action, key_hash=key_hash, now_ms=current
+        ) if count >= limit else None
+        conn.commit()
+        return retry_after
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def consume_rate_limit_slot(
+    conn: sqlite3.Connection,
+    *,
+    limiter_type: str,
+    action: str,
+    key_hash: str,
+    limit: int,
+    window_ms: int,
+    now_ms: int | None = None,
+) -> int | None:
+    """Atomically consume one slot, returning retry-after seconds when limited."""
+    _require_clean_rate_limit_connection(conn)
+    current = _rate_limit_now_ms() if now_ms is None else now_ms
+    conn.execute("begin immediate")
+    try:
+        conn.execute("delete from rate_limit_events where expires_at_ms <= ?", (current,))
+        count = int(conn.execute(
+            """select count(*) from rate_limit_events
+               where limiter_type = ? and action = ? and key_hash = ? and expires_at_ms > ?""",
+            (limiter_type, action, key_hash, current),
+        ).fetchone()[0])
+        if count >= limit:
+            retry_after = _rate_limit_retry_after_ms(
+                conn, limiter_type=limiter_type, action=action, key_hash=key_hash, now_ms=current
+            )
+            conn.commit()
+            return retry_after
+        conn.execute(
+            """insert into rate_limit_events(
+                limiter_type, action, key_hash, occurred_at_ms, expires_at_ms
+            ) values (?, ?, ?, ?, ?)""",
+            (limiter_type, action, key_hash, current, current + window_ms),
+        )
+        conn.commit()
+        return None
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def clear_rate_limit_bucket(
+    conn: sqlite3.Connection,
+    *,
+    limiter_type: str,
+    action: str,
+    key_hash: str,
+    now_ms: int | None = None,
+) -> None:
+    _require_clean_rate_limit_connection(conn)
+    current = _rate_limit_now_ms() if now_ms is None else now_ms
+    conn.execute("begin immediate")
+    try:
+        conn.execute("delete from rate_limit_events where expires_at_ms <= ?", (current,))
+        conn.execute(
+            "delete from rate_limit_events where limiter_type = ? and action = ? and key_hash = ?",
+            (limiter_type, action, key_hash),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
         raise
 
 
@@ -266,6 +380,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         create index if not exists idx_user_sessions_user_id on user_sessions(user_id);
         create index if not exists idx_user_sessions_expires_at on user_sessions(expires_at);
         create index if not exists idx_user_sessions_revoked_at on user_sessions(revoked_at);
+        create table if not exists rate_limit_events (
+            id integer primary key autoincrement,
+            limiter_type text not null check(limiter_type in ('post', 'auth')),
+            action text not null,
+            key_hash text not null,
+            occurred_at_ms integer not null check(occurred_at_ms >= 0),
+            expires_at_ms integer not null check(expires_at_ms > occurred_at_ms)
+        );
+        create index if not exists idx_rate_limit_events_bucket_expiry
+            on rate_limit_events(limiter_type, action, key_hash, expires_at_ms, id);
+        create index if not exists idx_rate_limit_events_expiry
+            on rate_limit_events(expires_at_ms, id);
         create table if not exists prediction_engines (
             engine_key text primary key,
             engine_version integer not null,
