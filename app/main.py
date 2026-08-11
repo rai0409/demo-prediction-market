@@ -425,7 +425,7 @@ def set_lang_cookie_if_needed(response, request: Request):
 
 def require_csrf(request: Request) -> JSONResponse | None:
     cookie_token = request.cookies.get(CSRF_COOKIE)
-    request_token = request.headers.get(CSRF_HEADER) or request.query_params.get("csrf_token")
+    request_token = request.headers.get(CSRF_HEADER)
     if not cookie_token or not request_token or not compare_digest(cookie_token, request_token):
         record_operation_rejection(request, "csrf", "操作確認に失敗")
         return JSONResponse(status_code=403, content={"detail": "操作を確認できませんでした。ページを再読み込みしてください。"})

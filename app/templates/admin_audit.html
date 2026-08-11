@@ -14,8 +14,7 @@
 <section class="panel-card">
   <h2>管理コード確認</h2>
   <p class="muted">内部確認画面を表示するには管理コードが必要です。</p>
-  <form class="admin-access-form" action="/admin/audit/access?csrf_token={{ csrf_token }}" method="post">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <form class="admin-access-form" action="/admin/audit/access" method="post">
     <label for="admin-token">管理コード</label>
     <input id="admin-token" name="admin_token" type="password" autocomplete="off">
     <button type="submit">確認する</button>

@@ -79,6 +79,35 @@ def test_post_with_csrf_token_is_allowed(client, sample_markets):
     assert response.json()["balance"] == INITIAL_DEMO_POINTS - 10
 
 
+def test_query_or_body_csrf_token_cannot_authorize_protected_post(client, db_conn, sample_markets):
+    token = client.get("/").cookies["demo_csrf"]
+    query_only = client.post(
+        f"/api/demo/predict?csrf_token={token}",
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 10},
+        auto_security=False,
+    )
+    assert query_only.status_code == 403
+    assert db_conn.execute("select count(*) from simulated_positions").fetchone()[0] == 0
+    body_only = client.post(
+        "/admin/audit/access",
+        data={"admin_token": "test-admin", "csrf_token": token},
+        auto_security=False,
+    )
+    assert body_only.status_code == 403
+    assert "demo_admin_token" not in body_only.headers.get("set-cookie", "")
+
+
+def test_wrong_csrf_header_is_not_rescued_by_correct_query_token(client, sample_markets):
+    token = client.get("/").cookies["demo_csrf"]
+    response = client.post(
+        f"/api/demo/predict?csrf_token={token}",
+        headers={"x-csrf-token": "wrong-token"},
+        json={"market_id": sample_markets[0]["market_id"], "outcome": "YES", "stake": 10},
+        auto_security=False,
+    )
+    assert response.status_code == 403
+
+
 def test_rendered_csrf_token_matches_cookie(client):
     response = client.get("/")
     token = response.cookies["demo_csrf"]
@@ -101,7 +130,8 @@ def test_secure_cookie_setting_adds_secure_attribute(client, monkeypatch):
     page = client.get("/", headers={"x-demo-user": "secure-user"})
     token = page.cookies["demo_csrf"]
     admin = client.post(
-        f"/admin/audit/access?csrf_token={token}",
+        "/admin/audit/access",
+        headers={"x-csrf-token": token},
         data={"admin_token": "test-admin"},
         auto_security=False,
     )
