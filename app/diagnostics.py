@@ -4,19 +4,16 @@ import sqlite3
 from typing import Any
 
 from app.market_freshness import classify_market_freshness
-from app.storage import get_last_successful_market_sync_run, get_latest_market_sync_run
+from app.storage import (
+    CURRENT_SCHEMA_REQUIRED_TABLES,
+    CURRENT_SCHEMA_VERSION,
+    get_last_successful_market_sync_run,
+    get_latest_market_sync_run,
+)
 
 
-EXPECTED_SCHEMA_VERSION = 0
-REQUIRED_READINESS_TABLES = frozenset({
-    "markets", "market_snapshots", "demo_users", "demo_point_ledger", "demo_audit_events",
-    "market_sync_runs", "settlement_evidence", "user_accounts", "user_sessions",
-    "prediction_engines", "point_supply_state", "point_supply_events", "point_accounts",
-    "collateral_markets", "market_reserves", "outcome_positions", "reserve_events",
-    "collateral_ledger_entries", "point_allocation_events", "order_collateral_reservations",
-    "order_collateral_events", "order_collateral_ledger_entries",
-    "rate_limit_events",
-})
+EXPECTED_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
+REQUIRED_READINESS_TABLES = CURRENT_SCHEMA_REQUIRED_TABLES
 
 
 def readiness_check(conn: sqlite3.Connection) -> dict[str, Any]:

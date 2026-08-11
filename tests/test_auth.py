@@ -33,6 +33,7 @@ def test_auth_migration_is_additive_and_idempotent():
     conn = connect(":memory:")
     conn.execute("create table demo_users (user_id text primary key, balance real not null)")
     conn.execute("insert into demo_users values ('legacy-participant', 42)")
+    conn.commit()
     init_db(conn)
     init_db(conn)
     assert conn.execute("select balance from demo_users where user_id = 'legacy-participant'").fetchone()[0] == 42
