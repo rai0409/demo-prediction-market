@@ -22,6 +22,14 @@ from app.demo_points import DemoPredictionError, create_demo_prediction
 from app.demo_wallet import DemoWalletError, add_demo_points, reset_demo_balance, reverse_demo_ledger_entry, wallet_snapshot
 from app.market_display import enrich_market_for_display, filtered_market_response, public_market_view
 from app.market_freshness import classify_market_freshness
+from app.observability import (
+    REQUEST_ID_HEADER,
+    current_request_id,
+    elapsed_ms,
+    request_started_at,
+    resolve_request_id,
+    safe_log_request,
+)
 from app.diagnostics import external_data_summary, readiness_check
 from app.realtime import (
     attach_realtime_updates,
@@ -127,6 +135,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Demo Prediction Market Viewer", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    request_id = resolve_request_id(request)
+    request.state.request_id = request_id
+    started_at = request_started_at()
+    error_type = None
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        error_type = type(exc).__name__
+        response = JSONResponse(status_code=500, content={"detail": "internal server error"})
+    response.headers[REQUEST_ID_HEADER] = request_id
+    safe_log_request(
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=elapsed_ms(started_at),
+        error_type=error_type,
+    )
+    return response
 
 
 class PredictionRequest(BaseModel):
@@ -480,12 +511,13 @@ def record_operation_rejection(request: Request, category: str, reason: str) -> 
             "理由": reason,
             "経路": request.url.path,
             "参加者": participant,
+            "request_id": current_request_id(request),
         }
     )
     del _operation_rejections[:-100]
 
 
-def rate_limit_post(conn: sqlite3.Connection, user_id: str, action: str) -> JSONResponse | None:
+def rate_limit_post(conn: sqlite3.Connection, user_id: str, action: str, request_id: str | None = None) -> JSONResponse | None:
     retry_after = consume_rate_limit_slot(
         conn,
         limiter_type="post",
@@ -495,12 +527,12 @@ def rate_limit_post(conn: sqlite3.Connection, user_id: str, action: str) -> JSON
         window_ms=int(RATE_LIMIT_WINDOW_SECONDS * 1000),
     )
     if retry_after is not None:
-        record_operation_rejection_placeholder(user_id, action, "連続操作")
+        record_operation_rejection_placeholder(user_id, action, "連続操作", request_id=request_id)
         return JSONResponse(status_code=429, content={"detail": "少し時間をおいてからもう一度お試しください。"})
     return None
 
 
-def record_operation_rejection_placeholder(user_id: str, action: str, reason: str) -> None:
+def record_operation_rejection_placeholder(user_id: str, action: str, reason: str, *, request_id: str | None = None) -> None:
     _operation_rejections.append(
         {
             "時刻": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
@@ -508,6 +540,7 @@ def record_operation_rejection_placeholder(user_id: str, action: str, reason: st
             "理由": reason,
             "経路": "-",
             "参加者": user_id,
+            "request_id": request_id or "-",
         }
     )
     del _operation_rejections[:-100]
@@ -1244,7 +1277,7 @@ async def api_auth_register(payload: AuthRegisterRequest, request: Request, conn
     participant_id = validate_strict_participant_code(payload.participant_code)
     if participant_id is None:
         race_limited = _record_auth_failure(conn, request, payload.email, "register")
-        insert_audit_event(conn, event_type="login_failed", route=request.url.path, after={"reason": "invalid_registration", "client_hash": _request_identifier_hash(request)})
+        insert_audit_event(conn, event_type="login_failed", route=request.url.path, request_id=current_request_id(request), after={"reason": "invalid_registration", "client_hash": _request_identifier_hash(request)})
         conn.commit()
         if race_limited:
             return race_limited
@@ -1256,7 +1289,7 @@ async def api_auth_register(payload: AuthRegisterRequest, request: Request, conn
             password_min_length=settings.auth_password_min_length, password_max_length=settings.auth_password_max_length,
         )
         session, token = create_user_session(conn, user_id=account["id"], ttl_seconds=settings.auth_session_ttl_seconds, user_agent_hash=_request_identifier_hash(request))
-        insert_audit_event(conn, event_type="account_created", user_id=account["id"], route=request.url.path, reference_type="participant", reference_id=participant_id, after={"client_hash": _request_identifier_hash(request)})
+        insert_audit_event(conn, event_type="account_created", user_id=account["id"], route=request.url.path, request_id=current_request_id(request), reference_type="participant", reference_id=participant_id, after={"client_hash": _request_identifier_hash(request)})
         conn.commit()
     except ValueError as exc:
         conn.rollback()
@@ -1279,7 +1312,7 @@ async def api_auth_login(payload: AuthLoginRequest, request: Request, conn: sqli
     account = verify_user_credentials(conn, email=payload.email, password=payload.password)
     if account is None:
         race_limited = _record_auth_failure(conn, request, payload.email, "login")
-        insert_audit_event(conn, event_type="login_failed", route=request.url.path, after={"reason": "invalid_credentials", "client_hash": _request_identifier_hash(request)})
+        insert_audit_event(conn, event_type="login_failed", route=request.url.path, request_id=current_request_id(request), after={"reason": "invalid_credentials", "client_hash": _request_identifier_hash(request)})
         conn.commit()
         if race_limited:
             return race_limited
@@ -1287,7 +1320,7 @@ async def api_auth_login(payload: AuthLoginRequest, request: Request, conn: sqli
     try:
         session, token = create_user_session(conn, user_id=account["id"], ttl_seconds=settings.auth_session_ttl_seconds, user_agent_hash=_request_identifier_hash(request))
         update_user_last_login(conn, account["id"])
-        insert_audit_event(conn, event_type="login_succeeded", user_id=account["id"], route=request.url.path, reference_type="participant", reference_id=account["participant_id"], after={"client_hash": _request_identifier_hash(request)})
+        insert_audit_event(conn, event_type="login_succeeded", user_id=account["id"], route=request.url.path, request_id=current_request_id(request), reference_type="participant", reference_id=account["participant_id"], after={"client_hash": _request_identifier_hash(request)})
         conn.commit()
     except ValueError:
         conn.rollback()
@@ -1308,8 +1341,8 @@ async def api_auth_logout(request: Request, conn: sqlite3.Connection = Depends(g
     if token:
         revoke_user_session(conn, token, user_id=session["user_id"] if session else None)
     if session:
-        insert_audit_event(conn, event_type="logout", user_id=session["user_id"], route=request.url.path, reference_type="participant", reference_id=session["participant_id"])
-        insert_audit_event(conn, event_type="session_revoked", user_id=session["user_id"], route=request.url.path, reference_type="session", reference_id=session["id"])
+        insert_audit_event(conn, event_type="logout", user_id=session["user_id"], route=request.url.path, request_id=current_request_id(request), reference_type="participant", reference_id=session["participant_id"])
+        insert_audit_event(conn, event_type="session_revoked", user_id=session["user_id"], route=request.url.path, request_id=current_request_id(request), reference_type="session", reference_id=session["id"])
     conn.commit()
     response = JSONResponse(content={"ok": True})
     _delete_auth_cookie(response)
@@ -1498,7 +1531,7 @@ async def api_admin_v2_point_allocations(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(conn, "admin", "v2-participant-point-allocation")
+    rate_error = rate_limit_post(conn, "admin", "v2-participant-point-allocation", current_request_id(request))
     if rate_error:
         return rate_error
     try:
@@ -1507,7 +1540,7 @@ async def api_admin_v2_point_allocations(
             participant_id=payload.participant_id,
             amount_micro=payload.amount_micro,
             idempotency_key=payload.idempotency_key,
-            request_id=request.headers.get("x-request-id"),
+            request_id=current_request_id(request),
         )
     except CollateralLedgerError as exc:
         status_code = 404 if exc.code == "participant_missing" else 400 if exc.code in {
@@ -1541,11 +1574,11 @@ async def api_v2_order_collateral_reserve(request: Request, payload: V2OrderColl
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
-    rate_error = rate_limit_post(conn, participant, "v2-order-collateral-reserve")
+    rate_error = rate_limit_post(conn, participant, "v2-order-collateral-reserve", current_request_id(request))
     if rate_error:
         return rate_error
     try:
-        return reserve_v2_order_collateral(conn, participant_id=participant, market_id=payload.market_id, side=payload.side, outcome=payload.outcome, quantity=payload.quantity, limit_price_micro=payload.limit_price_micro, idempotency_key=payload.idempotency_key, request_id=request.headers.get("x-request-id"))
+        return reserve_v2_order_collateral(conn, participant_id=participant, market_id=payload.market_id, side=payload.side, outcome=payload.outcome, quantity=payload.quantity, limit_price_micro=payload.limit_price_micro, idempotency_key=payload.idempotency_key, request_id=current_request_id(request))
     except CollateralLedgerError as exc:
         return _order_collateral_error(exc)
 
@@ -1556,11 +1589,11 @@ async def api_v2_order_collateral_cancel(reservation_id: int, request: Request, 
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
-    rate_error = rate_limit_post(conn, participant, "v2-order-collateral-cancel")
+    rate_error = rate_limit_post(conn, participant, "v2-order-collateral-cancel", current_request_id(request))
     if rate_error:
         return rate_error
     try:
-        return cancel_v2_order_collateral(conn, participant_id=participant, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=request.headers.get("x-request-id"))
+        return cancel_v2_order_collateral(conn, participant_id=participant, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=current_request_id(request))
     except CollateralLedgerError as exc:
         return _order_collateral_error(exc)
 
@@ -1573,11 +1606,11 @@ async def api_admin_v2_order_collateral_reject(reservation_id: int, request: Req
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(conn, "admin", "v2-order-collateral-reject")
+    rate_error = rate_limit_post(conn, "admin", "v2-order-collateral-reject", current_request_id(request))
     if rate_error:
         return rate_error
     try:
-        return reject_v2_order_collateral(conn, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=request.headers.get("x-request-id"))
+        return reject_v2_order_collateral(conn, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=current_request_id(request))
     except CollateralLedgerError as exc:
         return _order_collateral_error(exc)
 
@@ -1595,7 +1628,7 @@ async def api_demo_wallet_add_points(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(conn, user_id, "demo-wallet-add")
+    rate_error = rate_limit_post(conn, user_id, "demo-wallet-add", current_request_id(request))
     if rate_error:
         return rate_error
     try:
@@ -1605,6 +1638,7 @@ async def api_demo_wallet_add_points(
             reason=payload.reason,
             idempotency_key=payload.idempotency_key,
             user_id=user_id,
+            request_id=current_request_id(request),
         )
     except DemoWalletError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
@@ -1623,7 +1657,7 @@ async def api_demo_wallet_reset(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(conn, user_id, "demo-wallet-reset")
+    rate_error = rate_limit_post(conn, user_id, "demo-wallet-reset", current_request_id(request))
     if rate_error:
         return rate_error
     try:
@@ -1632,6 +1666,7 @@ async def api_demo_wallet_reset(
             reason=payload.reason,
             idempotency_key=payload.idempotency_key,
             user_id=user_id,
+            request_id=current_request_id(request),
         )
     except DemoWalletError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
@@ -1649,7 +1684,7 @@ async def api_demo_ledger_reversal(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(conn, "admin", "demo-ledger-reversal")
+    rate_error = rate_limit_post(conn, "admin", "demo-ledger-reversal", current_request_id(request))
     if rate_error:
         return rate_error
     try:
@@ -1658,6 +1693,7 @@ async def api_demo_ledger_reversal(
             ledger_entry_id=payload.ledger_entry_id,
             reason=payload.reason,
             idempotency_key=payload.idempotency_key,
+            request_id=current_request_id(request),
         )
     except DemoWalletError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
@@ -1708,14 +1744,14 @@ async def api_demo_settle(request: Request, conn: sqlite3.Connection = Depends(g
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(conn, user_id, "demo-settle")
+    rate_error = rate_limit_post(conn, user_id, "demo-settle", current_request_id(request))
     if rate_error:
         return rate_error
     if settings.live:
         ensure_fresh_markets(conn, settings)
     else:
         ensure_markets(conn, settings)
-    return settle_pending_positions(conn, user_id)
+    return settle_pending_positions(conn, user_id, request_id=current_request_id(request))
 
 
 @app.post("/api/demo/predict")
@@ -1728,7 +1764,7 @@ async def api_demo_predict(
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
-    rate_error = rate_limit_post(conn, user_id, "demo-predict")
+    rate_error = rate_limit_post(conn, user_id, "demo-predict", current_request_id(request))
     if rate_error:
         return rate_error
     try:
@@ -1740,6 +1776,7 @@ async def api_demo_predict(
             idempotency_key=payload.idempotency_key,
             user_id=user_id,
             max_stake=settings.max_demo_stake,
+            request_id=current_request_id(request),
         )
     except DemoPredictionError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
