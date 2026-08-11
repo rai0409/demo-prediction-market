@@ -28,6 +28,29 @@ function confirmationStatusLabel(status) {
     return headers;
   }
 
+  function attachAdminAccessForm() {
+    var form = document.querySelector(".admin-access-form");
+    if (!form) return;
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      var tokenInput = form.querySelector("[name='admin_token']");
+      var body = new URLSearchParams({admin_token: tokenInput ? tokenInput.value : ""});
+      try {
+        var response = await fetch("/admin/audit/access", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-CSRF-Token": csrfToken()
+          },
+          body: body.toString()
+        });
+        if (response.ok) window.location.assign("/admin/audit");
+      } catch (_error) {
+        // Keep the existing form visible when the access request cannot be sent.
+      }
+    });
+  }
+
   function moneylessReturn(stake, probability) {
     if (!probability || probability <= 0) return 0;
     return stake / probability;
@@ -346,6 +369,7 @@ function confirmationStatusLabel(status) {
     }
   }
 
+  attachAdminAccessForm();
   attachPredictionForm();
   attachTranslationSwitch();
   attachSettlementCheck();

@@ -1,4 +1,5 @@
 from app.storage import replace_markets
+from pathlib import Path
 
 
 def _join(client, user_id, market_id, stake=20):
@@ -72,13 +73,36 @@ def test_admin_audit_access_form_sets_cookie(client):
     token = client.get("/admin/audit").cookies["demo_csrf"]
 
     response = client.post(
-        f"/admin/audit/access?csrf_token={token}",
+        "/admin/audit/access",
+        headers={"x-csrf-token": token},
         data={"admin_token": "test-admin"},
         auto_security=False,
     )
 
     assert response.status_code == 303
     assert "demo_admin_token" in response.headers["set-cookie"]
+
+
+def test_admin_audit_access_rejects_query_only_csrf_token_and_template_does_not_leak_it(client):
+    page = client.get("/admin/audit")
+    token = page.cookies["demo_csrf"]
+    response = client.post(
+        f"/admin/audit/access?csrf_token={token}",
+        data={"admin_token": "test-admin"},
+        auto_security=False,
+    )
+    assert response.status_code == 403
+    assert "demo_admin_token" not in response.headers.get("set-cookie", "")
+    assert "/admin/audit/access?csrf_token=" not in page.text
+    assert 'name="csrf_token"' not in page.text
+
+
+def test_admin_access_javascript_uses_header_without_query_token_transport():
+    script = Path("app/static/app.js").read_text()
+    assert "admin-access-form" in script
+    assert 'fetch("/admin/audit/access"' in script
+    assert "X-CSRF-Token" in script
+    assert "?csrf_token=" not in script
 
 
 def test_admin_audit_page_does_not_add_forbidden_terms(client):
