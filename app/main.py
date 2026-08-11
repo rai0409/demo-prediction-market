@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import hashlib
 from io import StringIO
+import json
 from secrets import compare_digest, token_urlsafe
-from time import monotonic
 from urllib.parse import urlencode, parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -37,6 +37,9 @@ from app.settlement import compare_candidate_with_rest_resolution, settle_pendin
 from app.translation import add_translation_display, add_translation_displays
 from app.storage import (
     DEMO_USER_ID,
+    check_rate_limit,
+    clear_rate_limit_bucket,
+    consume_rate_limit_slot,
     count_resolution_candidates,
     connect,
     create_user_account,
@@ -202,8 +205,6 @@ RATE_LIMIT_WINDOW_SECONDS = 1.0
 RATE_LIMIT_MAX_POSTS = 3
 ADMIN_DEFAULT_LIMIT = 50
 ADMIN_MAX_LIMIT = 200
-_post_rate_events: dict[tuple[str, str], list[float]] = {}
-_auth_failure_events: dict[tuple[str, str], list[float]] = {}
 _operation_rejections: list[dict[str, str]] = []
 
 
@@ -220,30 +221,40 @@ def _request_identifier_hash(request: Request) -> str:
     return hashlib.sha256(client.encode("utf-8")).hexdigest()
 
 
-def _auth_rate_key(request: Request, email: str) -> tuple[str, str]:
+def _rate_limit_bucket_hash(limiter_type: str, action: str, *values: str) -> str:
+    encoded = json.dumps([limiter_type, action, *values], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _auth_rate_key(request: Request, email: str) -> str:
     normalized = email.strip().casefold()
-    return (hashlib.sha256(normalized.encode("utf-8")).hexdigest(), _request_identifier_hash(request))
+    return _rate_limit_bucket_hash(
+        "auth", "identity", hashlib.sha256(normalized.encode("utf-8")).hexdigest(), _request_identifier_hash(request)
+    )
 
 
-def _auth_rate_limit(request: Request, email: str, action: str) -> JSONResponse | None:
-    now = monotonic()
-    key = (action, *_auth_rate_key(request, email))
-    recent = [value for value in _auth_failure_events.get(key, []) if now - value < settings.auth_login_rate_window_seconds]
-    if len(recent) >= settings.auth_login_rate_limit:
-        _auth_failure_events[key] = recent
-        retry_after = max(1, int(settings.auth_login_rate_window_seconds - (now - recent[0])))
-        return JSONResponse(status_code=429, content={"detail": "too many attempts", "retry_after": retry_after}, headers={"Retry-After": str(retry_after)})
-    _auth_failure_events[key] = recent
-    return None
+def _auth_limited_response(retry_after: int) -> JSONResponse:
+    return JSONResponse(status_code=429, content={"detail": "too many attempts", "retry_after": retry_after}, headers={"Retry-After": str(retry_after)})
 
 
-def _record_auth_failure(request: Request, email: str, action: str) -> None:
-    key = (action, *_auth_rate_key(request, email))
-    _auth_failure_events.setdefault(key, []).append(monotonic())
+def _auth_rate_limit(conn: sqlite3.Connection, request: Request, email: str, action: str) -> JSONResponse | None:
+    retry_after = check_rate_limit(
+        conn, limiter_type="auth", action=action, key_hash=_auth_rate_key(request, email),
+        limit=settings.auth_login_rate_limit,
+    )
+    return _auth_limited_response(retry_after) if retry_after is not None else None
 
 
-def _clear_auth_failures(request: Request, email: str, action: str) -> None:
-    _auth_failure_events.pop((action, *_auth_rate_key(request, email)), None)
+def _record_auth_failure(conn: sqlite3.Connection, request: Request, email: str, action: str) -> JSONResponse | None:
+    retry_after = consume_rate_limit_slot(
+        conn, limiter_type="auth", action=action, key_hash=_auth_rate_key(request, email),
+        limit=settings.auth_login_rate_limit, window_ms=settings.auth_login_rate_window_seconds * 1000,
+    )
+    return _auth_limited_response(retry_after) if retry_after is not None else None
+
+
+def _clear_auth_failures(conn: sqlite3.Connection, request: Request, email: str, action: str) -> None:
+    clear_rate_limit_bucket(conn, limiter_type="auth", action=action, key_hash=_auth_rate_key(request, email))
 
 
 def _set_auth_cookie(response: Response, token: str) -> None:
@@ -474,16 +485,18 @@ def record_operation_rejection(request: Request, category: str, reason: str) -> 
     del _operation_rejections[:-100]
 
 
-def rate_limit_post(user_id: str, action: str) -> JSONResponse | None:
-    now = monotonic()
-    key = (user_id, action)
-    recent = [timestamp for timestamp in _post_rate_events.get(key, []) if now - timestamp < RATE_LIMIT_WINDOW_SECONDS]
-    if len(recent) >= RATE_LIMIT_MAX_POSTS:
-        _post_rate_events[key] = recent
+def rate_limit_post(conn: sqlite3.Connection, user_id: str, action: str) -> JSONResponse | None:
+    retry_after = consume_rate_limit_slot(
+        conn,
+        limiter_type="post",
+        action=action,
+        key_hash=_rate_limit_bucket_hash("post", action, user_id),
+        limit=RATE_LIMIT_MAX_POSTS,
+        window_ms=int(RATE_LIMIT_WINDOW_SECONDS * 1000),
+    )
+    if retry_after is not None:
         record_operation_rejection_placeholder(user_id, action, "連続操作")
         return JSONResponse(status_code=429, content={"detail": "少し時間をおいてからもう一度お試しください。"})
-    recent.append(now)
-    _post_rate_events[key] = recent
     return None
 
 
@@ -1225,14 +1238,16 @@ def _auth_user_payload(account: dict, *, session_expires_at: str | None = None) 
 async def api_auth_register(payload: AuthRegisterRequest, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
     if not settings.auth_registration_enabled:
         return JSONResponse(status_code=403, content={"detail": "registration_disabled"})
-    limited = _auth_rate_limit(request, payload.email, "register")
+    limited = _auth_rate_limit(conn, request, payload.email, "register")
     if limited:
         return limited
     participant_id = validate_strict_participant_code(payload.participant_code)
     if participant_id is None:
-        _record_auth_failure(request, payload.email, "register")
+        race_limited = _record_auth_failure(conn, request, payload.email, "register")
         insert_audit_event(conn, event_type="login_failed", route=request.url.path, after={"reason": "invalid_registration", "client_hash": _request_identifier_hash(request)})
         conn.commit()
+        if race_limited:
+            return race_limited
         return JSONResponse(status_code=400, content={"detail": "invalid participant code"})
     try:
         ensure_demo_user(conn, participant_id)
@@ -1245,10 +1260,12 @@ async def api_auth_register(payload: AuthRegisterRequest, request: Request, conn
         conn.commit()
     except ValueError as exc:
         conn.rollback()
-        _record_auth_failure(request, payload.email, "register")
+        race_limited = _record_auth_failure(conn, request, payload.email, "register")
         detail = "weak password" if "password" in str(exc) else "account already exists"
+        if race_limited:
+            return race_limited
         return JSONResponse(status_code=400, content={"detail": detail})
-    _clear_auth_failures(request, payload.email, "register")
+    _clear_auth_failures(conn, request, payload.email, "register")
     response = JSONResponse(status_code=201, content={"user": _auth_user_payload(account, session_expires_at=session["expires_at"])})
     _set_auth_cookie(response, token)
     return response
@@ -1256,14 +1273,16 @@ async def api_auth_register(payload: AuthRegisterRequest, request: Request, conn
 
 @app.post("/api/auth/login")
 async def api_auth_login(payload: AuthLoginRequest, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    limited = _auth_rate_limit(request, payload.email, "login")
+    limited = _auth_rate_limit(conn, request, payload.email, "login")
     if limited:
         return limited
     account = verify_user_credentials(conn, email=payload.email, password=payload.password)
     if account is None:
-        _record_auth_failure(request, payload.email, "login")
+        race_limited = _record_auth_failure(conn, request, payload.email, "login")
         insert_audit_event(conn, event_type="login_failed", route=request.url.path, after={"reason": "invalid_credentials", "client_hash": _request_identifier_hash(request)})
         conn.commit()
+        if race_limited:
+            return race_limited
         return JSONResponse(status_code=401, content={"detail": "invalid credentials"})
     try:
         session, token = create_user_session(conn, user_id=account["id"], ttl_seconds=settings.auth_session_ttl_seconds, user_agent_hash=_request_identifier_hash(request))
@@ -1273,7 +1292,7 @@ async def api_auth_login(payload: AuthLoginRequest, request: Request, conn: sqli
     except ValueError:
         conn.rollback()
         return JSONResponse(status_code=401, content={"detail": "invalid credentials"})
-    _clear_auth_failures(request, payload.email, "login")
+    _clear_auth_failures(conn, request, payload.email, "login")
     response = JSONResponse(content={"user": _auth_user_payload(account, session_expires_at=session["expires_at"])})
     _set_auth_cookie(response, token)
     return response
@@ -1479,7 +1498,7 @@ async def api_admin_v2_point_allocations(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post("admin", "v2-participant-point-allocation")
+    rate_error = rate_limit_post(conn, "admin", "v2-participant-point-allocation")
     if rate_error:
         return rate_error
     try:
@@ -1522,7 +1541,7 @@ async def api_v2_order_collateral_reserve(request: Request, payload: V2OrderColl
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
-    rate_error = rate_limit_post(participant, "v2-order-collateral-reserve")
+    rate_error = rate_limit_post(conn, participant, "v2-order-collateral-reserve")
     if rate_error:
         return rate_error
     try:
@@ -1537,7 +1556,7 @@ async def api_v2_order_collateral_cancel(reservation_id: int, request: Request, 
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
-    rate_error = rate_limit_post(participant, "v2-order-collateral-cancel")
+    rate_error = rate_limit_post(conn, participant, "v2-order-collateral-cancel")
     if rate_error:
         return rate_error
     try:
@@ -1554,7 +1573,7 @@ async def api_admin_v2_order_collateral_reject(reservation_id: int, request: Req
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post("admin", "v2-order-collateral-reject")
+    rate_error = rate_limit_post(conn, "admin", "v2-order-collateral-reject")
     if rate_error:
         return rate_error
     try:
@@ -1576,7 +1595,7 @@ async def api_demo_wallet_add_points(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(user_id, "demo-wallet-add")
+    rate_error = rate_limit_post(conn, user_id, "demo-wallet-add")
     if rate_error:
         return rate_error
     try:
@@ -1604,7 +1623,7 @@ async def api_demo_wallet_reset(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(user_id, "demo-wallet-reset")
+    rate_error = rate_limit_post(conn, user_id, "demo-wallet-reset")
     if rate_error:
         return rate_error
     try:
@@ -1630,7 +1649,7 @@ async def api_demo_ledger_reversal(
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post("admin", "demo-ledger-reversal")
+    rate_error = rate_limit_post(conn, "admin", "demo-ledger-reversal")
     if rate_error:
         return rate_error
     try:
@@ -1689,7 +1708,7 @@ async def api_demo_settle(request: Request, conn: sqlite3.Connection = Depends(g
     admin_error = require_admin(request)
     if admin_error:
         return admin_error
-    rate_error = rate_limit_post(user_id, "demo-settle")
+    rate_error = rate_limit_post(conn, user_id, "demo-settle")
     if rate_error:
         return rate_error
     if settings.live:
@@ -1709,7 +1728,7 @@ async def api_demo_predict(
     csrf_error = require_csrf(request)
     if csrf_error:
         return csrf_error
-    rate_error = rate_limit_post(user_id, "demo-predict")
+    rate_error = rate_limit_post(conn, user_id, "demo-predict")
     if rate_error:
         return rate_error
     try:

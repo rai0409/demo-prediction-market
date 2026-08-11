@@ -111,7 +111,7 @@ def test_login_errors_do_not_disclose_account_existence(client, monkeypatch):
     assert known.json() == unknown.json() == {"detail": "invalid credentials"}
 
 
-def test_login_rate_limit_uses_hashed_identity_key(client, monkeypatch):
+def test_login_rate_limit_uses_hashed_identity_key(client, db_conn, monkeypatch):
     import app.main as main
 
     monkeypatch.setattr(main, "settings", Settings(live=False, poll_seconds=30, limit=50, db_path=":memory:", auth_login_rate_limit=2, auth_login_rate_window_seconds=60))
@@ -120,4 +120,38 @@ def test_login_rate_limit_uses_hashed_identity_key(client, monkeypatch):
     blocked = client.post("/api/auth/login", json={"email": "nobody@example.test", "password": "wrong password"}, auto_security=False)
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"]
-    assert "nobody@example.test" not in str(main._auth_failure_events)
+    stored_hashes = [row[0] for row in db_conn.execute("select key_hash from rate_limit_events")]
+    assert stored_hashes
+    assert not any(value in "\n".join(stored_hashes) for value in ("nobody@example.test", "127.0.0.1", "participant-1", "wrong password"))
+
+
+def test_successful_login_clears_prior_auth_failures(client, db_conn, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", Settings(
+        live=False,
+        poll_seconds=30,
+        limit=50,
+        db_path=":memory:",
+        participant_codes="enrol-code",
+        auth_login_rate_limit=2,
+        auth_login_rate_window_seconds=60,
+    ))
+    ensure_demo_user(db_conn, "enrol-code")
+    create_user_account(
+        db_conn,
+        email="member@example.test",
+        password="long enough password",
+        participant_id="enrol-code",
+    )
+    db_conn.commit()
+    bad_payload = {"email": "member@example.test", "password": "wrong password"}
+    assert client.post("/api/auth/login", json=bad_payload, auto_security=False).status_code == 401
+    assert client.post(
+        "/api/auth/login",
+        json={"email": "member@example.test", "password": "long enough password"},
+        auto_security=False,
+    ).status_code == 200
+    assert client.post("/api/auth/login", json=bad_payload, auto_security=False).status_code == 401
+    assert client.post("/api/auth/login", json=bad_payload, auto_security=False).status_code == 401
+    assert client.post("/api/auth/login", json=bad_payload, auto_security=False).status_code == 429
