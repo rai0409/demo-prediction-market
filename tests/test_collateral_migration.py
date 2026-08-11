@@ -60,6 +60,7 @@ def test_v2_allocation_schema_accepts_new_ledger_types_and_repeated_init_is_safe
         (ENGINE_KEY,),
     )
     before = tuple(conn.execute("select id, entry_type from collateral_ledger_entries").fetchone())
+    conn.commit()
     init_db(conn)
     assert tuple(conn.execute("select id, entry_type from collateral_ledger_entries").fetchone()) == before
     assert conn.execute("pragma foreign_key_check").fetchone() is None

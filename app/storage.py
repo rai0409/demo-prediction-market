@@ -161,9 +161,11 @@ def clear_rate_limit_bucket(
         raise
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
+LEGACY_SCHEMA_VERSION = 0
+CURRENT_SCHEMA_VERSION = 1
+
+
+V1_SCHEMA_SQL = """
         create table if not exists markets (
             market_id text primary key,
             payload text not null,
@@ -590,42 +592,121 @@ def init_db(conn: sqlite3.Connection) -> None:
         create index if not exists idx_order_collateral_reservation_account on order_collateral_reservations(account_id, created_at, id);
         create index if not exists idx_order_collateral_reservation_participant on order_collateral_reservations(participant_id, created_at, id);
         create index if not exists idx_order_collateral_reservation_market on order_collateral_reservations(market_id, created_at, id);
-        """
-    )
-    _migrate_collateral_ledger_entries(conn)
-    _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
-    _ensure_column(conn, "demo_point_ledger", "reference_type", "text")
-    _ensure_column(conn, "demo_point_ledger", "reference_id", "text")
-    _ensure_column(conn, "demo_point_ledger", "idempotency_key", "text")
-    _ensure_column(conn, "demo_point_ledger", "request_id", "text")
-    _ensure_column(conn, "demo_audit_events", "previous_event_hash", "text")
-    _ensure_column(conn, "demo_audit_events", "event_hash", "text")
-    _ensure_column(conn, "demo_audit_events", "integrity_payload_json", "text")
-    _ensure_column(conn, "simulated_orders", "idempotency_key", "text")
-    _ensure_column(conn, "simulated_orders", "request_id", "text")
-    _ensure_column(conn, "simulated_positions", "idempotency_key", "text")
-    _ensure_column(conn, "simulated_positions", "request_id", "text")
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)",
-        ("fixed_odds_v1", 1, "legacy", now),
-    )
-    conn.execute(
-        "insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)",
-        ("collateralized_clob_v2", 2, "available", now),
-    )
-    conn.execute(
-        "insert or ignore into point_supply_state(engine_key, updated_at) values (?, ?)",
-        ("collateralized_clob_v2", now),
-    )
-    existing = conn.execute("select user_id from demo_users where user_id = ?", (DEMO_USER_ID,)).fetchone()
-    if existing is None:
-        conn.execute("insert into demo_users(user_id, balance) values (?, ?)", (DEMO_USER_ID, INITIAL_DEMO_POINTS))
-        conn.execute(
-            "insert into demo_point_ledger(user_id, amount, balance_after, entry_type, note) values (?, ?, ?, ?, ?)",
-            (DEMO_USER_ID, INITIAL_DEMO_POINTS, INITIAL_DEMO_POINTS, "initial", "initial demo points"),
-        )
-    conn.commit()
+"""
+
+
+CURRENT_SCHEMA_REQUIRED_TABLES = frozenset({
+    "markets", "market_snapshots", "market_realtime_updates", "fetch_runs", "market_sync_runs",
+    "market_translations", "market_translation_attempts", "demo_users", "demo_point_ledger",
+    "demo_audit_events", "simulated_orders", "simulated_positions", "demo_settlements",
+    "settlement_evidence", "user_accounts", "user_sessions", "rate_limit_events",
+    "prediction_engines", "point_supply_state", "point_supply_events", "point_accounts",
+    "collateral_markets", "market_reserves", "outcome_positions", "reserve_events",
+    "collateral_ledger_entries", "point_allocation_events", "order_collateral_reservations",
+    "order_collateral_events", "order_collateral_ledger_entries",
+})
+
+CURRENT_SCHEMA_REQUIRED_INDEXES = frozenset({
+    "idx_market_translation_attempts_market_attempted", "idx_market_translation_attempts_quality_attempted",
+    "idx_market_translation_attempts_provider_attempted", "idx_settlement_evidence_market_hash",
+    "idx_settlement_evidence_settlement_id", "idx_user_sessions_user_id", "idx_user_sessions_expires_at",
+    "idx_user_sessions_revoked_at", "idx_rate_limit_events_bucket_expiry", "idx_rate_limit_events_expiry",
+    "idx_point_accounts_owner", "idx_outcome_positions_market_outcome", "idx_reserve_events_market_created",
+    "idx_collateral_ledger_reference", "idx_collateral_ledger_market_created",
+    "idx_point_allocation_participant_created", "idx_point_allocation_source_created",
+    "idx_point_allocation_destination_created", "idx_order_collateral_event_reservation",
+    "idx_order_collateral_event_account", "idx_order_collateral_ledger_reservation",
+    "idx_order_collateral_ledger_event", "idx_order_collateral_ledger_account",
+    "idx_order_collateral_ledger_market", "idx_order_collateral_reservation_account",
+    "idx_order_collateral_reservation_participant", "idx_order_collateral_reservation_market",
+})
+
+CURRENT_SCHEMA_COLUMNS = {
+    "markets": ("market_id", "payload", "updated_at"),
+    "market_translations": ("market_id", "language", "translated_title", "translated_question", "translated_description", "source_title_hash", "source_question_hash", "source_description_hash", "translation_provider", "translation_model", "translation_status", "translated_at", "error_message"),
+    "demo_users": ("user_id", "balance"),
+    "demo_point_ledger": ("id", "user_id", "market_id", "amount", "balance_before", "balance_after", "entry_type", "note", "reference_type", "reference_id", "idempotency_key", "request_id", "created_at"),
+    "demo_audit_events": ("id", "event_type", "user_id", "route", "request_id", "reference_type", "reference_id", "before_json", "after_json", "note", "previous_event_hash", "event_hash", "integrity_payload_json", "created_at"),
+    "simulated_orders": ("id", "user_id", "market_id", "outcome", "stake", "probability", "idempotency_key", "request_id", "created_at"),
+    "simulated_positions": ("id", "user_id", "market_id", "outcome", "stake", "probability", "estimated_return", "idempotency_key", "request_id", "created_at"),
+    "user_accounts": ("id", "email_normalized", "email_display", "password_hash", "participant_id", "account_status", "created_at", "updated_at", "password_changed_at", "last_login_at"),
+    "user_sessions": ("id", "user_id", "token_hash", "created_at", "expires_at", "last_seen_at", "revoked_at", "revoke_reason", "user_agent_hash"),
+    "rate_limit_events": ("id", "limiter_type", "action", "key_hash", "occurred_at_ms", "expires_at_ms"),
+    "collateral_ledger_entries": ("id", "engine_key", "account_id", "market_id", "entry_type", "amount_micro", "account_available_before_micro", "account_available_after_micro", "reserve_before_micro", "reserve_after_micro", "reference_type", "reference_id", "request_id", "created_at"),
+    "order_collateral_reservations": ("id", "engine_key", "account_id", "participant_id", "market_id", "side", "outcome", "quantity", "limit_price_micro", "collateral_type", "collateral_amount", "status", "release_reason", "version", "created_at", "updated_at", "released_at"),
+    "order_collateral_events": ("id", "engine_key", "reservation_id", "account_id", "event_type", "release_reason", "asset_type", "asset_amount", "available_before", "available_after", "locked_before", "locked_after", "idempotency_key", "request_id", "payload_hash", "created_at"),
+    "order_collateral_ledger_entries": ("id", "engine_key", "reservation_id", "event_id", "account_id", "market_id", "outcome", "asset_type", "balance_bucket", "delta", "balance_before", "balance_after", "request_id", "created_at"),
+}
+
+
+def _schema_statements(sql: str):
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            yield statement
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("incomplete schema statement")
+
+
+def _validate_schema_v1(conn: sqlite3.Connection) -> None:
+    tables = {row[0] for row in conn.execute("select name from sqlite_master where type = 'table'")}
+    missing_tables = CURRENT_SCHEMA_REQUIRED_TABLES.difference(tables)
+    if missing_tables:
+        raise RuntimeError(f"schema v1 missing tables: {sorted(missing_tables)}")
+    indexes = {row[0] for row in conn.execute("select name from sqlite_master where type = 'index'")}
+    missing_indexes = CURRENT_SCHEMA_REQUIRED_INDEXES.difference(indexes)
+    if missing_indexes:
+        raise RuntimeError(f"schema v1 missing indexes: {sorted(missing_indexes)}")
+    for table, expected_columns in CURRENT_SCHEMA_COLUMNS.items():
+        columns = tuple(row["name"] for row in conn.execute(f"pragma table_info({table})"))
+        if columns != expected_columns:
+            raise RuntimeError(f"schema v1 invalid columns for {table}")
+    if conn.execute("pragma foreign_key_check").fetchone() is not None:
+        raise RuntimeError("schema v1 foreign key check failed")
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    if conn.in_transaction:
+        raise RuntimeError("schema migration requires clean connection")
+    conn.execute("begin immediate")
+    try:
+        version = int(conn.execute("pragma user_version").fetchone()[0])
+        if version == LEGACY_SCHEMA_VERSION:
+            for statement in _schema_statements(V1_SCHEMA_SQL):
+                conn.execute(statement)
+            _migrate_collateral_ledger_entries(conn)
+            _ensure_column(conn, "demo_point_ledger", "balance_before", "real")
+            _ensure_column(conn, "demo_point_ledger", "reference_type", "text")
+            _ensure_column(conn, "demo_point_ledger", "reference_id", "text")
+            _ensure_column(conn, "demo_point_ledger", "idempotency_key", "text")
+            _ensure_column(conn, "demo_point_ledger", "request_id", "text")
+            _ensure_column(conn, "demo_audit_events", "previous_event_hash", "text")
+            _ensure_column(conn, "demo_audit_events", "event_hash", "text")
+            _ensure_column(conn, "demo_audit_events", "integrity_payload_json", "text")
+            _ensure_column(conn, "simulated_orders", "idempotency_key", "text")
+            _ensure_column(conn, "simulated_orders", "request_id", "text")
+            _ensure_column(conn, "simulated_positions", "idempotency_key", "text")
+            _ensure_column(conn, "simulated_positions", "request_id", "text")
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)", ("fixed_odds_v1", 1, "legacy", now))
+            conn.execute("insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)", ("collateralized_clob_v2", 2, "available", now))
+            conn.execute("insert or ignore into point_supply_state(engine_key, updated_at) values (?, ?)", ("collateralized_clob_v2", now))
+            if conn.execute("select user_id from demo_users where user_id = ?", (DEMO_USER_ID,)).fetchone() is None:
+                conn.execute("insert into demo_users(user_id, balance) values (?, ?)", (DEMO_USER_ID, INITIAL_DEMO_POINTS))
+                conn.execute("insert into demo_point_ledger(user_id, amount, balance_after, entry_type, note) values (?, ?, ?, ?, ?)", (DEMO_USER_ID, INITIAL_DEMO_POINTS, INITIAL_DEMO_POINTS, "initial", "initial demo points"))
+        elif version != CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(f"unsupported schema version: {version}")
+        _validate_schema_v1(conn)
+        if version == LEGACY_SCHEMA_VERSION:
+            conn.execute(f"pragma user_version = {CURRENT_SCHEMA_VERSION}")
+            if int(conn.execute("pragma user_version").fetchone()[0]) != CURRENT_SCHEMA_VERSION:
+                raise RuntimeError("schema version update failed")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _migrate_collateral_ledger_entries(conn: sqlite3.Connection) -> None:
@@ -645,7 +726,7 @@ def _migrate_collateral_ledger_entries(conn: sqlite3.Connection) -> None:
     ]
     if columns != expected:
         raise RuntimeError("unsupported collateral ledger schema")
-    conn.executescript(
+    conn.execute(
         """
         create table collateral_ledger_entries_migrating (
             id integer primary key autoincrement,

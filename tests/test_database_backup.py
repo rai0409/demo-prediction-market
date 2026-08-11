@@ -5,7 +5,7 @@ import pytest
 
 from app.database_backup import BackupError, create_backup, metadata_path, restore_backup
 from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, cancel_v2_order_collateral, create_collateral_market, reserve_v2_order_collateral, split_complete_sets, verify_collateral_invariants
-from app.storage import DEMO_USER_ID, connect, get_market, init_db, store_markets, verify_audit_chain
+from app.storage import CURRENT_SCHEMA_VERSION, DEMO_USER_ID, connect, get_market, init_db, store_markets, verify_audit_chain
 
 
 def make_db(path, sample_markets):
@@ -24,12 +24,14 @@ def test_backup_restore_round_trip_preserves_storage_readability(tmp_path, sampl
     assert backup.exists() and metadata_path(backup).exists()
     metadata = json.loads(metadata_path(backup).read_text())
     assert "password_hash" not in json.dumps(metadata)
+    assert metadata["schema_version"] == CURRENT_SCHEMA_VERSION
     restored_result = restore_backup(backup, restored, production_db=source)
     assert restored_result["status"] == "success"
     restored_conn = connect(str(restored))
     assert get_market(restored_conn, sample_markets[0]["market_id"])["market_id"] == sample_markets[0]["market_id"]
     assert restored_conn.execute("pragma integrity_check").fetchone()[0] == "ok"
     assert restored_conn.execute("pragma foreign_key_check").fetchone() is None
+    assert restored_conn.execute("pragma user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
     restored_conn.close()
 
 

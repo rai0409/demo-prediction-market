@@ -207,6 +207,7 @@ def test_readiness_rejects_missing_v2_schema_after_fk_runtime_is_enabled():
     try:
         conn.execute("pragma foreign_keys = on")
         conn.execute("create table markets (id text)")
+        conn.execute("pragma user_version = 1")
         assert readiness_check(conn) == {"ready": False, "error_code": "schema_incomplete"}
     finally:
         conn.close()
