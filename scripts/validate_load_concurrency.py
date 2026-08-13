@@ -75,7 +75,6 @@ def metric_summary(samples_ms: list[float], statuses: list[int], started_at: flo
         "unexpected_status_count": sum(status >= 400 for status in statuses),
         "timeout_count": 0,
         "connection_error_count": 0,
-        "sqlite_locked_error_count": 0,
         "p50_ms": percentile(samples_ms, 0.50),
         "p95_ms": percentile(samples_ms, 0.95),
         "p99_ms": percentile(samples_ms, 0.99),
@@ -93,7 +92,6 @@ def safe_envelope(level_results: dict[str, dict[str, Any]], *, p95_limit: float,
             result.get("unexpected_error_count", result.get("unexpected_status_count", 0)) == 0
             and result.get("timeout_count", 0) == 0
             and result.get("connection_error_count", 0) == 0
-            and result.get("sqlite_locked_error_count", 0) == 0
             and (result.get("p95_ms") or float("inf")) <= p95_limit
             and (result.get("p99_ms") or float("inf")) <= p99_limit
         )
@@ -201,8 +199,7 @@ def request_once(client: httpx.Client, method: str, path: str, *, headers: dict[
     started = time.perf_counter()
     try:
         response = client.request(method, path, headers=headers, json=payload)
-        error = "sqlite_locked" if response.status_code >= 500 and "locked" in response.text.lower() else None
-        return response.status_code, (time.perf_counter() - started) * 1000, error, response.json() if response.status_code == 200 else None
+        return response.status_code, (time.perf_counter() - started) * 1000, None, response.json() if response.status_code == 200 else None
     except httpx.TimeoutException:
         return None, (time.perf_counter() - started) * 1000, "timeout", None
     except httpx.HTTPError:
@@ -224,7 +221,6 @@ def run_read_level(base_url: str, level: int, samples: int) -> dict[str, Any]:
     result = metric_summary(latencies, statuses, started)
     result["timeout_count"] = sum(outcome[2] == "timeout" for outcome in outcomes)
     result["connection_error_count"] = sum(outcome[2] == "connection" for outcome in outcomes)
-    result["sqlite_locked_error_count"] = sum(outcome[2] == "sqlite_locked" for outcome in outcomes)
     result["unexpected_status_count"] = sum(status != 200 for status in statuses)
     result["success_count"] = sum(status == 200 for status in statuses)
     result["client_construction_count"] = 1
@@ -277,7 +273,6 @@ def run_write_level(base_url: str, market_id: str, clients: list[dict[str, str]]
         "unexpected_429_count": sum(status == 429 for status in statuses),
         "timeout_count": sum(item[2] == "timeout" for item in outcomes),
         "connection_error_count": sum(item[2] == "connection" for item in outcomes),
-        "sqlite_locked_error_count": sum(item[2] == "sqlite_locked" for item in outcomes),
         "operations_per_second": round(len(outcomes) / max(time.perf_counter() - started, 0.000001), 3),
         "client_construction_count": len(participant_clients),
     })
@@ -318,7 +313,6 @@ def run_mixed_level(base_url: str, market_id: str, clients: list[dict[str, str]]
         "unexpected_429_count": sum(status == 429 for status in statuses),
         "timeout_count": sum(item[2] == "timeout" for item in outcomes),
         "connection_error_count": sum(item[2] == "connection" for item in outcomes),
-        "sqlite_locked_error_count": sum(item[2] == "sqlite_locked" for item in outcomes),
         "operations_per_second": round(len(outcomes) / max(time.perf_counter() - started, 0.000001), 3),
         "client_construction_count": len(participant_clients) + 1,
     })
@@ -328,6 +322,11 @@ def run_mixed_level(base_url: str, market_id: str, clients: list[dict[str, str]]
 def _concurrent_call(concurrency: int, callback):
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         return list(pool.map(lambda _: callback(), range(concurrency)))
+
+
+def sqlite_operational_error_code(exc: sqlite3.OperationalError) -> str | None:
+    """Classify only direct SQLite errors; HTTP responses do not expose this cause."""
+    return "sqlite_locked" if "locked" in str(exc).lower() else None
 
 
 def direct_contention(db_path: Path, market_id: str) -> dict[str, Any]:
@@ -347,12 +346,18 @@ def direct_contention(db_path: Path, market_id: str) -> dict[str, Any]:
                 return reserve_v2_order_collateral(worker, participant_id=participant, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=POINT_SCALE, idempotency_key=f"contention-{level}-{os.urandom(4).hex()}")["reservation_id"]
             except CollateralLedgerError as exc:
                 return exc.code
+            except sqlite3.OperationalError as exc:
+                code = sqlite_operational_error_code(exc)
+                if code is None:
+                    raise
+                return code
             finally:
                 worker.close()
         values = _concurrent_call(level, reserve)
         success = [value for value in values if isinstance(value, int)]
         allowed = {"insufficient_points", "concurrent_update"}
-        results[str(level)] = {"success_count": len(success), "rejections": [value for value in values if not isinstance(value, int)], "passed": len(success) == 1 and all(value in allowed for value in values if not isinstance(value, int))}
+        rejections = [value for value in values if not isinstance(value, int)]
+        results[str(level)] = {"success_count": len(success), "rejections": rejections, "sqlite_locked_error_count": rejections.count("sqlite_locked"), "passed": len(success) == 1 and all(value in allowed for value in rejections)}
         if success:
             release = connect(str(db_path))
             try:
@@ -377,6 +382,11 @@ def direct_contention(db_path: Path, market_id: str) -> dict[str, Any]:
             return operation(worker, **kwargs, reservation_id=reservation_id, idempotency_key=f"release-{kind}")["release_reason"]
         except CollateralLedgerError as exc:
             return exc.code
+        except sqlite3.OperationalError as exc:
+            code = sqlite_operational_error_code(exc)
+            if code is None:
+                raise
+            return code
         finally:
             worker.close()
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -387,7 +397,8 @@ def direct_contention(db_path: Path, market_id: str) -> dict[str, Any]:
         ledger_count = release_events.execute("select count(*) from order_collateral_ledger_entries entries join order_collateral_events events on events.id = entries.event_id where entries.reservation_id=? and events.event_type='release'", (reservation_id,)).fetchone()[0]
     finally:
         release_events.close()
-    results["concurrent_release"] = {"results": releases, "release_event_count": event_count, "release_ledger_count": ledger_count, "passed": sum(value in {"cancelled", "rejected"} for value in releases) == 1 and event_count == 1 and ledger_count == 2}
+    results["concurrent_release"] = {"results": releases, "release_event_count": event_count, "release_ledger_count": ledger_count, "sqlite_locked_error_count": releases.count("sqlite_locked"), "passed": sum(value in {"cancelled", "rejected"} for value in releases) == 1 and event_count == 1 and ledger_count == 2}
+    results["sqlite_locked_error_count"] = sum(value.get("sqlite_locked_error_count", 0) for value in results.values() if isinstance(value, dict))
     return results
 
 
@@ -408,11 +419,16 @@ def idempotency_contention(db_path: Path, market_id: str) -> dict[str, Any]:
                 return reserve_v2_order_collateral(worker, participant_id=participant, market_id=market_id, side="BUY", outcome="YES", quantity=1, limit_price_micro=POINT_SCALE, idempotency_key=key)
             except CollateralLedgerError as exc:
                 return {"error": exc.code}
+            except sqlite3.OperationalError as exc:
+                code = sqlite_operational_error_code(exc)
+                if code is None:
+                    raise
+                return {"error": code}
             finally:
                 worker.close()
         values = _concurrent_call(level, reserve)
         ids = {value["reservation_id"] for value in values if "reservation_id" in value}
-        levels[str(level)] = {"reservation_ids": sorted(ids), "passed": len(ids) == 1 and len(values) == level and not any("error" in value for value in values)}
+        levels[str(level)] = {"reservation_ids": sorted(ids), "sqlite_locked_error_count": sum(value.get("error") == "sqlite_locked" for value in values), "passed": len(ids) == 1 and len(values) == level and not any("error" in value for value in values)}
         if ids:
             release = connect(str(db_path))
             try:
@@ -428,7 +444,7 @@ def idempotency_contention(db_path: Path, market_id: str) -> dict[str, Any]:
             collision = exc.code
     finally:
         conn.close()
-    return {"levels": levels, "negative_collision": collision, "passed": all(value["passed"] for value in levels.values()) and collision == "idempotency_conflict"}
+    return {"levels": levels, "negative_collision": collision, "sqlite_locked_error_count": sum(value["sqlite_locked_error_count"] for value in levels.values()), "passed": all(value["passed"] for value in levels.values()) and collision == "idempotency_conflict"}
 
 
 def integrity(db_path: Path) -> dict[str, Any]:
@@ -462,7 +478,6 @@ def failure_codes(scenarios: dict[str, Any], checks: dict[str, Any]) -> list[str
         for result in scenarios.get(kind, {}).values():
             if result.get("timeout_count", 0): codes.append("http_timeout")
             if result.get("connection_error_count", 0): codes.append("connection_error")
-            if result.get("sqlite_locked_error_count", 0): codes.append("sqlite_locked")
             if result.get("unexpected_409_count", 0): codes.append("unexpected_http_409")
             if result.get("unexpected_429_count", 0): codes.append("benchmark_confounded")
             if result.get("unexpected_error_count", result.get("unexpected_status_count", 0)): codes.append("unexpected_http_error")
@@ -477,13 +492,17 @@ def run(mode: str, output: Path) -> dict[str, Any]:
     samples = 12 if mode == "smoke" else 100
     output.parent.mkdir(parents=True, exist_ok=True)
     participant_count = 8 if mode == "smoke" else 32
+    representative_environment: dict[str, Any] | None = None
     level_integrity: dict[str, dict[str, Any]] = {"read": {}, "write": {}, "mixed": {}}
 
     def run_isolated_level(kind: str, level: int) -> dict[str, Any]:
+        nonlocal representative_environment
         process: subprocess.Popen[str] | None = None
         with tempfile.TemporaryDirectory(prefix=f"demo-prediction-load-{kind}-{level}-") as temp_dir:
             db_path = Path(temp_dir) / "load-validation.sqlite3"
             market_id, clients = prepare_database(db_path, participant_count=participant_count)
+            if representative_environment is None:
+                representative_environment = environment_metadata(db_path)
             port = select_port()
             environment = os.environ.copy() | {
                 "DEMO_PREDICTION_DB": str(db_path), "DEMO_PREDICTION_LIVE": "0", "DEMO_PREDICTION_AUTO_REFRESH": "0",
@@ -521,6 +540,8 @@ def run(mode: str, output: Path) -> dict[str, Any]:
     checks = {"scenario_levels": level_integrity, "correctness": correctness_integrity}
     scenarios = {"read": read, "write": write, "mixed": mixed, "same_account_overspend": contention, "idempotency": idempotency}
     codes = failure_codes(scenarios, checks)
+    if contention["sqlite_locked_error_count"] or idempotency["sqlite_locked_error_count"]:
+        codes.append("sqlite_locked")
     if not contention["concurrent_release"]["passed"]: codes.append("double_release_detected")
     if not idempotency["passed"]: codes.append("idempotency_violation")
     post_health = all(item["post_load_health"] for group in level_integrity.values() for item in group.values())
@@ -532,7 +553,7 @@ def run(mode: str, output: Path) -> dict[str, Any]:
         "schema_version": 2, "methodology_version": 2, "source_v1_artifact_sha256": SOURCE_V1_ARTIFACT_SHA256,
         "diagnosis_artifact_sha256": DIAGNOSIS_ARTIFACT_SHA256, "git_head": git_head(), "mode": mode,
         "methodology": {"persistent_http_client": True, "http_keepalive": True, "client_scope": "scenario_level", "write_client_scope": "participant_level", "participant_cookie_isolation": True, "database_isolation": "fresh_per_level", "database_growth_confounded": False, "single_process_uvicorn": True, "access_log": "enabled", "subprocess_output": "DEVNULL"},
-        "environment": {"participant_count_per_level": participant_count, "uvicorn_mode": "single_process"}, "scenarios": scenarios,
+        "environment": {**(representative_environment or {}), "participant_count_per_level": participant_count}, "scenarios": scenarios,
         "integrity": checks, "safe_envelope": envelope, "commercial_load_readiness": readiness, "failure_codes": sorted(set(codes)), "post_load_health": post_health, "post_load_ready": post_ready,
         "comparison_to_v1": {"v1_read_safe_concurrency": 8, "v2_read_safe_concurrency": envelope["read"], "v1_write_safe_concurrency": 16, "v2_write_safe_concurrency": envelope["write"], "v1_mixed_safe_concurrency": 32, "v2_mixed_safe_concurrency": envelope["mixed"]},
     }
