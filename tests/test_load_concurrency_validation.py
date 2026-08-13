@@ -34,6 +34,9 @@ def test_metric_summary_and_safe_envelope_classification():
     levels["4"]["unexpected_error_count"] = 0
     levels["4"]["sqlite_locked_error_count"] = 1
     assert load_validation.safe_envelope(levels, p95_limit=25, p99_limit=40) == 2
+    levels["4"]["sqlite_locked_error_count"] = 0
+    levels["2"]["p95_ms"] = 26
+    assert load_validation.safe_envelope(levels, p95_limit=25, p99_limit=40) == 1
 
 
 class _FakeClient:

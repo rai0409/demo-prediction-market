@@ -86,17 +86,20 @@ def metric_summary(samples_ms: list[float], statuses: list[int], started_at: flo
 
 def safe_envelope(level_results: dict[str, dict[str, Any]], *, p95_limit: float, p99_limit: float) -> int | None:
     safe: int | None = None
-    for level_text, result in level_results.items():
+    for level_text in sorted(level_results, key=int):
+        result = level_results[level_text]
         level = int(level_text)
-        if (
+        passed = (
             result.get("unexpected_error_count", result.get("unexpected_status_count", 0)) == 0
             and result.get("timeout_count", 0) == 0
             and result.get("connection_error_count", 0) == 0
             and result.get("sqlite_locked_error_count", 0) == 0
             and (result.get("p95_ms") or float("inf")) <= p95_limit
             and (result.get("p99_ms") or float("inf")) <= p99_limit
-        ):
-            safe = max(safe or level, level)
+        )
+        if not passed:
+            break
+        safe = level
     return safe
 
 
