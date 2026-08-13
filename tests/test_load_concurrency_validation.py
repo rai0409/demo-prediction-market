@@ -138,6 +138,8 @@ def test_http_response_does_not_infer_sqlite_lock_from_body():
     status, _, error, _ = load_validation.request_once(Client(), "GET", "/")
     assert status == 500
     assert error is None
+    scenarios = {"read": {"1": {"unexpected_status_count": 1, "timeout_count": 0, "connection_error_count": 0, "p95_ms": 1, "p99_ms": 1}}, "write": {}, "mixed": {}}
+    assert "unexpected_http_error" in load_validation.failure_codes(scenarios, {"quick_check": "ok", "foreign_key_check_rows": 0, "schema_version": 1, "collateral": {"integrity_status": "verified"}, "audit_chain": {"integrity_status": "verified"}})
 
 
 def test_direct_sqlite_lock_classification_only_accepts_locked_errors():
