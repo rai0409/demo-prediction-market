@@ -75,6 +75,7 @@ def metric_summary(samples_ms: list[float], statuses: list[int], started_at: flo
         "unexpected_status_count": sum(status >= 400 for status in statuses),
         "timeout_count": 0,
         "connection_error_count": 0,
+        "sqlite_locked_error_count": 0,
         "p50_ms": percentile(samples_ms, 0.50),
         "p95_ms": percentile(samples_ms, 0.95),
         "p99_ms": percentile(samples_ms, 0.99),
@@ -91,6 +92,7 @@ def safe_envelope(level_results: dict[str, dict[str, Any]], *, p95_limit: float,
             result.get("unexpected_error_count", result.get("unexpected_status_count", 0)) == 0
             and result.get("timeout_count", 0) == 0
             and result.get("connection_error_count", 0) == 0
+            and result.get("sqlite_locked_error_count", 0) == 0
             and (result.get("p95_ms") or float("inf")) <= p95_limit
             and (result.get("p99_ms") or float("inf")) <= p99_limit
         ):
@@ -196,7 +198,8 @@ def request_once(client: httpx.Client, method: str, path: str, *, headers: dict[
     started = time.perf_counter()
     try:
         response = client.request(method, path, headers=headers, json=payload)
-        return response.status_code, (time.perf_counter() - started) * 1000, None, response.json() if response.status_code == 200 else None
+        error = "sqlite_locked" if response.status_code >= 500 and "locked" in response.text.lower() else None
+        return response.status_code, (time.perf_counter() - started) * 1000, error, response.json() if response.status_code == 200 else None
     except httpx.TimeoutException:
         return None, (time.perf_counter() - started) * 1000, "timeout", None
     except httpx.HTTPError:
@@ -218,6 +221,7 @@ def run_read_level(base_url: str, level: int, samples: int) -> dict[str, Any]:
     result = metric_summary(latencies, statuses, started)
     result["timeout_count"] = sum(outcome[2] == "timeout" for outcome in outcomes)
     result["connection_error_count"] = sum(outcome[2] == "connection" for outcome in outcomes)
+    result["sqlite_locked_error_count"] = sum(outcome[2] == "sqlite_locked" for outcome in outcomes)
     result["unexpected_status_count"] = sum(status != 200 for status in statuses)
     result["success_count"] = sum(status == 200 for status in statuses)
     result["client_construction_count"] = 1
@@ -270,6 +274,7 @@ def run_write_level(base_url: str, market_id: str, clients: list[dict[str, str]]
         "unexpected_429_count": sum(status == 429 for status in statuses),
         "timeout_count": sum(item[2] == "timeout" for item in outcomes),
         "connection_error_count": sum(item[2] == "connection" for item in outcomes),
+        "sqlite_locked_error_count": sum(item[2] == "sqlite_locked" for item in outcomes),
         "operations_per_second": round(len(outcomes) / max(time.perf_counter() - started, 0.000001), 3),
         "client_construction_count": len(participant_clients),
     })
@@ -310,6 +315,7 @@ def run_mixed_level(base_url: str, market_id: str, clients: list[dict[str, str]]
         "unexpected_429_count": sum(status == 429 for status in statuses),
         "timeout_count": sum(item[2] == "timeout" for item in outcomes),
         "connection_error_count": sum(item[2] == "connection" for item in outcomes),
+        "sqlite_locked_error_count": sum(item[2] == "sqlite_locked" for item in outcomes),
         "operations_per_second": round(len(outcomes) / max(time.perf_counter() - started, 0.000001), 3),
         "client_construction_count": len(participant_clients) + 1,
     })
@@ -453,6 +459,7 @@ def failure_codes(scenarios: dict[str, Any], checks: dict[str, Any]) -> list[str
         for result in scenarios.get(kind, {}).values():
             if result.get("timeout_count", 0): codes.append("http_timeout")
             if result.get("connection_error_count", 0): codes.append("connection_error")
+            if result.get("sqlite_locked_error_count", 0): codes.append("sqlite_locked")
             if result.get("unexpected_409_count", 0): codes.append("unexpected_http_409")
             if result.get("unexpected_429_count", 0): codes.append("benchmark_confounded")
             if result.get("unexpected_error_count", result.get("unexpected_status_count", 0)): codes.append("unexpected_http_error")

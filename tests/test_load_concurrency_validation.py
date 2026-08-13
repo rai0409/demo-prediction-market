@@ -28,8 +28,11 @@ def test_metric_summary_and_safe_envelope_classification():
     levels = {
         "1": {"unexpected_error_count": 0, "timeout_count": 0, "connection_error_count": 0, "p95_ms": 10, "p99_ms": 20},
         "2": {"unexpected_error_count": 0, "timeout_count": 0, "connection_error_count": 0, "p95_ms": 20, "p99_ms": 30},
-        "4": {"unexpected_error_count": 1, "timeout_count": 0, "connection_error_count": 0, "p95_ms": 1, "p99_ms": 1},
+        "4": {"unexpected_error_count": 1, "timeout_count": 0, "connection_error_count": 0, "sqlite_locked_error_count": 0, "p95_ms": 1, "p99_ms": 1},
     }
+    assert load_validation.safe_envelope(levels, p95_limit=25, p99_limit=40) == 2
+    levels["4"]["unexpected_error_count"] = 0
+    levels["4"]["sqlite_locked_error_count"] = 1
     assert load_validation.safe_envelope(levels, p95_limit=25, p99_limit=40) == 2
 
 
