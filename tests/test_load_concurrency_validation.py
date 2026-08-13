@@ -33,6 +33,39 @@ def test_metric_summary_and_safe_envelope_classification():
     assert load_validation.safe_envelope(levels, p95_limit=25, p99_limit=40) == 2
 
 
+class _FakeClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def close(self):
+        pass
+
+
+def test_persistent_read_client_reuse_is_bounded_below_request_count(monkeypatch):
+    constructed = []
+    monkeypatch.setattr(load_validation, "create_http_client", lambda *_args: constructed.append(_FakeClient()) or constructed[-1])
+    monkeypatch.setattr(load_validation, "request_once", lambda *_args, **_kwargs: (200, 1.0, None, {}))
+    result = load_validation.run_read_level("http://example.test", 4, 100)
+    assert result["client_construction_count"] == 1
+    assert len(constructed) == 1
+    assert result["request_count"] == 100
+
+
+def test_persistent_write_clients_are_participant_isolated_and_bounded(monkeypatch):
+    constructed = []
+    participants = [{"participant_id": f"p-{index}", "token": f"token-{index}"} for index in range(4)]
+    monkeypatch.setattr(load_validation, "create_http_client", lambda *_args: constructed.append(_FakeClient()) or constructed[-1])
+    monkeypatch.setattr(load_validation, "request_once", lambda *_args, **_kwargs: (200, 1.0, None, {"reservation_id": 1}))
+    result = load_validation.run_write_level("http://example.test", "market", participants, 4, "write")
+    assert result["client_construction_count"] == 4
+    assert len(constructed) == 4
+    assert len({id(client) for client in constructed}) == len(participants)
+    assert result["request_count"] == 8
+
+
 def test_failure_classification_and_secret_free_metadata(tmp_path):
     db_path = tmp_path / "isolated.sqlite3"
     load_validation.prepare_database(db_path, participant_count=1)
@@ -49,7 +82,7 @@ def test_process_cleanup_helper_terminates_child():
     assert process.poll() is not None
 
 
-def test_cli_smoke_uses_temporary_database_and_writes_artifact(tmp_path):
+def test_cli_smoke_uses_v2_methodology_and_temporary_database(tmp_path):
     output = tmp_path / "load-artifact.json"
     completed = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "--mode", "smoke", "--output", str(output)],
@@ -61,9 +94,32 @@ def test_cli_smoke_uses_temporary_database_and_writes_artifact(tmp_path):
     )
     assert completed.returncode in {0, 2}, completed.stderr
     artifact = json.loads(output.read_text())
-    assert artifact["schema_version"] == 1
+    assert artifact["schema_version"] == 2
+    assert artifact["methodology_version"] == 2
     assert artifact["mode"] == "smoke"
     assert artifact["commercial_load_readiness"] in {"PASS", "FAIL"}
-    assert artifact["environment"]["schema_version"] == 1
-    assert artifact["integrity"]["quick_check"] == "ok"
+    assert artifact["methodology"] == {
+        "persistent_http_client": True,
+        "http_keepalive": True,
+        "client_scope": "scenario_level",
+        "write_client_scope": "participant_level",
+        "participant_cookie_isolation": True,
+        "database_isolation": "fresh_per_level",
+        "database_growth_confounded": False,
+        "single_process_uvicorn": True,
+        "access_log": "enabled",
+        "subprocess_output": "DEVNULL",
+    }
+    assert artifact["integrity"]["scenario_levels"]["write"]["1"]["quick_check"] == "ok"
+    assert artifact["integrity"]["scenario_levels"]["write"]["2"]["quick_check"] == "ok"
+    assert artifact["comparison_to_v1"]["v1_read_safe_concurrency"] == 8
+    assert artifact["comparison_to_v1"]["v1_write_safe_concurrency"] == 16
+    assert artifact["comparison_to_v1"]["v1_mixed_safe_concurrency"] == 32
     assert "demo_prediction.sqlite3" not in json.dumps(artifact)
+
+
+def test_historical_artifact_hashes_are_fixed():
+    root = SCRIPT_PATH.parents[1]
+    import hashlib
+    assert hashlib.sha256((root / "runtime/load-concurrency-validation.json").read_bytes()).hexdigest() == load_validation.SOURCE_V1_ARTIFACT_SHA256
+    assert hashlib.sha256((root / "runtime/load-latency-diagnosis.json").read_bytes()).hexdigest() == load_validation.DIAGNOSIS_ARTIFACT_SHA256
