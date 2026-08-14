@@ -106,6 +106,39 @@ def test_real_offhost_receipt_authorizes_historical_prune(tmp_path, sample_marke
     assert (state / "receipts" / f"{metadata['backup_id']}.json").exists()
 
 
+def test_mixed_replication_receipts_drive_runtime_retention_safely(tmp_path, sample_markets, monkeypatch):
+    from botocore.stub import Stubber
+    from app.offhost_backup import run_offhost_replication
+    from test_offhost_backup import _client, _config, _expect_pair
+    monkeypatch.setenv("UNIT_TEST_SECRET_DO_NOT_LEAK", "do-not-leak")
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir()
+    now = datetime.now(timezone.utc)
+    verified = _historical_backup(source, directory, now - timedelta(days=40))
+    state = tmp_path / "offhost"; metadata = json.loads(metadata_path(verified).read_text()); client, config = _client(), _config()
+    with Stubber(client) as stubber:
+        _expect_pair(stubber, config, verified, metadata)
+        assert run_offhost_replication(directory, state, config, client=client)["status"] == "PASS"
+    missing = _historical_backup(source, directory, now - timedelta(days=30))
+    invalid = _historical_backup(source, directory, now - timedelta(days=20))
+    invalid_receipt = _verified_receipt(state / "receipts", invalid)
+    payload = json.loads(invalid_receipt.read_text()); payload["local_backup_sha256"] = "0" * 64; invalid_receipt.write_text(json.dumps(payload)); os.chmod(invalid_receipt, 0o600)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=state / "receipts")
+    current = directory / result["backup_basename"]; last_run = directory / "last-run.json"
+    assert not verified.exists() and not metadata_path(verified).exists() and (state / "receipts" / f"{metadata['backup_id']}.json").exists()
+    assert missing.exists() and metadata_path(missing).exists() and invalid.exists() and metadata_path(invalid).exists() and invalid_receipt.exists()
+    assert current.exists() and metadata_path(current).exists() and current.name not in result["prune_candidates"]
+    assert set(result["deleted_backups"]) == {verified.name}
+    assert set(result["protected_pending_offhost"]) == {missing.name, invalid.name}
+    assert {item["backup"] for item in result["invalid_offhost_receipts"]} == {invalid.name}
+    assert result["invalid_offhost_receipts"][0]["reason"] == "receipt_backup_hash_mismatch"
+    assert result["status"] == "PASS" and result["retention_status"] == "DEGRADED" and result["retention_protection_status"] == "DEGRADED" and result["error_code"] is None
+    assert json.loads(last_run.read_text()) == result
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700 and stat.S_IMODE(current.stat().st_mode) == 0o600 and stat.S_IMODE(metadata_path(current).stat().st_mode) == 0o600 and stat.S_IMODE(last_run.stat().st_mode) == 0o600 and stat.S_IMODE((state / "receipts").stat().st_mode) == 0o700
+    artifact = json.dumps(result) + last_run.read_text()
+    for forbidden in ("AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "Authorization", "X-Amz-Signature", "password", "admin token", "cookie", "participant code", "do-not-leak"):
+        assert forbidden not in artifact
+
+
 @pytest.mark.parametrize(("field", "value", "reason"), [
     ("status", "FAILED", "receipt_status_invalid"), ("provider", "not-s3", "receipt_status_invalid"),
     ("error_code", "failure", "receipt_status_invalid"), ("backup_id", "00000000-0000-0000-0000-000000000000", "receipt_identity_mismatch"),
