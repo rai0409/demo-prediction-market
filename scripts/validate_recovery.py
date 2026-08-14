@@ -120,6 +120,10 @@ def validate_recovery(backup: str | Path, artifact: str | Path) -> dict[str, Any
             finally:
                 conn.close()
             health, ready = _runtime(f"http://127.0.0.1:{_port()}", restored)
+            if not health:
+                raise BackupError("health_failed")
+            if not ready:
+                raise BackupError("ready_failed")
             result.update({"post_restore_health": health, "post_restore_ready": ready, "recovery_validation": "PASS"})
     except BackupError as exc:
         result["error_code"] = exc.code

@@ -48,3 +48,25 @@ def test_recovery_validation_rejects_future_schema_metadata(tmp_path, sample_mar
     result = recovery.validate_recovery(backup, artifact)
     assert result["recovery_validation"] == "FAIL"
     assert result["error_code"] == "schema_unsupported"
+
+
+def test_recovery_validation_rejects_truncated_backup(tmp_path, sample_markets):
+    from test_database_backup import make_db
+    source, backup, artifact = tmp_path / "source.db", tmp_path / "backup.sqlite", tmp_path / "artifact.json"
+    make_db(source, sample_markets); create_backup(source, backup)
+    backup.write_bytes(backup.read_bytes()[:100])
+    result = recovery.validate_recovery(backup, artifact)
+    assert result["recovery_validation"] == "FAIL"
+    assert result["error_code"] == "backup_hash_mismatch"
+
+
+def test_recovery_validation_rejects_health_and_ready_failures_separately(tmp_path, sample_markets, monkeypatch):
+    from test_database_backup import make_db
+    source, backup = tmp_path / "source.db", tmp_path / "backup.sqlite"
+    make_db(source, sample_markets); create_backup(source, backup)
+    monkeypatch.setattr(recovery, "_runtime", lambda *_args: (False, False))
+    health = recovery.validate_recovery(backup, tmp_path / "health.json")
+    assert health["recovery_validation"] == "FAIL" and health["error_code"] == "health_failed"
+    monkeypatch.setattr(recovery, "_runtime", lambda *_args: (True, False))
+    ready = recovery.validate_recovery(backup, tmp_path / "ready.json")
+    assert ready["recovery_validation"] == "FAIL" and ready["error_code"] == "ready_failed"

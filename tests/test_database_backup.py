@@ -85,6 +85,48 @@ def test_backup_rejects_foreign_key_violations(tmp_path, sample_markets):
     assert not backup.exists()
 
 
+def test_backup_rejects_tampered_audit_missing_table_and_collateral_invariant(tmp_path, sample_markets):
+    source, backup = tmp_path / "source.db", tmp_path / "backup.sqlite"
+    make_db(source, sample_markets)
+    conn = connect(str(source))
+    conn.execute("insert into demo_audit_events(event_type, created_at) values ('tamper-test', '2026-01-01T00:00:00+00:00')")
+    conn.commit(); conn.close()
+    with pytest.raises(BackupError, match="audit_integrity_failed"):
+        create_backup(source, backup)
+
+    missing_source = tmp_path / "missing.db"
+    make_db(missing_source, sample_markets)
+    conn = sqlite3.connect(missing_source); conn.execute("drop table rate_limit_events"); conn.commit(); conn.close()
+    with pytest.raises(BackupError, match="schema_incompatible"):
+        create_backup(missing_source, backup)
+
+    collateral_source = tmp_path / "collateral.db"
+    make_db(collateral_source, sample_markets)
+    conn = connect(str(collateral_source)); conn.execute("update point_supply_state set issued_micro = 1 where engine_key = 'collateralized_clob_v2'"); conn.commit(); conn.close()
+    with pytest.raises(BackupError, match="collateral_invariant_failed"):
+        create_backup(collateral_source, backup)
+
+
+def test_restore_failure_leaves_existing_output_and_no_temporary_database(tmp_path, sample_markets, monkeypatch):
+    source, backup, output = tmp_path / "source.db", tmp_path / "backup.sqlite", tmp_path / "output.db"
+    make_db(source, sample_markets); create_backup(source, backup)
+    output.write_bytes(b"existing-output")
+    import app.database_backup as database_backup
+    original = database_backup._details
+    calls = 0
+    def fail_on_restored(conn):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise BackupError("verification_failed")
+        return original(conn)
+    monkeypatch.setattr(database_backup, "_details", fail_on_restored)
+    with pytest.raises(BackupError, match="verification_failed"):
+        restore_backup(backup, output, production_db=source, overwrite=True)
+    assert output.read_bytes() == b"existing-output"
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
 def test_backup_restore_preserves_v2_collateral_ledger(tmp_path, sample_markets):
     source, backup, restored = tmp_path / "source.db", tmp_path / "backup.sqlite", tmp_path / "restored.db"
     make_db(source, sample_markets)
