@@ -154,6 +154,36 @@ def test_retention_has_no_remote_client_capability():
         assert forbidden not in source
 
 
+@pytest.mark.parametrize(("mutation", "reason"), [
+    ("parent", "receipt_remote_key_mismatch"), ("time_order", "receipt_timestamp_invalid"),
+])
+def test_remaining_receipt_content_gates(tmp_path, sample_markets, mutation, reason):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir(); old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30)); receipts = tmp_path / "receipts"; receipt = _verified_receipt(receipts, old); data = json.loads(receipt.read_text())
+    if mutation == "parent": data["remote_metadata_key"] = data["remote_metadata_key"].replace("x/", "y/", 1)
+    else: data["uploaded_at"] = "2026-08-14T10:00:00+00:00"; data["verified_at"] = "2026-08-14T09:59:59+00:00"
+    receipt.write_text(json.dumps(data)); os.chmod(receipt, 0o600)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
+    assert old.exists() and result["invalid_offhost_receipts"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("kind", ["receipt_symlink", "store_symlink"])
+def test_remaining_symlink_gates(tmp_path, sample_markets, kind):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir(); old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30)); real = tmp_path / "real"; receipt = _verified_receipt(real, old)
+    if kind == "receipt_symlink":
+        receipts = real; target = tmp_path / "target.json"; target.write_bytes(receipt.read_bytes()); receipt.unlink(); receipt.symlink_to(target)
+    else:
+        receipts = tmp_path / "receipts"; receipts.symlink_to(real, target_is_directory=True)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
+    assert old.exists() and result["invalid_offhost_receipts"][0]["reason"] in {"receipt_not_regular", "receipt_store_invalid"}
+
+
+@pytest.mark.parametrize("bad_id", ["ABCDEFAB-CDEF-4ABC-8ABC-ABCDEFABCDEF", "../../outside"])
+def test_noncanonical_and_pathlike_ids_do_not_authorize_receipts(tmp_path, sample_markets, bad_id, monkeypatch):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir(); old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30)); metadata = json.loads(metadata_path(old).read_text()); metadata["backup_id"] = bad_id; metadata_path(old).write_text(json.dumps(metadata)); receipts = tmp_path / "receipts"; receipts.mkdir(); os.chmod(receipts, 0o700)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
+    assert old.exists() and result["invalid_offhost_receipts"][0]["reason"] == "receipt_identity_mismatch"
+
+
 def test_small_inventory_is_not_pruned(tmp_path, sample_markets):
     source = _source(tmp_path, sample_markets)
     directory = tmp_path / "backups"
