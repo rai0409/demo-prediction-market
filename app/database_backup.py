@@ -10,13 +10,11 @@ import time
 from typing import Any
 import uuid
 
-from app.storage import verify_audit_chain
+from app.collateral_ledger import verify_collateral_invariants
+from app.storage import CURRENT_SCHEMA_REQUIRED_TABLES, CURRENT_SCHEMA_VERSION, verify_audit_chain
 
 
-REQUIRED_TABLES = frozenset({
-    "user_accounts", "user_sessions", "demo_users", "markets", "market_snapshots",
-    "demo_point_ledger", "demo_audit_events", "demo_settlements", "settlement_evidence", "market_sync_runs",
-})
+REQUIRED_TABLES = CURRENT_SCHEMA_REQUIRED_TABLES
 
 
 class BackupError(ValueError):
@@ -41,6 +39,8 @@ def _integrity(conn: sqlite3.Connection) -> None:
     try:
         if conn.execute("pragma integrity_check").fetchone()[0] != "ok":
             raise BackupError("integrity_failed")
+        if conn.execute("pragma quick_check").fetchone()[0] != "ok":
+            raise BackupError("quick_check_failed")
         conn.execute("pragma foreign_keys = on")
         if conn.execute("pragma foreign_key_check").fetchone() is not None:
             raise BackupError("foreign_key_failed")
@@ -73,6 +73,12 @@ def _details(conn: sqlite3.Connection) -> dict[str, Any]:
         raise BackupError("database_error") from None
     if audit["integrity_status"] not in {"empty", "verified"}:
         raise BackupError("audit_integrity_failed")
+    try:
+        collateral = verify_collateral_invariants(conn)
+    except sqlite3.DatabaseError:
+        raise BackupError("database_error") from None
+    if collateral["integrity_status"] != "verified":
+        raise BackupError("collateral_invariant_failed")
     final_row = conn.execute("select event_hash from demo_audit_events order by id desc limit 1").fetchone()
     return {
         "schema_version": int(conn.execute("pragma user_version").fetchone()[0]),
@@ -82,7 +88,29 @@ def _details(conn: sqlite3.Connection) -> dict[str, Any]:
         "audit_event_count": counts.get("demo_audit_events", 0),
         "audit_final_hash": str(final_row[0]) if final_row and final_row[0] else "",
         "sqlite_version": sqlite3.sqlite_version,
+        "quick_check_result": "ok",
+        "foreign_key_check_rows": 0,
+        "audit_chain_result": audit["integrity_status"],
+        "collateral_invariant_result": collateral["integrity_status"],
+        "table_row_counts": counts,
     }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_head() -> str | None:
+    import subprocess
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).parents[1], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
 
 
 def _temp_path(final_path: Path) -> Path:
@@ -115,6 +143,7 @@ def create_backup(source: str | Path, output: str | Path, *, overwrite: bool = F
     try:
         with _open_readonly(source_path) as source_conn:
             source_details = _details(source_conn)
+            source_sha256 = _sha256(source_path)
             with sqlite3.connect(temp) as backup_conn:
                 source_conn.backup(backup_conn)
             with _open_readonly(temp) as backup_conn:
@@ -122,7 +151,7 @@ def create_backup(source: str | Path, output: str | Path, *, overwrite: bool = F
         if source_details["table_counts"] != backup_details["table_counts"] or source_details["schema_hash"] != backup_details["schema_hash"]:
             raise BackupError("verification_failed")
         created_at = datetime.now(timezone.utc).isoformat()
-        metadata = {**backup_details, "status": "success", "created_at": created_at, "source_basename": source_path.name, "backup_basename": output_path.name, "file_size": temp.stat().st_size, "integrity": "ok"}
+        metadata = {**backup_details, "status": "success", "created_at": created_at, "source_basename": source_path.name, "backup_basename": output_path.name, "file_size": temp.stat().st_size, "integrity": "ok", "backup_id": str(uuid.uuid4()), "git_head": _git_head(), "backup_size_bytes": temp.stat().st_size, "duration_ms": int((time.monotonic() - started) * 1000), "source_db_sha256": source_sha256, "backup_db_sha256": _sha256(temp)}
         meta_temp = _temp_path(meta_path)
         meta_temp.write_text(json.dumps(metadata, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         os.replace(temp, output_path)
@@ -157,8 +186,12 @@ def restore_backup(backup: str | Path, output: str | Path, *, production_db: str
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp = _temp_path(output_path)
     try:
+        if metadata.get("backup_db_sha256") is not None and metadata["backup_db_sha256"] != _sha256(backup_path):
+            raise BackupError("backup_hash_mismatch")
         with _open_readonly(backup_path) as source_conn:
             source_details = _details(source_conn)
+            if source_details["schema_version"] > CURRENT_SCHEMA_VERSION:
+                raise BackupError("schema_unsupported")
             for key in ("schema_version", "schema_hash", "table_counts", "audit_final_hash"):
                 if metadata.get(key) != source_details.get(key):
                     raise BackupError("metadata_mismatch")
