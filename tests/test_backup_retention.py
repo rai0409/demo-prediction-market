@@ -5,6 +5,7 @@ import json
 import os
 import stat
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -103,6 +104,54 @@ def test_real_offhost_receipt_authorizes_historical_prune(tmp_path, sample_marke
     result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=state / "receipts")
     assert result["status"] == "PASS" and not old.exists() and not metadata_path(old).exists()
     assert (state / "receipts" / f"{metadata['backup_id']}.json").exists()
+
+
+@pytest.mark.parametrize(("field", "value", "reason"), [
+    ("status", "FAILED", "receipt_status_invalid"), ("provider", "not-s3", "receipt_status_invalid"),
+    ("error_code", "failure", "receipt_status_invalid"), ("backup_id", "00000000-0000-0000-0000-000000000000", "receipt_identity_mismatch"),
+    ("backup_basename", "other.sqlite3", "receipt_identity_mismatch"), ("backup_created_at", "2020-01-01T00:00:00+00:00", "receipt_identity_mismatch"),
+    ("local_backup_sha256", "0" * 64, "receipt_backup_hash_mismatch"), ("local_backup_size_bytes", 1, "receipt_backup_size_mismatch"),
+    ("remote_backup_size_bytes", 1, "receipt_backup_size_mismatch"), ("local_metadata_sha256", "0" * 64, "receipt_metadata_hash_mismatch"),
+    ("local_metadata_size_bytes", 1, "receipt_metadata_size_mismatch"), ("remote_metadata_size_bytes", 1, "receipt_metadata_size_mismatch"),
+    ("remote_backup_checksum_sha256", "bad", "receipt_remote_checksum_mismatch"), ("remote_metadata_checksum_sha256", "bad", "receipt_remote_checksum_mismatch"),
+    ("remote_backup_key", "wrong", "receipt_remote_key_mismatch"), ("remote_metadata_key", "wrong", "receipt_remote_key_mismatch"),
+    ("backup_object_status", "UNKNOWN", "receipt_object_status_invalid"), ("metadata_object_status", "FAILED", "receipt_object_status_invalid"),
+    ("uploaded_at", "not-a-date", "receipt_timestamp_invalid"), ("verified_at", "not-a-date", "receipt_timestamp_invalid"),
+])
+def test_invalid_receipt_fields_hold_prune_candidate(tmp_path, sample_markets, field, value, reason):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir()
+    old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30)); receipts = tmp_path / "receipts"; receipt = _verified_receipt(receipts, old)
+    payload = json.loads(receipt.read_text()); payload[field] = value; receipt.write_text(json.dumps(payload)); os.chmod(receipt, 0o600)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
+    assert result["status"] == "PASS" and result["retention_status"] == "DEGRADED" and result["error_code"] is None
+    assert old.exists() and metadata_path(old).exists() and receipt.exists() and old.name in result["protected_pending_offhost"] and result["deleted_backups"] == []
+    assert {item["reason"] for item in result["invalid_offhost_receipts"]} == {reason}
+
+
+@pytest.mark.parametrize("kind,reason", [("json", "receipt_json_invalid"), ("directory", "receipt_not_regular"), ("mode", "receipt_permission_invalid")])
+def test_unsafe_receipt_files_hold_prune_candidate(tmp_path, sample_markets, kind, reason):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir(); old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30)); receipts = tmp_path / "receipts"; receipt = _verified_receipt(receipts, old)
+    if kind == "json": receipt.write_text("{")
+    elif kind == "directory": receipt.unlink(); receipt.mkdir()
+    else: os.chmod(receipt, 0o644)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
+    assert result["status"] == "PASS" and old.exists() and old.name in result["protected_pending_offhost"]
+    assert result["invalid_offhost_receipts"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("kind", ["missing", "mode", "file"])
+def test_unsafe_receipt_store_holds_prune_candidate(tmp_path, sample_markets, kind):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir(); old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30)); receipts = tmp_path / "receipts"
+    if kind == "mode": receipts.mkdir(); os.chmod(receipts, 0o755)
+    elif kind == "file": receipts.write_text("x")
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
+    assert result["status"] == "PASS" and old.exists() and old.name in result["protected_pending_offhost"]
+
+
+def test_retention_has_no_remote_client_capability():
+    source = Path("app/backup_retention.py").read_text()
+    for forbidden in ("import boto3", "import botocore", "head_object(", "put_object(", "delete_object(", "list_objects("):
+        assert forbidden not in source
 
 
 def test_small_inventory_is_not_pruned(tmp_path, sample_markets):
