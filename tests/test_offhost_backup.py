@@ -1,17 +1,22 @@
 import base64
 import fcntl
+import io
 import json
 import stat
 from pathlib import Path
 
 import boto3
+import pytest
 from botocore.stub import ANY, Stubber
+from botocore.exceptions import ClientError
 
 from app.backup_retention import run_scheduled_backup
 from app.offhost_backup import (
     LOCK_NAME,
     OffhostConfig,
     MAX_SINGLE_PUT_BYTES,
+    OffhostBackupError,
+    _put_and_verify,
     object_keys,
     run_offhost_replication,
     sha256_hex_to_base64,
@@ -126,3 +131,38 @@ def test_lock_and_forbidden_remote_apis_are_fail_closed(tmp_path):
     for forbidden in ("delete_object(", "delete_objects(", "list_objects(", "list_objects_v2("):
         assert forbidden not in source
     assert MAX_SINGLE_PUT_BYTES == 5_000_000_000
+
+
+def test_conflicting_412_and_bounded_409_are_fail_closed_or_retried():
+    class ConflictClient:
+        def put_object(self, **_):
+            raise ClientError({"Error": {"Code": "412"}}, "PutObject")
+        def head_object(self, **_):
+            return _head("wrong", 1, "backup", "wrong")
+
+    with pytest.raises(OffhostBackupError, match="remote_object_conflict"):
+        _put_and_verify(ConflictClient(), _config(), key="key", body=io.BytesIO(b"x"), size=1, checksum="checksum", digest_hex="a" * 64, backup_id="backup", content_type="application/json")
+
+    class RetryClient:
+        attempts = 0
+        def put_object(self, **_):
+            self.attempts += 1
+            if self.attempts < 3:
+                raise ClientError({"Error": {"Code": "409"}}, "PutObject")
+        def head_object(self, **_):
+            return _head("checksum", 1, "backup", "a" * 64)
+
+    retry = RetryClient()
+    assert _put_and_verify(retry, _config(), key="key", body=io.BytesIO(b"x"), size=1, checksum="checksum", digest_hex="a" * 64, backup_id="backup", content_type="application/json") == "VERIFIED"
+    assert retry.attempts == 3
+
+
+def test_malformed_receipt_is_fail_closed(tmp_path, sample_markets):
+    directory, _, metadata = _pair(tmp_path, sample_markets)
+    receipts = tmp_path / "state" / "receipts"
+    receipts.mkdir(parents=True)
+    (receipts / f"{metadata['backup_id']}.json").write_text("{")
+
+    result = run_offhost_replication(directory, tmp_path / "state", _config(), client=object())
+
+    assert result["status"] == "FAIL" and result["error_code"] == "invalid_receipt"
