@@ -18,6 +18,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--directory", required=True)
     parser.add_argument("--daily-retention", type=int, default=7)
     parser.add_argument("--weekly-retention", type=int, default=4)
+    parser.add_argument("--offhost-receipts-directory", required=True)
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         args.directory,
         daily_retention=args.daily_retention,
         weekly_retention=args.weekly_retention,
+        offhost_receipts_directory=args.offhost_receipts_directory,
     )
     if args.json:
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))

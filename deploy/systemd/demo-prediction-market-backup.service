@@ -11,7 +11,7 @@ WorkingDirectory=/home/rai/demo-prediction-market
 EnvironmentFile=/home/rai/demo-prediction-market/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=DEMO_PREDICTION_LIVE=0
-ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/run_scheduled_backup.py --directory /home/rai/demo-prediction-market/runtime/backups --daily-retention 7 --weekly-retention 4 --json
+ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/run_scheduled_backup.py --directory /home/rai/demo-prediction-market/runtime/backups --daily-retention 7 --weekly-retention 4 --offhost-receipts-directory /home/rai/demo-prediction-market/runtime/offhost-backups/receipts --json
 TimeoutStartSec=300
 StandardOutput=journal
 StandardError=journal

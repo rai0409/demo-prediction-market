@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import base64
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
 import tempfile
+import uuid
 from typing import Any, Iterator
 
 from app.database_backup import BackupError, _sha256, create_backup, metadata_path
@@ -124,7 +127,40 @@ def _delete_backup_pair(backup: Path) -> None:
     metadata_path(backup).unlink()
 
 
-def _new_state(source: Path, daily_retention: int, weekly_retention: int) -> dict[str, Any]:
+def _receipt_result(receipts: Path | None, backup: Path, metadata: dict[str, Any]) -> tuple[str, str | None]:
+    if receipts is None or not receipts.exists(): return "MISSING", "receipt_missing"
+    if not receipts.is_dir() or receipts.is_symlink() or stat.S_IMODE(receipts.stat().st_mode) != 0o700: return "INVALID", "receipt_store_invalid"
+    try:
+        backup_id = metadata["backup_id"]
+        if str(uuid.UUID(backup_id)) != backup_id: return "INVALID", "receipt_identity_mismatch"
+    except (KeyError, ValueError): return "INVALID", "receipt_identity_mismatch"
+    path = receipts / f"{backup_id}.json"
+    if not path.exists(): return "MISSING", "receipt_missing"
+    if path.is_symlink() or not path.is_file(): return "INVALID", "receipt_not_regular"
+    if stat.S_IMODE(path.stat().st_mode) != 0o600: return "INVALID", "receipt_permission_invalid"
+    try: receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError): return "INVALID", "receipt_json_invalid"
+    if not isinstance(receipt, dict) or receipt.get("status") != "VERIFIED" or receipt.get("provider") != "s3" or receipt.get("error_code") is not None: return "INVALID", "receipt_status_invalid"
+    if receipt.get("backup_id") != backup_id or receipt.get("backup_basename") != backup.name or receipt.get("backup_created_at") != metadata.get("created_at"): return "INVALID", "receipt_identity_mismatch"
+    sidecar = metadata_path(backup)
+    try: sidecar_bytes, size = sidecar.read_bytes(), backup.stat().st_size
+    except OSError: return "INVALID", "receipt_backup_size_mismatch"
+    meta_hex = hashlib.sha256(sidecar_bytes).hexdigest(); meta_b64 = base64.b64encode(hashlib.sha256(sidecar_bytes).digest()).decode("ascii")
+    backup_b64 = base64.b64encode(bytes.fromhex(metadata["backup_db_sha256"])).decode("ascii")
+    if receipt.get("local_backup_sha256") != metadata["backup_db_sha256"]: return "INVALID", "receipt_backup_hash_mismatch"
+    if receipt.get("local_backup_size_bytes") != size or receipt.get("remote_backup_size_bytes") != size: return "INVALID", "receipt_backup_size_mismatch"
+    if receipt.get("local_metadata_sha256") != meta_hex: return "INVALID", "receipt_metadata_hash_mismatch"
+    if receipt.get("local_metadata_size_bytes") != len(sidecar_bytes) or receipt.get("remote_metadata_size_bytes") != len(sidecar_bytes): return "INVALID", "receipt_metadata_size_mismatch"
+    if receipt.get("remote_backup_checksum_sha256") != backup_b64 or receipt.get("remote_metadata_checksum_sha256") != meta_b64: return "INVALID", "receipt_remote_checksum_mismatch"
+    db_key, meta_key = receipt.get("remote_backup_key"), receipt.get("remote_metadata_key")
+    if not isinstance(db_key, str) or not isinstance(meta_key, str) or not db_key.endswith(f"/{backup_id}/{backup.name}") or not meta_key.endswith(f"/{backup_id}/{sidecar.name}") or Path(db_key).parent != Path(meta_key).parent: return "INVALID", "receipt_remote_key_mismatch"
+    if receipt.get("backup_object_status") not in {"VERIFIED", "ALREADY_VERIFIED"} or receipt.get("metadata_object_status") not in {"VERIFIED", "ALREADY_VERIFIED"}: return "INVALID", "receipt_object_status_invalid"
+    try: uploaded, verified = _parse_created_at(receipt["uploaded_at"]), _parse_created_at(receipt["verified_at"])
+    except (KeyError, ValueError): return "INVALID", "receipt_timestamp_invalid"
+    return ("VERIFIED", None) if verified >= uploaded else ("INVALID", "receipt_timestamp_invalid")
+
+
+def _new_state(source: Path, daily_retention: int, weekly_retention: int, receipts: Path | None) -> dict[str, Any]:
     return {
         "status": "FAIL",
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -149,6 +185,12 @@ def _new_state(source: Path, daily_retention: int, weekly_retention: int) -> dic
         "kept_weekly": [],
         "deleted_backups": [],
         "invalid_candidates": [],
+        "offhost_receipts_directory": receipts.name if receipts else None,
+        "retention_protection_status": "NOT_RUN",
+        "prune_candidates": [],
+        "offhost_verified_prune_candidates": [],
+        "protected_pending_offhost": [],
+        "invalid_offhost_receipts": [],
         "retention_status": "NOT_RUN",
         "error_code": None,
     }
@@ -160,11 +202,13 @@ def run_scheduled_backup(
     *,
     daily_retention: int = 7,
     weekly_retention: int = 4,
+    offhost_receipts_directory: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create one backup and, only with a trustworthy inventory, prune old pairs."""
     source_path = Path(source)
     backup_directory = Path(directory)
-    state = _new_state(source_path, daily_retention, weekly_retention)
+    receipts = Path(offhost_receipts_directory) if offhost_receipts_directory is not None else None
+    state = _new_state(source_path, daily_retention, weekly_retention, receipts)
 
     try:
         if daily_retention < 0 or weekly_retention < 0:
@@ -218,17 +262,30 @@ def run_scheduled_backup(
             state["kept_daily"] = [backup.name for _, backup, _ in daily]
             state["kept_weekly"] = [backup.name for backup in weekly]
 
-            for _, candidate, _ in candidates:
-                if candidate not in keep:
-                    try:
-                        _delete_backup_pair(candidate)
-                    except OSError:
-                        raise BackupError("retention_delete_failed") from None
-                    state["deleted_backups"].append(candidate.name)
+            candidate_metadata = {path: metadata for _, path, metadata in candidates}
+            prune_candidates = [candidate for _, candidate, _ in candidates if candidate not in keep]
+            state["prune_candidates"] = [candidate.name for candidate in prune_candidates]
+            for candidate in prune_candidates:
+                receipt_status, reason = _receipt_result(receipts, candidate, candidate_metadata[candidate])
+                if receipt_status == "MISSING":
+                    state["protected_pending_offhost"].append(candidate.name)
+                    continue
+                if receipt_status == "INVALID":
+                    state["protected_pending_offhost"].append(candidate.name)
+                    state["invalid_offhost_receipts"].append({"backup": candidate.name, "reason": reason})
+                    continue
+                state["offhost_verified_prune_candidates"].append(candidate.name)
+                try:
+                    _delete_backup_pair(candidate)
+                except OSError:
+                    raise BackupError("retention_delete_failed") from None
+                state["deleted_backups"].append(candidate.name)
 
             after, _ = backup_inventory(backup_directory)
             state["inventory_after"] = [backup.name for _, backup, _ in after]
-            state["retention_status"] = "PASS"
+            protected = state["protected_pending_offhost"]
+            state["retention_status"] = "DEGRADED" if protected else "PASS"
+            state["retention_protection_status"] = "DEGRADED" if protected else "PASS"
             state["status"] = "PASS"
     except BackupError as exc:
         state["error_code"] = exc.code
