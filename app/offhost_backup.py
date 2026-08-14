@@ -13,12 +13,13 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import tempfile
 from typing import Any, BinaryIO, Iterator
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.backup_retention import backup_inventory
 from app.database_backup import metadata_path
@@ -48,7 +49,7 @@ class OffhostConfig:
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "OffhostConfig":
         values = os.environ if environ is None else environ
-        enabled = values.get("DEMO_OFFHOST_BACKUP_ENABLED", "0").strip() in {"1", "true", "yes", "on"}
+        enabled = values.get("DEMO_OFFHOST_BACKUP_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
         return cls(
             enabled=enabled,
             bucket=values.get("DEMO_OFFHOST_S3_BUCKET", "").strip(),
@@ -105,7 +106,7 @@ def object_keys(config: OffhostConfig, metadata: dict[str, Any], backup_basename
     if instant.tzinfo is None or instant.utcoffset() is None:
         raise OffhostBackupError("invalid_local_backup_inventory")
     day = instant.astimezone(timezone.utc)
-    root = f"{config.prefix}/backups/{day:%Y/%m/%d}/{backup_id}"
+    root = f"{_normalise_prefix(config.prefix)}/backups/{day:%Y/%m/%d}/{backup_id}"
     return f"{root}/{backup_basename}", f"{root}/{metadata_basename}"
 
 
@@ -157,6 +158,17 @@ def _client_code(exc: ClientError) -> str:
     return str(exc.response.get("Error", {}).get("Code", "client_error"))
 
 
+def classify_conditional_put_error(exc: ClientError) -> str | None:
+    """Classify Amazon S3 conditional PutObject failures by code and HTTP status."""
+    code = _client_code(exc)
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    if code in {"PreconditionFailed", "412"} or status == 412:
+        return "precondition"
+    if code in {"ConditionalRequestConflict", "409"} or status == 409:
+        return "conditional"
+    return None
+
+
 def _head(client: Any, config: OffhostConfig, key: str) -> dict[str, Any]:
     try:
         return client.head_object(Bucket=config.bucket, Key=key, ExpectedBucketOwner=config.expected_bucket_owner, ChecksumMode="ENABLED")
@@ -196,15 +208,15 @@ def _put_and_verify(client: Any, config: OffhostConfig, *, key: str, body: Binar
             _verify_head(_head(client, config, key), checksum, size, backup_id, digest_hex)
             return "VERIFIED"
         except ClientError as exc:
-            code = _client_code(exc)
-            if code == "412":
+            classification = classify_conditional_put_error(exc)
+            if classification == "precondition":
                 _verify_head(_head(client, config, key), checksum, size, backup_id, digest_hex)
                 return "ALREADY_VERIFIED"
-            if code == "409" and attempt < 2:
+            if classification == "conditional" and attempt < 2:
                 continue
-            if code == "409":
+            if classification == "conditional":
                 raise OffhostBackupError("remote_conditional_retry_exhausted") from None
-            raise OffhostBackupError(f"s3_{code.lower()}") from None
+            raise OffhostBackupError(f"s3_{_client_code(exc).lower()}") from None
     raise OffhostBackupError("remote_conditional_retry_exhausted")
 
 
@@ -233,10 +245,18 @@ def _receipt(path: Path, payload: dict[str, Any]) -> None:
     _atomic_json(path, payload)
 
 
+def _git_head() -> str | None:
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).parents[1], text=True, capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
 def _initial_state(config: OffhostConfig) -> dict[str, Any]:
     return {
         "status": "FAIL", "replication_status": "NOT_RUN", "started_at": datetime.now(timezone.utc).isoformat(), "completed_at": None,
-        "git_head": None, "provider": "s3", "bucket": config.bucket, "prefix": config.prefix, "region": config.region,
+        "git_head": _git_head(), "provider": "s3", "bucket": config.bucket, "prefix": config.prefix, "region": config.region,
         "expected_bucket_owner": config.expected_bucket_owner, "eligible_count": 0, "verified_count": 0, "uploaded_count": 0,
         "already_verified_count": 0, "receipt_count": 0, "verified_backup_ids": [], "failed_backup_id": None,
         "invalid_candidates": [], "offhost_protection_available": False, "error_code": None,
@@ -277,17 +297,21 @@ def run_offhost_replication(directory: str | Path, state_directory: str | Path, 
                         raise OffhostBackupError("invalid_receipt") from None
                     if existing_receipt.get("status") != "VERIFIED" or existing_receipt.get("backup_id") != backup_id:
                         raise OffhostBackupError("invalid_receipt")
-                db_key, metadata_key = object_keys(config, metadata, backup_path.name, metadata_path(backup_path).name)
+                sidecar_path = metadata_path(backup_path)
+                try:
+                    metadata_bytes = sidecar_path.read_bytes()
+                    snapshot_metadata = json.loads(metadata_bytes.decode("utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    raise OffhostBackupError("local_backup_changed") from None
+                if not isinstance(snapshot_metadata, dict) or snapshot_metadata != metadata:
+                    raise OffhostBackupError("local_backup_changed")
+                meta_hex, meta_checksum = _sha256_bytes(metadata_bytes)
+                db_key, metadata_key = object_keys(config, metadata, backup_path.name, sidecar_path.name)
                 handle, db_size, db_checksum = _read_backup(backup_path, metadata["backup_db_sha256"])
                 try:
                     db_status = _put_and_verify(s3, config, key=db_key, body=handle, size=db_size, checksum=db_checksum, digest_hex=metadata["backup_db_sha256"], backup_id=backup_id, content_type="application/vnd.sqlite3")
                 finally:
                     handle.close()
-                try:
-                    metadata_bytes = metadata_path(backup_path).read_bytes()
-                except OSError as exc:
-                    raise OffhostBackupError("local_backup_changed") from exc
-                meta_hex, meta_checksum = _sha256_bytes(metadata_bytes)
                 meta_status = _put_and_verify(s3, config, key=metadata_key, body=metadata_bytes, size=len(metadata_bytes), checksum=meta_checksum, digest_hex=meta_hex, backup_id=backup_id, content_type="application/json")
                 now = datetime.now(timezone.utc).isoformat()
                 receipt = {
@@ -309,7 +333,7 @@ def run_offhost_replication(directory: str | Path, state_directory: str | Path, 
             state.update({"status": "PASS", "replication_status": "VERIFIED", "offhost_protection_available": True})
     except OffhostBackupError as exc:
         state["error_code"] = exc.code
-    except (OSError, ClientError):
+    except (OSError, BotoCoreError):
         state["error_code"] = "offhost_operational_failure"
     finally:
         state["completed_at"] = datetime.now(timezone.utc).isoformat()
