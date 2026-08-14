@@ -69,3 +69,19 @@ def test_backup_oneshot_and_daily_timer_are_hardened():
         assert item in service
     assert "Restart=" not in service and "SuccessExitStatus=" not in service and "bash -c" not in service
     for item in ("OnCalendar=*-*-* 03:15:00","Persistent=true","RandomizedDelaySec=15min","Unit=demo-prediction-market-backup.service","WantedBy=timers.target"): assert item in timer
+
+
+def test_offhost_backup_unit_has_network_only_in_its_independent_service():
+    local = Path("deploy/systemd/demo-prediction-market-backup.service").read_text()
+    service = Path("deploy/systemd/demo-prediction-market-offhost-backup.service").read_text()
+    timer = Path("deploy/systemd/demo-prediction-market-offhost-backup.timer").read_text()
+    assert "PrivateNetwork=true" in local
+    assert "OnSuccess=demo-prediction-market-offhost-backup.service" in local
+    assert "Wants=network-online.target" in service and "After=network-online.target" in service
+    assert "PrivateNetwork=true" not in service
+    assert _read_write_paths(service) == {RUNTIME_PATH}
+    for item in ("Type=oneshot", "run_offhost_backup.py", "UMask=0077", "NoNewPrivileges=true", "ProtectHome=read-only"):
+        assert item in service
+    assert "Restart=" not in service and "SuccessExitStatus=" not in service and "bash -c" not in service
+    for item in ("OnBootSec=10min", "OnUnitInactiveSec=1h", "Persistent=true", "RandomizedDelaySec=10min", "Unit=demo-prediction-market-offhost-backup.service", "WantedBy=timers.target"):
+        assert item in timer

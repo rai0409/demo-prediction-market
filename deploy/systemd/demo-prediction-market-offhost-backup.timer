@@ -1,0 +1,13 @@
+[Unit]
+Description=Retry Demo Prediction Market off-host backup replication
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1h
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=10min
+Unit=demo-prediction-market-offhost-backup.service
+
+[Install]
+WantedBy=timers.target

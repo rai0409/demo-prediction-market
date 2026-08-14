@@ -1,7 +1,7 @@
 [Unit]
-Description=Demo Prediction Market scheduled local database backup
-After=local-fs.target
-OnSuccess=demo-prediction-market-offhost-backup.service
+Description=Demo Prediction Market off-host S3 backup replication
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
@@ -11,16 +11,15 @@ WorkingDirectory=/home/rai/demo-prediction-market
 EnvironmentFile=/home/rai/demo-prediction-market/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=DEMO_PREDICTION_LIVE=0
-ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/run_scheduled_backup.py --directory /home/rai/demo-prediction-market/runtime/backups --daily-retention 7 --weekly-retention 4 --json
+ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/run_offhost_backup.py --directory /home/rai/demo-prediction-market/runtime/backups --state-directory /home/rai/demo-prediction-market/runtime/offhost-backups --json
 TimeoutStartSec=300
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=demo-prediction-market-backup
+SyslogIdentifier=demo-prediction-market-offhost-backup
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
-PrivateNetwork=true
 ProtectSystem=strict
 ProtectHome=read-only
 ProtectKernelTunables=true
@@ -30,5 +29,4 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictRealtime=true
 SystemCallArchitectures=native
-ReadWritePaths=/home/rai/demo-prediction-market/data
 ReadWritePaths=/home/rai/demo-prediction-market/runtime
