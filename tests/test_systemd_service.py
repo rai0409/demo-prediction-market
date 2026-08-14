@@ -63,7 +63,7 @@ def test_runtime_directory_is_present_without_tracking_generated_files():
 
 def test_backup_oneshot_and_daily_timer_are_hardened():
     service=Path("deploy/systemd/demo-prediction-market-backup.service").read_text(); timer=Path("deploy/systemd/demo-prediction-market-backup.timer").read_text()
-    assert "Type=oneshot" in service and "run_scheduled_backup.py --directory /home/rai/demo-prediction-market/runtime/backups --daily-retention 7 --weekly-retention 4 --json" in service
+    assert "Type=oneshot" in service and "run_scheduled_backup.py --directory /home/rai/demo-prediction-market/runtime/backups --daily-retention 7 --weekly-retention 4 --offhost-receipts-directory /home/rai/demo-prediction-market/runtime/offhost-backups/receipts --json" in service
     assert _read_write_paths(service)=={DATA_PATH,RUNTIME_PATH}
     for item in ("EnvironmentFile=/home/rai/demo-prediction-market/.env", "Environment=DEMO_PREDICTION_LIVE=0", "TimeoutStartSec=300", "StandardOutput=journal", "StandardError=journal", "SyslogIdentifier=demo-prediction-market-backup", "PrivateNetwork=true", "ProtectHome=read-only", "NoNewPrivileges=true", "PrivateTmp=true", "PrivateDevices=true", "ProtectSystem=strict", "ProtectKernelTunables=true", "ProtectKernelModules=true", "ProtectControlGroups=true", "RestrictSUIDSGID=true", "LockPersonality=true", "RestrictRealtime=true", "SystemCallArchitectures=native", "UMask=0077"):
         assert item in service

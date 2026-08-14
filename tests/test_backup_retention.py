@@ -1,4 +1,6 @@
 import fcntl
+import base64
+import hashlib
 import json
 import os
 import stat
@@ -27,6 +29,16 @@ def _historical_backup(source, directory, instant):
     return backup
 
 
+def _verified_receipt(receipts, backup):
+    receipts.mkdir(exist_ok=True); os.chmod(receipts, 0o700)
+    sidecar = metadata_path(backup); metadata = json.loads(sidecar.read_text()); raw = sidecar.read_bytes()
+    meta_hex = hashlib.sha256(raw).hexdigest(); meta_b64 = base64.b64encode(hashlib.sha256(raw).digest()).decode()
+    backup_b64 = base64.b64encode(bytes.fromhex(metadata["backup_db_sha256"])).decode(); backup_id = metadata["backup_id"]; now = datetime.now(timezone.utc).isoformat()
+    receipt = {"status":"VERIFIED","provider":"s3","backup_id":backup_id,"backup_basename":backup.name,"backup_created_at":metadata["created_at"],"local_backup_sha256":metadata["backup_db_sha256"],"local_backup_size_bytes":backup.stat().st_size,"local_metadata_sha256":meta_hex,"local_metadata_size_bytes":len(raw),"remote_backup_key":f"x/{backup_id}/{backup.name}","remote_metadata_key":f"x/{backup_id}/{sidecar.name}","remote_backup_checksum_sha256":backup_b64,"remote_metadata_checksum_sha256":meta_b64,"remote_backup_size_bytes":backup.stat().st_size,"remote_metadata_size_bytes":len(raw),"uploaded_at":now,"verified_at":now,"backup_object_status":"VERIFIED","metadata_object_status":"VERIFIED","error_code":None}
+    path = receipts / f"{backup_id}.json"; path.write_text(json.dumps(receipt)); os.chmod(path, 0o600)
+    return path
+
+
 def test_scheduled_run_creates_secure_backup_and_state(tmp_path, sample_markets):
     source = _source(tmp_path, sample_markets)
     directory = tmp_path / "backups"
@@ -48,14 +60,16 @@ def test_scheduled_run_creates_secure_backup_and_state(tmp_path, sample_markets)
     assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
 
 
-def test_daily_and_weekly_retention_deduplicates_and_prunes_unprotected(tmp_path, sample_markets):
+def test_daily_and_weekly_retention_prunes_only_verified_receipts(tmp_path, sample_markets):
     source = _source(tmp_path, sample_markets)
     directory = tmp_path / "backups"
     directory.mkdir()
     newest = datetime.now(timezone.utc) - timedelta(days=1)
     historical = [_historical_backup(source, directory, newest - timedelta(days=days)) for days in range(2, 50, 4)]
+    receipts = tmp_path / "receipts"
+    for backup in historical: _verified_receipt(receipts, backup)
 
-    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=2, weekly_retention=4)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=2, weekly_retention=4, offhost_receipts_directory=receipts)
     remaining, invalid = backup_retention.backup_inventory(directory)
     remaining_names = {backup.name for _, backup, _ in remaining}
 
@@ -65,6 +79,30 @@ def test_daily_and_weekly_retention_deduplicates_and_prunes_unprotected(tmp_path
     assert len(set(result["kept_daily"] + result["kept_weekly"])) == len(remaining_names)
     assert result["deleted_backups"]
     assert any(not backup.exists() for backup in historical)
+    assert all(path.exists() for path in receipts.iterdir())
+
+
+def test_missing_receipt_holds_prune_candidate_without_failing_backup(tmp_path, sample_markets):
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir()
+    old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30))
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=tmp_path / "missing")
+    assert result["status"] == "PASS" and result["retention_status"] == "DEGRADED"
+    assert old.exists() and metadata_path(old).exists() and old.name in result["protected_pending_offhost"] and result["deleted_backups"] == []
+
+
+def test_real_offhost_receipt_authorizes_historical_prune(tmp_path, sample_markets):
+    from botocore.stub import Stubber
+    from app.offhost_backup import run_offhost_replication
+    from test_offhost_backup import _client, _config, _expect_pair
+    source = _source(tmp_path, sample_markets); directory = tmp_path / "backups"; directory.mkdir()
+    old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30))
+    metadata = json.loads(metadata_path(old).read_text()); client, config = _client(), _config(); state = tmp_path / "offhost"
+    with Stubber(client) as stubber:
+        _expect_pair(stubber, config, old, metadata)
+        assert run_offhost_replication(directory, state, config, client=client)["status"] == "PASS"
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=state / "receipts")
+    assert result["status"] == "PASS" and not old.exists() and not metadata_path(old).exists()
+    assert (state / "receipts" / f"{metadata['backup_id']}.json").exists()
 
 
 def test_small_inventory_is_not_pruned(tmp_path, sample_markets):
@@ -177,10 +215,11 @@ def test_delete_failure_is_reported_and_current_backup_survives(tmp_path, sample
     source = _source(tmp_path, sample_markets)
     directory = tmp_path / "backups"
     directory.mkdir()
-    _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30))
+    old = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30))
+    receipts = tmp_path / "receipts"; _verified_receipt(receipts, old)
     monkeypatch.setattr(backup_retention, "_delete_backup_pair", lambda _: (_ for _ in ()).throw(OSError("denied")))
 
-    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0)
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0, offhost_receipts_directory=receipts)
 
     assert result["status"] == "FAIL"
     assert result["error_code"] == "retention_delete_failed"
