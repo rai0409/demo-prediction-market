@@ -66,6 +66,7 @@ def backup_inventory(directory: Path) -> tuple[list[tuple[datetime, Path, dict[s
     invalid: list[str] = []
     for backup in directory.glob("scheduled-*.sqlite3"):
         if not SCHEDULED_NAME.fullmatch(backup.name):
+            invalid.append(backup.name)
             continue
         try:
             sidecar = metadata_path(backup)
@@ -90,7 +91,7 @@ def backup_inventory(directory: Path) -> tuple[list[tuple[datetime, Path, dict[s
             eligible.append((created_at, backup, metadata))
     for sidecar in directory.glob("scheduled-*.sqlite3.metadata.json"):
         backup = sidecar.with_name(sidecar.name.removesuffix(".metadata.json"))
-        if SCHEDULED_NAME.fullmatch(backup.name) and not backup.exists():
+        if not SCHEDULED_NAME.fullmatch(backup.name) or not backup.exists():
             invalid.append(sidecar.name)
     return sorted(eligible, key=lambda candidate: candidate[0], reverse=True), sorted(invalid)
 

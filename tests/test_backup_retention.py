@@ -109,6 +109,42 @@ def test_invalid_scheduler_artifacts_are_never_pruned(tmp_path, sample_markets, 
     assert retained.name in result["invalid_candidates"]
 
 
+def test_malformed_scheduler_backup_filename_blocks_pruning(tmp_path, sample_markets):
+    source = _source(tmp_path, sample_markets)
+    directory = tmp_path / "backups"
+    directory.mkdir()
+    old_valid = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30))
+    malformed = directory / "scheduled-broken.sqlite3"
+    malformed.write_bytes(b"not a scheduler backup")
+
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0)
+
+    assert result["status"] == "FAIL"
+    assert result["retention_status"] == "DEGRADED"
+    assert result["error_code"] == "invalid_backup_inventory"
+    assert malformed.exists() and malformed.name in result["invalid_candidates"]
+    assert old_valid.exists()
+    assert result["deleted_backups"] == []
+
+
+def test_malformed_scheduler_sidecar_filename_blocks_pruning(tmp_path, sample_markets):
+    source = _source(tmp_path, sample_markets)
+    directory = tmp_path / "backups"
+    directory.mkdir()
+    old_valid = _historical_backup(source, directory, datetime.now(timezone.utc) - timedelta(days=30))
+    malformed = directory / "scheduled-broken.sqlite3.metadata.json"
+    malformed.write_text("{}")
+
+    result = backup_retention.run_scheduled_backup(source, directory, daily_retention=0, weekly_retention=0)
+
+    assert result["status"] == "FAIL"
+    assert result["retention_status"] == "DEGRADED"
+    assert result["error_code"] == "invalid_backup_inventory"
+    assert malformed.exists() and malformed.name in result["invalid_candidates"]
+    assert old_valid.exists()
+    assert result["deleted_backups"] == []
+
+
 def test_unknown_files_are_not_part_of_retention_inventory(tmp_path, sample_markets):
     source = _source(tmp_path, sample_markets)
     directory = tmp_path / "backups"
