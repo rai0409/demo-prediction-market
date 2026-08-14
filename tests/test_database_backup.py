@@ -25,6 +25,12 @@ def test_backup_restore_round_trip_preserves_storage_readability(tmp_path, sampl
     metadata = json.loads(metadata_path(backup).read_text())
     assert "password_hash" not in json.dumps(metadata)
     assert metadata["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert metadata["backup_id"]
+    assert metadata["backup_size_bytes"] == backup.stat().st_size
+    assert len(metadata["backup_db_sha256"]) == 64
+    assert metadata["quick_check_result"] == "ok"
+    assert metadata["foreign_key_check_rows"] == 0
+    assert metadata["collateral_invariant_result"] == "verified"
     restored_result = restore_backup(backup, restored, production_db=source)
     assert restored_result["status"] == "success"
     restored_conn = connect(str(restored))
