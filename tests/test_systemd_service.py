@@ -85,3 +85,19 @@ def test_offhost_backup_unit_has_network_only_in_its_independent_service():
     assert "Restart=" not in service and "SuccessExitStatus=" not in service and "bash -c" not in service
     for item in ("OnBootSec=10min", "OnUnitInactiveSec=1h", "Persistent=true", "RandomizedDelaySec=10min", "Unit=demo-prediction-market-offhost-backup.service", "WantedBy=timers.target"):
         assert item in timer
+
+
+def test_recovery_health_units_are_local_read_only_and_hourly():
+    service = Path("deploy/systemd/demo-prediction-market-recovery-health.service").read_text()
+    timer = Path("deploy/systemd/demo-prediction-market-recovery-health.timer").read_text()
+    assert "Type=oneshot" in service
+    assert "check_recovery_health.py --backup-directory /home/rai/demo-prediction-market/runtime/backups --offhost-state-directory /home/rai/demo-prediction-market/runtime/offhost-backups --artifact /home/rai/demo-prediction-market/runtime/recovery-health/status.json --json" in service
+    assert "User=rai" in service and "Group=rai" in service
+    assert "PrivateNetwork=true" in service
+    assert _read_write_paths(service) == {"/home/rai/demo-prediction-market/runtime"}
+    for item in ("NoNewPrivileges=true", "PrivateTmp=true", "PrivateDevices=true", "ProtectSystem=strict", "ProtectHome=read-only", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/backups", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/offhost-backups", "UMask=0077"):
+        assert item in service
+    for forbidden in ("EnvironmentFile=", "run_offhost_backup.py", "run_scheduled_backup.py", "validate_recovery.py", "boto3", "Restart=", "SuccessExitStatus=", "bash -c"):
+        assert forbidden not in service
+    for item in ("OnBootSec=5min", "OnUnitInactiveSec=1h", "Persistent=true", "Unit=demo-prediction-market-recovery-health.service", "WantedBy=timers.target"):
+        assert item in timer
