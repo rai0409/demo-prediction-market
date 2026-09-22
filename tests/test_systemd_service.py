@@ -101,3 +101,19 @@ def test_recovery_health_units_are_local_read_only_and_hourly():
         assert forbidden not in service
     for item in ("OnBootSec=5min", "OnUnitInactiveSec=1h", "Persistent=true", "Unit=demo-prediction-market-recovery-health.service", "WantedBy=timers.target"):
         assert item in timer
+
+
+def test_restore_drill_units_are_private_read_only_and_weekly():
+    service = Path("deploy/systemd/demo-prediction-market-restore-drill.service").read_text()
+    timer = Path("deploy/systemd/demo-prediction-market-restore-drill.timer").read_text()
+    assert "Type=oneshot" in service
+    assert "run_scheduled_restore_drill.py --backup-directory /home/rai/demo-prediction-market/runtime/backups --artifact /home/rai/demo-prediction-market/runtime/recovery-drill/status.json --json" in service
+    assert "User=rai" in service and "Group=rai" in service
+    assert "PrivateNetwork=true" in service
+    assert _read_write_paths(service) == {RUNTIME_PATH}
+    for item in ("NoNewPrivileges=true", "PrivateTmp=true", "PrivateDevices=true", "ProtectSystem=strict", "ProtectHome=read-only", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/backups", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/offhost-backups", "UMask=0077"):
+        assert item in service
+    for forbidden in ("EnvironmentFile=", "run_scheduled_backup.py", "run_offhost_backup.py", "boto3", "Restart=", "SuccessExitStatus=", "bash -c"):
+        assert forbidden not in service
+    for item in ("OnCalendar=Sun *-*-* 04:30:00", "Persistent=true", "Unit=demo-prediction-market-restore-drill.service", "WantedBy=timers.target"):
+        assert item in timer

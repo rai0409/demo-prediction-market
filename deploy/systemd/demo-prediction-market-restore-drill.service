@@ -1,0 +1,33 @@
+[Unit]
+Description=Demo Prediction Market scheduled isolated restore drill
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=rai
+Group=rai
+WorkingDirectory=/home/rai/demo-prediction-market
+Environment=PYTHONUNBUFFERED=1
+Environment=DEMO_PREDICTION_LIVE=0
+ExecStart=/home/rai/demo-prediction-market/.venv/bin/python /home/rai/demo-prediction-market/scripts/run_scheduled_restore_drill.py --backup-directory /home/rai/demo-prediction-market/runtime/backups --artifact /home/rai/demo-prediction-market/runtime/recovery-drill/status.json --json
+TimeoutStartSec=240
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=demo-prediction-market-restore-drill
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/backups
+ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/offhost-backups
+ReadWritePaths=/home/rai/demo-prediction-market/runtime

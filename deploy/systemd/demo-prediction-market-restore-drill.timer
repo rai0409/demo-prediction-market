@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Demo Prediction Market restore drill weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=10min
+Unit=demo-prediction-market-restore-drill.service
+
+[Install]
+WantedBy=timers.target
