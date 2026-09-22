@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Demo Prediction Market recovery health check hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=1h
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=5min
+Unit=demo-prediction-market-recovery-health.service
+
+[Install]
+WantedBy=timers.target

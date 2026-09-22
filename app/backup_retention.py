@@ -127,37 +127,50 @@ def _delete_backup_pair(backup: Path) -> None:
     metadata_path(backup).unlink()
 
 
-def _receipt_result(receipts: Path | None, backup: Path, metadata: dict[str, Any]) -> tuple[str, str | None]:
-    if receipts is None or not receipts.exists(): return "MISSING", "receipt_missing"
-    if not receipts.is_dir() or receipts.is_symlink() or stat.S_IMODE(receipts.stat().st_mode) != 0o700: return "INVALID", "receipt_store_invalid"
+def validate_verified_receipt(
+    receipts: Path | None, backup: Path, metadata: dict[str, Any]
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    """Validate a local VERIFIED receipt without making any remote request.
+
+    The return contract is deliberately suitable for read-only consumers such as
+    recovery health checks.  Retention keeps its historical two-value wrapper
+    below, so its external behavior is unchanged.
+    """
+    if receipts is None or not receipts.exists(): return "MISSING", "receipt_missing", None
+    if not receipts.is_dir() or receipts.is_symlink() or stat.S_IMODE(receipts.stat().st_mode) != 0o700: return "INVALID", "receipt_store_invalid", None
     try:
         backup_id = metadata["backup_id"]
-        if str(uuid.UUID(backup_id)) != backup_id: return "INVALID", "receipt_identity_mismatch"
-    except (KeyError, ValueError): return "INVALID", "receipt_identity_mismatch"
+        if str(uuid.UUID(backup_id)) != backup_id: return "INVALID", "receipt_identity_mismatch", None
+    except (KeyError, ValueError): return "INVALID", "receipt_identity_mismatch", None
     path = receipts / f"{backup_id}.json"
-    if not path.exists(): return "MISSING", "receipt_missing"
-    if path.is_symlink() or not path.is_file(): return "INVALID", "receipt_not_regular"
-    if stat.S_IMODE(path.stat().st_mode) != 0o600: return "INVALID", "receipt_permission_invalid"
+    if not path.exists(): return "MISSING", "receipt_missing", None
+    if path.is_symlink() or not path.is_file(): return "INVALID", "receipt_not_regular", None
+    if stat.S_IMODE(path.stat().st_mode) != 0o600: return "INVALID", "receipt_permission_invalid", None
     try: receipt = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError): return "INVALID", "receipt_json_invalid"
-    if not isinstance(receipt, dict) or receipt.get("status") != "VERIFIED" or receipt.get("provider") != "s3" or receipt.get("error_code") is not None: return "INVALID", "receipt_status_invalid"
-    if receipt.get("backup_id") != backup_id or receipt.get("backup_basename") != backup.name or receipt.get("backup_created_at") != metadata.get("created_at"): return "INVALID", "receipt_identity_mismatch"
+    except (OSError, json.JSONDecodeError): return "INVALID", "receipt_json_invalid", None
+    if not isinstance(receipt, dict) or receipt.get("status") != "VERIFIED" or receipt.get("provider") != "s3" or receipt.get("error_code") is not None: return "INVALID", "receipt_status_invalid", None
+    if receipt.get("backup_id") != backup_id or receipt.get("backup_basename") != backup.name or receipt.get("backup_created_at") != metadata.get("created_at"): return "INVALID", "receipt_identity_mismatch", None
     sidecar = metadata_path(backup)
     try: sidecar_bytes, size = sidecar.read_bytes(), backup.stat().st_size
-    except OSError: return "INVALID", "receipt_backup_size_mismatch"
+    except OSError: return "INVALID", "receipt_backup_size_mismatch", None
     meta_hex = hashlib.sha256(sidecar_bytes).hexdigest(); meta_b64 = base64.b64encode(hashlib.sha256(sidecar_bytes).digest()).decode("ascii")
     backup_b64 = base64.b64encode(bytes.fromhex(metadata["backup_db_sha256"])).decode("ascii")
-    if receipt.get("local_backup_sha256") != metadata["backup_db_sha256"]: return "INVALID", "receipt_backup_hash_mismatch"
-    if receipt.get("local_backup_size_bytes") != size or receipt.get("remote_backup_size_bytes") != size: return "INVALID", "receipt_backup_size_mismatch"
-    if receipt.get("local_metadata_sha256") != meta_hex: return "INVALID", "receipt_metadata_hash_mismatch"
-    if receipt.get("local_metadata_size_bytes") != len(sidecar_bytes) or receipt.get("remote_metadata_size_bytes") != len(sidecar_bytes): return "INVALID", "receipt_metadata_size_mismatch"
-    if receipt.get("remote_backup_checksum_sha256") != backup_b64 or receipt.get("remote_metadata_checksum_sha256") != meta_b64: return "INVALID", "receipt_remote_checksum_mismatch"
+    if receipt.get("local_backup_sha256") != metadata["backup_db_sha256"]: return "INVALID", "receipt_backup_hash_mismatch", None
+    if receipt.get("local_backup_size_bytes") != size or receipt.get("remote_backup_size_bytes") != size: return "INVALID", "receipt_backup_size_mismatch", None
+    if receipt.get("local_metadata_sha256") != meta_hex: return "INVALID", "receipt_metadata_hash_mismatch", None
+    if receipt.get("local_metadata_size_bytes") != len(sidecar_bytes) or receipt.get("remote_metadata_size_bytes") != len(sidecar_bytes): return "INVALID", "receipt_metadata_size_mismatch", None
+    if receipt.get("remote_backup_checksum_sha256") != backup_b64 or receipt.get("remote_metadata_checksum_sha256") != meta_b64: return "INVALID", "receipt_remote_checksum_mismatch", None
     db_key, meta_key = receipt.get("remote_backup_key"), receipt.get("remote_metadata_key")
-    if not isinstance(db_key, str) or not isinstance(meta_key, str) or not db_key.endswith(f"/{backup_id}/{backup.name}") or not meta_key.endswith(f"/{backup_id}/{sidecar.name}") or Path(db_key).parent != Path(meta_key).parent: return "INVALID", "receipt_remote_key_mismatch"
-    if receipt.get("backup_object_status") not in {"VERIFIED", "ALREADY_VERIFIED"} or receipt.get("metadata_object_status") not in {"VERIFIED", "ALREADY_VERIFIED"}: return "INVALID", "receipt_object_status_invalid"
+    if not isinstance(db_key, str) or not isinstance(meta_key, str) or not db_key.endswith(f"/{backup_id}/{backup.name}") or not meta_key.endswith(f"/{backup_id}/{sidecar.name}") or Path(db_key).parent != Path(meta_key).parent: return "INVALID", "receipt_remote_key_mismatch", None
+    if receipt.get("backup_object_status") not in {"VERIFIED", "ALREADY_VERIFIED"} or receipt.get("metadata_object_status") not in {"VERIFIED", "ALREADY_VERIFIED"}: return "INVALID", "receipt_object_status_invalid", None
     try: uploaded, verified = _parse_created_at(receipt["uploaded_at"]), _parse_created_at(receipt["verified_at"])
-    except (KeyError, ValueError): return "INVALID", "receipt_timestamp_invalid"
-    return ("VERIFIED", None) if verified >= uploaded else ("INVALID", "receipt_timestamp_invalid")
+    except (KeyError, ValueError): return "INVALID", "receipt_timestamp_invalid", None
+    return ("VERIFIED", None, receipt) if verified >= uploaded else ("INVALID", "receipt_timestamp_invalid", None)
+
+
+def _receipt_result(receipts: Path | None, backup: Path, metadata: dict[str, Any]) -> tuple[str, str | None]:
+    status, reason, _ = validate_verified_receipt(receipts, backup, metadata)
+    return status, reason
 
 
 def _new_state(source: Path, daily_retention: int, weekly_retention: int, receipts: Path | None) -> dict[str, Any]:
