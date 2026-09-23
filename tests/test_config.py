@@ -183,3 +183,19 @@ def test_translation_config_defaults_and_bounds(monkeypatch):
     assert get_settings().translation_max_chars == 200
     monkeypatch.setenv("DEMO_TRANSLATION_MAX_CHARS", "999999")
     assert get_settings().translation_max_chars == 20000
+
+
+def test_recovery_alert_webhook_config_defaults_and_bounds(monkeypatch):
+    for name in ("DEMO_RECOVERY_ALERT_WEBHOOK_ENABLED", "DEMO_RECOVERY_ALERT_WEBHOOK_URL", "DEMO_RECOVERY_ALERT_WEBHOOK_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    settings = get_settings()
+    assert settings.recovery_alert_webhook_enabled is False
+    assert settings.recovery_alert_webhook_url == ""
+    assert settings.recovery_alert_webhook_timeout_seconds == 10
+    monkeypatch.setenv("DEMO_RECOVERY_ALERT_WEBHOOK_ENABLED", "true")
+    monkeypatch.setenv("DEMO_RECOVERY_ALERT_WEBHOOK_URL", "https://example.invalid/hook")
+    monkeypatch.setenv("DEMO_RECOVERY_ALERT_WEBHOOK_TIMEOUT_SECONDS", "999")
+    settings = get_settings()
+    assert settings.recovery_alert_webhook_enabled is True
+    assert settings.recovery_alert_webhook_url == "https://example.invalid/hook"
+    assert settings.recovery_alert_webhook_timeout_seconds == 120

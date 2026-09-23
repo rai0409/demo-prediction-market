@@ -1,0 +1,13 @@
+[Unit]
+Description=Evaluate Demo Prediction Market recovery alert every fifteen minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=1min
+Unit=demo-prediction-market-recovery-alert.service
+
+[Install]
+WantedBy=timers.target

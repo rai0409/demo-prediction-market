@@ -58,6 +58,9 @@ class Settings:
     sync_alert_webhook_enabled: bool = False
     sync_alert_webhook_url: str = ""
     sync_alert_webhook_timeout_seconds: int = 10
+    recovery_alert_webhook_enabled: bool = False
+    recovery_alert_webhook_url: str = ""
+    recovery_alert_webhook_timeout_seconds: int = 10
 
 
 def _int_env(name: str, default: int) -> int:
@@ -173,4 +176,7 @@ def get_settings() -> Settings:
         sync_alert_webhook_enabled=_bool_env("DEMO_SYNC_ALERT_WEBHOOK_ENABLED", False),
         sync_alert_webhook_url=os.getenv("DEMO_SYNC_ALERT_WEBHOOK_URL", "").strip(),
         sync_alert_webhook_timeout_seconds=max(1, min(120, _int_env("DEMO_SYNC_ALERT_WEBHOOK_TIMEOUT_SECONDS", 10))),
+        recovery_alert_webhook_enabled=_bool_env("DEMO_RECOVERY_ALERT_WEBHOOK_ENABLED", False),
+        recovery_alert_webhook_url=os.getenv("DEMO_RECOVERY_ALERT_WEBHOOK_URL", "").strip(),
+        recovery_alert_webhook_timeout_seconds=max(1, min(120, _int_env("DEMO_RECOVERY_ALERT_WEBHOOK_TIMEOUT_SECONDS", 10))),
     )

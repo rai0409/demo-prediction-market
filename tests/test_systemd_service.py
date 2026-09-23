@@ -117,3 +117,19 @@ def test_restore_drill_units_are_private_read_only_and_weekly():
         assert forbidden not in service
     for item in ("OnCalendar=Sun *-*-* 04:30:00", "Persistent=true", "Unit=demo-prediction-market-restore-drill.service", "WantedBy=timers.target"):
         assert item in timer
+
+
+def test_recovery_alert_units_allow_network_and_only_write_alert_state():
+    service = Path("deploy/systemd/demo-prediction-market-recovery-alert.service").read_text()
+    timer = Path("deploy/systemd/demo-prediction-market-recovery-alert.timer").read_text()
+    assert "Type=oneshot" in service
+    assert "run_recovery_alert_notification.py --json" in service
+    assert "EnvironmentFile=/home/rai/demo-prediction-market/.env" in service
+    assert "Wants=network-online.target" in service and "After=network-online.target" in service
+    assert "PrivateNetwork=true" not in service
+    assert _read_write_paths(service) == {RUNTIME_PATH}
+    for item in ("ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/recovery-health", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/recovery-drill", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/backups", "ReadOnlyPaths=/home/rai/demo-prediction-market/runtime/offhost-backups", "NoNewPrivileges=true", "ProtectHome=read-only", "UMask=0077"):
+        assert item in service
+    assert "Restart=" not in service and "bash -c" not in service
+    for item in ("OnBootSec=5min", "OnUnitInactiveSec=15min", "Persistent=true", "AccuracySec=1min", "RandomizedDelaySec=1min", "Unit=demo-prediction-market-recovery-alert.service", "WantedBy=timers.target"):
+        assert item in timer
