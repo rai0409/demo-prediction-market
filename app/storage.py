@@ -661,11 +661,122 @@ def _validate_schema_v1(conn: sqlite3.Connection) -> None:
         raise RuntimeError(f"schema v1 missing indexes: {sorted(missing_indexes)}")
     for table, expected_columns in CURRENT_SCHEMA_COLUMNS.items():
         columns = tuple(row["name"] for row in conn.execute(f"pragma table_info({table})"))
-        if columns != expected_columns:
+        if len(columns) != len(expected_columns) or set(columns) != set(expected_columns):
             raise RuntimeError(f"schema v1 invalid columns for {table}")
     if conn.execute("pragma foreign_key_check").fetchone() is not None:
         raise RuntimeError("schema v1 foreign key check failed")
 
+
+
+def _backfill_fully_legacy_audit_chain(conn: sqlite3.Connection) -> int:
+    """Backfill integrity metadata only for a fully legacy-unhashed audit chain."""
+    rows = conn.execute(
+        "select * from demo_audit_events order by id asc"
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    legacy_rows = []
+    hashed_rows = []
+
+    for row in rows:
+        previous_hash = row["previous_event_hash"] or ""
+        event_hash = row["event_hash"] or ""
+        payload_json = row["integrity_payload_json"] or ""
+
+        if not previous_hash and not event_hash and not payload_json:
+            legacy_rows.append(row)
+            continue
+
+        if event_hash and payload_json:
+            hashed_rows.append(row)
+            continue
+
+        raise RuntimeError(
+            "audit integrity metadata partially populated; explicit reconciliation required"
+        )
+
+    if legacy_rows and hashed_rows:
+        raise RuntimeError(
+            "mixed legacy and hashed audit chain; explicit reconciliation required"
+        )
+
+    if hashed_rows:
+        result = verify_audit_chain(conn)
+        if result["integrity_status"] != "verified":
+            raise RuntimeError("existing audit chain verification failed")
+        return 0
+
+    previous_hash = ""
+
+    for row in legacy_rows:
+        reference_id = (
+            str(row["reference_id"])
+            if row["reference_id"] is not None
+            else None
+        )
+
+        payload_json = _canonical_json(
+            _audit_integrity_payload(
+                event_type=row["event_type"],
+                user_id=row["user_id"],
+                route=row["route"],
+                request_id=row["request_id"],
+                reference_type=row["reference_type"],
+                reference_id=reference_id,
+                before_json=row["before_json"],
+                after_json=row["after_json"],
+                note=row["note"],
+                created_at=row["created_at"],
+            )
+        )
+
+        event_hash = _audit_event_hash(previous_hash, payload_json)
+
+        cursor = conn.execute(
+            """
+            update demo_audit_events
+            set previous_event_hash = ?,
+                event_hash = ?,
+                integrity_payload_json = ?
+            where id = ?
+              and (previous_event_hash is null or previous_event_hash = '')
+              and (event_hash is null or event_hash = '')
+              and (integrity_payload_json is null or integrity_payload_json = '')
+            """,
+            (
+                previous_hash,
+                event_hash,
+                payload_json,
+                row["id"],
+            ),
+        )
+
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "legacy audit row changed during integrity backfill"
+            )
+
+        previous_hash = event_hash
+
+    insert_audit_event(
+        conn,
+        event_type="audit_integrity_backfilled",
+        reference_type="schema_migration",
+        reference_id=f"{LEGACY_SCHEMA_VERSION}->{CURRENT_SCHEMA_VERSION}",
+        after={
+            "backfilled_rows": len(legacy_rows),
+            "schema_version": CURRENT_SCHEMA_VERSION,
+        },
+        note="legacy audit integrity metadata backfilled",
+    )
+
+    result = verify_audit_chain(conn)
+    if result["integrity_status"] != "verified":
+        raise RuntimeError("audit integrity backfill verification failed")
+
+    return len(legacy_rows)
 
 def init_db(conn: sqlite3.Connection) -> None:
     if conn.in_transaction:
@@ -689,6 +800,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             _ensure_column(conn, "simulated_orders", "request_id", "text")
             _ensure_column(conn, "simulated_positions", "idempotency_key", "text")
             _ensure_column(conn, "simulated_positions", "request_id", "text")
+            _backfill_fully_legacy_audit_chain(conn)
             now = datetime.now(timezone.utc).isoformat()
             conn.execute("insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)", ("fixed_odds_v1", 1, "legacy", now))
             conn.execute("insert or ignore into prediction_engines(engine_key, engine_version, status, created_at) values (?, ?, ?, ?)", ("collateralized_clob_v2", 2, "available", now))
