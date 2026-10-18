@@ -103,22 +103,7 @@ def create_demo_prediction(
     max_stake: float | None = None,
 ) -> dict[str, Any]:
     request_id = request_id or str(uuid4())
-    market = get_market(conn, market_id)
-    if market is None:
-        raise DemoPredictionError("market not found", 404)
-    classification = classify_market_for_display(market)
-    if not classification.is_demo_participation_allowed:
-        reason = classification.reasons[0] if classification.reasons else "デモ参加対象外"
-        raise DemoPredictionError(f"demo participation not allowed: {reason}")
     normalized_stake, numeric_stake = _normalize_stake(stake)
-    if max_stake is not None and normalized_stake > Decimal(str(max_stake)):
-        raise DemoPredictionError("stake is above the allowed demo point limit")
-    outcomes = market["outcomes"]
-    if outcome not in outcomes:
-        raise DemoPredictionError("invalid outcome")
-
-    probability = float(market["probabilities"].get(outcome, 0))
-    estimated_return = estimated_simulation_return(numeric_stake, probability)
 
     with _prediction_transaction(conn):
         if idempotency_key:
@@ -151,6 +136,21 @@ def create_demo_prediction(
                 )
                 return {"balance": get_balance(conn, user_id), "position": position, "idempotent_replay": True}
 
+        market = get_market(conn, market_id)
+        if market is None:
+            raise DemoPredictionError("market not found", 404)
+        classification = classify_market_for_display(market)
+        if not classification.is_demo_participation_allowed:
+            reason = classification.reasons[0] if classification.reasons else "デモ参加対象外"
+            raise DemoPredictionError(f"demo participation not allowed: {reason}")
+        if max_stake is not None and normalized_stake > Decimal(str(max_stake)):
+            raise DemoPredictionError("stake is above the allowed demo point limit")
+        outcomes = market["outcomes"]
+        if outcome not in outcomes:
+            raise DemoPredictionError("invalid outcome")
+
+        probability = float(market["probabilities"].get(outcome, 0))
+        estimated_return = estimated_simulation_return(numeric_stake, probability)
         balance = get_balance(conn, user_id)
         if numeric_stake > balance:
             raise DemoPredictionError("insufficient demo points")

@@ -81,6 +81,90 @@ def test_prediction_idempotency_replays_same_normalized_payload(db_conn, sample_
 
 
 @pytest.mark.parametrize(
+    "market_changes",
+    [
+        {"closed": True},
+        {"active": False},
+        {"end_date": "2000-01-01T00:00:00+00:00"},
+    ],
+    ids=["closed", "inactive", "expired"],
+)
+def test_prediction_idempotency_replays_after_market_becomes_unavailable(
+    db_conn, sample_markets, market_changes
+):
+    market_id = sample_markets[0]["market_id"]
+    first = create_demo_prediction(
+        db_conn, market_id=market_id, outcome="YES", stake=10, idempotency_key="replay-after-close"
+    )
+    db_conn.execute(
+        "update demo_settlements set status = 'settled_win' where position_id = ?",
+        (first["position"]["id"],),
+    )
+    changed_market = dict(sample_markets[0])
+    changed_market.update(market_changes)
+    store_markets(db_conn, [changed_market])
+    before = _prediction_snapshot(db_conn)
+
+    replay = create_demo_prediction(
+        db_conn, market_id=market_id, outcome="YES", stake="10.0", idempotency_key="replay-after-close"
+    )
+    after = _prediction_snapshot(db_conn)
+
+    assert replay["idempotent_replay"] is True
+    assert replay["position"]["id"] == first["position"]["id"]
+    assert replay["position"]["settlement_status"] == "settled_win"
+    for field in ("balance", "orders", "positions", "prediction_ledger", "settlements"):
+        assert after[field] == before[field]
+    assert after["audit_chain"]["integrity_status"] == "verified"
+
+
+@pytest.mark.parametrize(
+    "market_changes",
+    [
+        {"closed": True},
+        {"active": False},
+        {"end_date": "2000-01-01T00:00:00+00:00"},
+        {"liquidity": 0},
+    ],
+    ids=["closed", "inactive", "expired", "no-liquidity"],
+)
+def test_prediction_new_key_rejects_unavailable_market(db_conn, sample_markets, market_changes):
+    changed_market = dict(sample_markets[0])
+    changed_market.update(market_changes)
+    store_markets(db_conn, [changed_market])
+    before = _prediction_snapshot(db_conn)
+
+    with pytest.raises(DemoPredictionError, match="demo participation not allowed"):
+        create_demo_prediction(
+            db_conn,
+            market_id=changed_market["market_id"],
+            outcome="YES",
+            stake=10,
+            idempotency_key="new-key-after-close",
+        )
+
+    assert _prediction_snapshot(db_conn) == before
+
+
+def test_prediction_conflict_after_market_close_preserves_state(db_conn, sample_markets):
+    market_id = sample_markets[0]["market_id"]
+    create_demo_prediction(
+        db_conn, market_id=market_id, outcome="YES", stake=10, idempotency_key="conflict-after-close"
+    )
+    closed_market = dict(sample_markets[0], closed=True)
+    store_markets(db_conn, [closed_market])
+    before = _prediction_snapshot(db_conn)
+
+    with pytest.raises(DemoPredictionError) as exc_info:
+        create_demo_prediction(
+            db_conn, market_id=market_id, outcome="NO", stake=10, idempotency_key="conflict-after-close"
+        )
+
+    assert exc_info.value.status_code == 409
+    assert _prediction_snapshot(db_conn) == before
+
+
+@pytest.mark.parametrize(
     ("market_id", "outcome", "stake"),
     [
         ("other-market", "YES", 10),
