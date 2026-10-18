@@ -8,6 +8,7 @@ class Settings:
     poll_seconds: int
     limit: int
     db_path: str
+    production: bool = False
     auto_refresh: bool = False
     refresh_seconds: int = 60
     quick_refresh_seconds: int = 5
@@ -123,6 +124,7 @@ def get_settings() -> Settings:
         raise ValueError("AUTH_COOKIE_SECURE must be enabled in live mode")
     return Settings(
         live=live,
+        production=production,
         poll_seconds=max(15, min(30, _int_env("DEMO_PREDICTION_POLL_SECONDS", 30))),
         limit=max(1, _int_env("DEMO_PREDICTION_LIMIT", 50)),
         db_path=os.getenv("DEMO_PREDICTION_DB", "data/demo_prediction.sqlite3"),

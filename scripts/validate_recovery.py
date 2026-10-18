@@ -75,50 +75,65 @@ def _runtime(base_url: str, database: Path) -> tuple[bool, bool]:
 def validate_recovery(backup: str | Path, artifact: str | Path) -> dict[str, Any]:
     backup_path, artifact_path = Path(backup), Path(artifact)
     started = time.monotonic()
-    result: dict[str, Any] = {"recovery_validation": "FAIL", "backup_id": None, "validated_at": datetime.now(timezone.utc).isoformat(), "git_head": None, "backup_schema_version": None, "post_restore_schema_version": None, "backup_db_sha256": None, "quick_check": None, "foreign_key_check_rows": None, "audit_chain": None, "collateral_invariants": None, "post_restore_health": False, "post_restore_ready": False, "duration_ms": 0, "error_code": None}
+    result: dict[str, Any] = {"recovery_validation": "FAIL", "backup_id": None, "validated_at": datetime.now(timezone.utc).isoformat(), "git_head": None, "backup_schema_version": None, "post_restore_schema_version": None, "backup_db_sha256": None, "quick_check": None, "foreign_key_check_rows": None, "audit_chain": None, "collateral_invariants": None, "post_restore_health": False, "post_restore_ready": False, "duration_ms": 0, "error_code": None, "failure_stage": None, "exception_class": None}
+    stage = "backup.file_check"
     try:
         if not backup_path.is_file():
             raise BackupError("backup_not_found")
+        stage = "backup.metadata_check"
         sidecar = metadata_path(backup_path)
         if not sidecar.is_file():
             raise BackupError("metadata_missing")
         try:
+            stage = "backup.metadata_read"
             metadata = json.loads(sidecar.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             raise BackupError("metadata_invalid") from None
         if not isinstance(metadata, dict) or not {"schema_version", "schema_hash", "table_counts", "audit_final_hash"} <= set(metadata):
             raise BackupError("metadata_invalid")
         result.update({"backup_id": metadata.get("backup_id"), "git_head": metadata.get("git_head"), "backup_schema_version": metadata.get("schema_version"), "backup_db_sha256": metadata.get("backup_db_sha256")})
+        stage = "backup.hash_check"
         if metadata.get("backup_db_sha256") is not None and _sha256(backup_path) != metadata["backup_db_sha256"]:
             raise BackupError("backup_hash_mismatch")
+        stage = "backup.schema_check"
         if int(metadata["schema_version"]) > CURRENT_SCHEMA_VERSION:
             raise BackupError("schema_unsupported")
+        stage = "restore.temporary_directory"
         with tempfile.TemporaryDirectory(prefix="demo-prediction-recovery-") as directory:
             restored = Path(directory) / "restored.sqlite3"
+            stage = "restore.backup_copy"
             restore_backup(backup_path, restored, production_db=Path(directory) / "production.sqlite3")
+            stage = "restore.open_database"
             conn = connect(str(restored))
             try:
+                stage = "restore.quick_check"
                 quick = conn.execute("pragma quick_check").fetchone()[0]
                 if quick != "ok":
                     raise BackupError("sqlite_quick_check_failed")
+                stage = "restore.foreign_key_check"
                 fk_rows = len(conn.execute("pragma foreign_key_check").fetchall())
                 if fk_rows:
                     raise BackupError("foreign_key_check_failed")
+                stage = "restore.schema_check"
                 version = int(conn.execute("pragma user_version").fetchone()[0])
                 if version > CURRENT_SCHEMA_VERSION:
                     raise BackupError("schema_unsupported")
+                stage = "restore.required_tables"
                 tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'")}
                 if CURRENT_SCHEMA_REQUIRED_TABLES.difference(tables):
                     raise BackupError("required_table_missing")
+                stage = "restore.audit_chain"
                 audit = verify_audit_chain(conn)["integrity_status"]
                 if audit not in {"empty", "verified"}:
                     raise BackupError("audit_chain_failed")
+                stage = "restore.collateral_invariants"
                 collateral = verify_collateral_invariants(conn)["integrity_status"]
                 if collateral != "verified":
                     raise BackupError("collateral_invariant_failed")
                 result.update({"post_restore_schema_version": version, "quick_check": quick, "foreign_key_check_rows": fk_rows, "audit_chain": audit, "collateral_invariants": collateral})
             finally:
                 conn.close()
+            stage = "runtime.health_and_ready"
             health, ready = _runtime(f"http://127.0.0.1:{_port()}", restored)
             if not health:
                 raise BackupError("health_failed")
@@ -127,8 +142,12 @@ def validate_recovery(backup: str | Path, artifact: str | Path) -> dict[str, Any
             result.update({"post_restore_health": health, "post_restore_ready": ready, "recovery_validation": "PASS"})
     except BackupError as exc:
         result["error_code"] = exc.code
-    except Exception:
+        result["failure_stage"] = stage
+        result["exception_class"] = type(exc).__name__
+    except Exception as exc:
         result["error_code"] = "restore_failed"
+        result["failure_stage"] = stage
+        result["exception_class"] = type(exc).__name__
     finally:
         result["duration_ms"] = int((time.monotonic() - started) * 1000)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)

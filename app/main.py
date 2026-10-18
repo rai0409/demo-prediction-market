@@ -335,6 +335,10 @@ def current_demo_user_id(request: Request, conn: sqlite3.Connection) -> str:
     if auth_token:
         return ensure_demo_user(conn, require_authenticated_participant(request, conn))
 
+    # Public/live mode never falls back to a shared local-demo participant.
+    if settings.live or settings.production:
+        return ensure_demo_user(conn, require_authenticated_participant(request, conn))
+
     # Development/test-only participant override. Disabled by default.
     raw_header_override = (
         request.headers.get(DEMO_USER_HEADER)

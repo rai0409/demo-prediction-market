@@ -1,5 +1,8 @@
 from dataclasses import replace
 
+from app.config import Settings
+from app.storage import create_user_account, create_user_session, ensure_demo_user
+
 
 def test_normal_japanese_ui_has_no_participant_switch(client):
     response = client.get("/?lang=ja")
@@ -194,3 +197,46 @@ def test_rejection_log_does_not_trust_header_when_disabled(
         main._operation_rejections[-1]["参加者"]
         != "forged-participant"
     )
+
+
+def test_production_mode_requires_authentication_and_ignores_demo_identity_spoofing(client, db_conn, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(
+        main,
+        "settings",
+        Settings(live=False, production=True, poll_seconds=30, limit=50, db_path=":memory:"),
+    )
+
+    for path in ("/api/demo/balance", "/api/demo/positions", "/api/demo/wallet"):
+        response = client.get(path, headers={"x-demo-user": "other-participant"})
+        assert response.status_code == 401
+
+    ensure_demo_user(db_conn, "authenticated-participant")
+    account = create_user_account(
+        db_conn,
+        email="authenticated@example.test",
+        password="long enough password",
+        participant_id="authenticated-participant",
+    )
+    _, token = create_user_session(db_conn, user_id=account["id"], ttl_seconds=3600)
+    db_conn.commit()
+    client.cookies[main.auth_session_cookie_name()] = token
+    client.cookies[main.demo_session_cookie_name()] = "other-participant"
+
+    response = client.get("/api/demo/balance", headers={"x-demo-user": "other-participant"})
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "authenticated-participant"
+
+
+def test_production_mode_rejects_invalid_authentication_session(client, monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(
+        main,
+        "settings",
+        Settings(live=False, production=True, poll_seconds=30, limit=50, db_path=":memory:"),
+    )
+    client.cookies[main.auth_session_cookie_name()] = "invalid-session-token"
+
+    assert client.get("/api/demo/balance").status_code == 401

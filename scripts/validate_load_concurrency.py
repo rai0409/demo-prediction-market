@@ -58,6 +58,13 @@ SOURCE_V1_ARTIFACT_SHA256 = "aa3eb703768e1c4f7d498d077ec25de1ecd996f72766d473d39
 DIAGNOSIS_ARTIFACT_SHA256 = "c98ad5dab7482bd5fe081d2089cbfd6df4d545dfa0059329d284047faf426aa7"
 
 
+class HarnessDiagnosticError(RuntimeError):
+    def __init__(self, stage: str, cause: Exception):
+        self.stage = stage
+        self.exception_class = type(cause).__name__
+        super().__init__(stage)
+
+
 def percentile(values: list[float], fraction: float) -> float | None:
     if not values:
         return None
@@ -498,45 +505,69 @@ def run(mode: str, output: Path) -> dict[str, Any]:
     def run_isolated_level(kind: str, level: int) -> dict[str, Any]:
         nonlocal representative_environment
         process: subprocess.Popen[str] | None = None
-        with tempfile.TemporaryDirectory(prefix=f"demo-prediction-load-{kind}-{level}-") as temp_dir:
-            db_path = Path(temp_dir) / "load-validation.sqlite3"
-            market_id, clients = prepare_database(db_path, participant_count=participant_count)
-            if representative_environment is None:
-                representative_environment = environment_metadata(db_path)
-            port = select_port()
-            environment = os.environ.copy() | {
-                "DEMO_PREDICTION_DB": str(db_path), "DEMO_PREDICTION_LIVE": "0", "DEMO_PREDICTION_AUTO_REFRESH": "0",
-                "DEMO_PREDICTION_WS_ENABLED": "0", "DEMO_TRANSLATION_ENABLED": "0", "DEMO_ADMIN_TOKEN": "load-admin",
-            }
-            try:
-                process = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)], cwd=REPOSITORY_ROOT, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
-                base_url = f"http://127.0.0.1:{port}"
-                wait_ready(base_url)
-                if kind == "read":
-                    result = run_read_level(base_url, level, samples)
-                elif kind == "write":
-                    result = run_write_level(base_url, market_id, clients, level, f"write-{level}")
-                else:
-                    result = run_mixed_level(base_url, market_id, clients, level, f"mixed-{level}")
-                with create_http_client(base_url, 1) as post_client:
-                    post_health = request_once(post_client, "GET", "/health")[0] == 200
-                    post_ready = request_once(post_client, "GET", "/ready")[0] == 200
-                checks = integrity(db_path)
-                level_integrity[kind][str(level)] = {**checks, "post_load_health": post_health, "post_load_ready": post_ready}
-                return result
-            finally:
-                terminate_process(process)
+        stage = f"load.{kind}.{level}.temporary_database"
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"demo-prediction-load-{kind}-{level}-") as temp_dir:
+                db_path = Path(temp_dir) / "load-validation.sqlite3"
+                stage = f"load.{kind}.{level}.prepare_database"
+                market_id, clients = prepare_database(db_path, participant_count=participant_count)
+                if representative_environment is None:
+                    stage = f"load.{kind}.{level}.environment_metadata"
+                    representative_environment = environment_metadata(db_path)
+                stage = f"load.{kind}.{level}.select_port"
+                port = select_port()
+                environment = os.environ.copy() | {
+                    "DEMO_PREDICTION_DB": str(db_path), "DEMO_PREDICTION_LIVE": "0", "DEMO_PREDICTION_AUTO_REFRESH": "0",
+                    "DEMO_PREDICTION_WS_ENABLED": "0", "DEMO_TRANSLATION_ENABLED": "0", "DEMO_ADMIN_TOKEN": "load-admin",
+                }
+                try:
+                    stage = f"load.{kind}.{level}.start_uvicorn"
+                    process = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)], cwd=REPOSITORY_ROOT, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+                    base_url = f"http://127.0.0.1:{port}"
+                    stage = f"load.{kind}.{level}.wait_ready"
+                    wait_ready(base_url)
+                    stage = f"load.{kind}.{level}.{kind}_scenario"
+                    if kind == "read":
+                        result = run_read_level(base_url, level, samples)
+                    elif kind == "write":
+                        result = run_write_level(base_url, market_id, clients, level, f"write-{level}")
+                    else:
+                        result = run_mixed_level(base_url, market_id, clients, level, f"mixed-{level}")
+                    stage = f"load.{kind}.{level}.post_load_health"
+                    with create_http_client(base_url, 1) as post_client:
+                        post_health = request_once(post_client, "GET", "/health")[0] == 200
+                        post_ready = request_once(post_client, "GET", "/ready")[0] == 200
+                    stage = f"load.{kind}.{level}.integrity"
+                    checks = integrity(db_path)
+                    level_integrity[kind][str(level)] = {**checks, "post_load_health": post_health, "post_load_ready": post_ready}
+                    return result
+                finally:
+                    terminate_process(process)
+        except HarnessDiagnosticError:
+            raise
+        except Exception as exc:
+            raise HarnessDiagnosticError(stage, exc) from exc
 
     read = {str(level): run_isolated_level("read", level) for level in levels}
     write = {str(level): run_isolated_level("write", level) for level in levels}
     mixed = {str(level): run_isolated_level("mixed", level) for level in mixed_levels}
     # Keep the V1 correctness exercises, but isolate them from every measured level.
-    with tempfile.TemporaryDirectory(prefix="demo-prediction-load-correctness-") as temp_dir:
-        db_path = Path(temp_dir) / "load-validation.sqlite3"
-        market_id, _ = prepare_database(db_path, participant_count=participant_count)
-        contention = direct_contention(db_path, market_id)
-        idempotency = idempotency_contention(db_path, market_id)
-        correctness_integrity = integrity(db_path)
+    stage = "correctness.temporary_database"
+    try:
+        with tempfile.TemporaryDirectory(prefix="demo-prediction-load-correctness-") as temp_dir:
+            db_path = Path(temp_dir) / "load-validation.sqlite3"
+            stage = "correctness.prepare_database"
+            market_id, _ = prepare_database(db_path, participant_count=participant_count)
+            stage = "correctness.direct_contention"
+            contention = direct_contention(db_path, market_id)
+            stage = "correctness.idempotency_contention"
+            idempotency = idempotency_contention(db_path, market_id)
+            stage = "correctness.integrity"
+            correctness_integrity = integrity(db_path)
+    except HarnessDiagnosticError:
+        raise
+    except Exception as exc:
+        raise HarnessDiagnosticError(stage, exc) from exc
     checks = {"scenario_levels": level_integrity, "correctness": correctness_integrity}
     scenarios = {"read": read, "write": write, "mixed": mixed, "same_account_overspend": contention, "idempotency": idempotency}
     codes = failure_codes(scenarios, checks)
@@ -557,7 +588,10 @@ def run(mode: str, output: Path) -> dict[str, Any]:
         "integrity": checks, "safe_envelope": envelope, "commercial_load_readiness": readiness, "failure_codes": sorted(set(codes)), "post_load_health": post_health, "post_load_ready": post_ready,
         "comparison_to_v1": {"v1_read_safe_concurrency": 8, "v2_read_safe_concurrency": envelope["read"], "v1_write_safe_concurrency": 16, "v2_write_safe_concurrency": envelope["write"], "v1_mixed_safe_concurrency": 32, "v2_mixed_safe_concurrency": envelope["mixed"]},
     }
-    output.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+    try:
+        output.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n")
+    except Exception as exc:
+        raise HarnessDiagnosticError("artifact.write", exc) from exc
     return artifact
 
 
@@ -569,7 +603,9 @@ def main() -> int:
     try:
         artifact = run(args.mode, args.output)
     except Exception as exc:
-        print(f"harness_failure={type(exc).__name__}", file=sys.stderr)
+        stage = exc.stage if isinstance(exc, HarnessDiagnosticError) else "unknown"
+        exception_class = exc.exception_class if isinstance(exc, HarnessDiagnosticError) else type(exc).__name__
+        print(f"harness_failure={exception_class} failure_stage={stage} exception_class={exception_class}", file=sys.stderr)
         return 1
     print(json.dumps({"commercial_load_readiness": artifact["commercial_load_readiness"], "safe_envelope": artifact["safe_envelope"], "failure_codes": artifact["failure_codes"]}, indent=2))
     return 0 if artifact["commercial_load_readiness"] == "PASS" else 2

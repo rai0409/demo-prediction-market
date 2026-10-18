@@ -580,6 +580,39 @@ def test_post_demo_predict(client, sample_markets):
     assert response.json()["position"]["settlement_status"] == "pending"
 
 
+def test_post_demo_predict_idempotency_payload_conflict_is_409_and_has_no_side_effects(client, db_conn, sample_markets):
+    payload = {
+        "market_id": sample_markets[0]["market_id"],
+        "outcome": "YES",
+        "stake": 50,
+        "idempotency_key": "route-payload-conflict",
+    }
+    first = client.post("/api/demo/predict", json=payload)
+    assert first.status_code == 200
+    before = {
+        "balance": get_balance(db_conn),
+        "orders": db_conn.execute("select count(*) from simulated_orders").fetchone()[0],
+        "positions": db_conn.execute("select count(*) from simulated_positions").fetchone()[0],
+        "ledger": db_conn.execute("select count(*) from demo_point_ledger where entry_type = 'prediction'").fetchone()[0],
+        "settlements": db_conn.execute("select count(*) from demo_settlements").fetchone()[0],
+        "audit": verify_audit_chain(db_conn),
+    }
+
+    conflict = client.post("/api/demo/predict", json={**payload, "outcome": "NO"})
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "idempotency key payload conflict"}
+    after = {
+        "balance": get_balance(db_conn),
+        "orders": db_conn.execute("select count(*) from simulated_orders").fetchone()[0],
+        "positions": db_conn.execute("select count(*) from simulated_positions").fetchone()[0],
+        "ledger": db_conn.execute("select count(*) from demo_point_ledger where entry_type = 'prediction'").fetchone()[0],
+        "settlements": db_conn.execute("select count(*) from demo_settlements").fetchone()[0],
+        "audit": verify_audit_chain(db_conn),
+    }
+    assert after == before
+
+
 def test_post_demo_predict_creates_pending_settlement(client, db_conn, sample_markets):
     response = client.post(
         "/api/demo/predict",

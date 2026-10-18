@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 import sqlite3
 from typing import Any
 from uuid import uuid4
@@ -23,6 +25,66 @@ class DemoPredictionError(ValueError):
         self.status_code = status_code
 
 
+def _normalize_stake(value: Any) -> tuple[Decimal, float]:
+    """Return the V1 REAL-compatible canonical stake after finite Decimal validation."""
+    try:
+        decimal_stake = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise DemoPredictionError("stake must be numeric") from None
+    if not decimal_stake.is_finite():
+        raise DemoPredictionError("stake must be finite")
+    if decimal_stake <= 0:
+        raise DemoPredictionError("stake must be greater than 0")
+    numeric_stake = float(decimal_stake)
+    if not Decimal(str(numeric_stake)).is_finite():
+        raise DemoPredictionError("stake must be finite")
+    # V1 stores REAL values. Canonicalize through that persisted representation
+    # so equivalent text/number inputs compare compatibly with existing rows.
+    return Decimal(str(numeric_stake)), numeric_stake
+
+
+def _matches_idempotency_payload(
+    position: dict[str, Any],
+    *,
+    market_id: str,
+    outcome: str,
+    stake: Decimal,
+) -> bool:
+    if position["market_id"] != market_id or position["outcome"] != outcome:
+        return False
+    try:
+        existing_stake, _ = _normalize_stake(position["stake"])
+    except DemoPredictionError:
+        return False
+    return existing_stake == stake
+
+
+@contextmanager
+def _prediction_transaction(conn: sqlite3.Connection):
+    """Serialize top-level V1 balance writes and preserve caller transactions."""
+    if conn.in_transaction:
+        savepoint = f"demo_prediction_{id(conn)}"
+        conn.execute(f"savepoint {savepoint}")
+        try:
+            yield
+        except Exception:
+            conn.execute(f"rollback to savepoint {savepoint}")
+            conn.execute(f"release savepoint {savepoint}")
+            raise
+        else:
+            conn.execute(f"release savepoint {savepoint}")
+        return
+
+    conn.execute("begin immediate")
+    try:
+        yield
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+
+
 def estimated_simulation_return(stake: float, probability: float) -> float:
     if probability <= 0:
         return 0.0
@@ -41,30 +103,6 @@ def create_demo_prediction(
     max_stake: float | None = None,
 ) -> dict[str, Any]:
     request_id = request_id or str(uuid4())
-    if idempotency_key:
-        existing_position = get_position_by_idempotency_key(
-            conn,
-            user_id=user_id,
-            idempotency_key=idempotency_key,
-        )
-        if existing_position:
-            settlement = get_settlement_by_position_id(conn, int(existing_position["id"]))
-            position = dict(existing_position)
-            position["settlement_status"] = settlement["status"] if settlement else "pending"
-            insert_audit_event(
-                conn,
-                event_type="demo_prediction_replayed",
-                user_id=user_id,
-                route="/api/demo/predict",
-                request_id=request_id,
-                reference_type="simulated_position",
-                reference_id=position["id"],
-                after={"position_id": position["id"], "idempotency_key": idempotency_key},
-                note="idempotent demo participation replay",
-            )
-            conn.commit()
-            return {"balance": get_balance(conn, user_id), "position": position, "idempotent_replay": True}
-
     market = get_market(conn, market_id)
     if market is None:
         raise DemoPredictionError("market not found", 404)
@@ -72,27 +110,57 @@ def create_demo_prediction(
     if not classification.is_demo_participation_allowed:
         reason = classification.reasons[0] if classification.reasons else "デモ参加対象外"
         raise DemoPredictionError(f"demo participation not allowed: {reason}")
-    try:
-        numeric_stake = float(stake)
-    except (TypeError, ValueError):
-        raise DemoPredictionError("stake must be numeric")
-    if numeric_stake <= 0:
-        raise DemoPredictionError("stake must be greater than 0")
-    if max_stake is not None and numeric_stake > max_stake:
+    normalized_stake, numeric_stake = _normalize_stake(stake)
+    if max_stake is not None and normalized_stake > Decimal(str(max_stake)):
         raise DemoPredictionError("stake is above the allowed demo point limit")
     outcomes = market["outcomes"]
     if outcome not in outcomes:
         raise DemoPredictionError("invalid outcome")
-    balance = get_balance(conn, user_id)
-    if numeric_stake > balance:
-        raise DemoPredictionError("insufficient demo points")
 
     probability = float(market["probabilities"].get(outcome, 0))
     estimated_return = estimated_simulation_return(numeric_stake, probability)
-    updated_balance = round(balance - numeric_stake, 2)
 
-    with conn:
-        conn.execute("update demo_users set balance = ? where user_id = ?", (updated_balance, user_id))
+    with _prediction_transaction(conn):
+        if idempotency_key:
+            existing_position = get_position_by_idempotency_key(
+                conn,
+                user_id=user_id,
+                idempotency_key=idempotency_key,
+            )
+            if existing_position:
+                if not _matches_idempotency_payload(
+                    dict(existing_position),
+                    market_id=market_id,
+                    outcome=outcome,
+                    stake=normalized_stake,
+                ):
+                    raise DemoPredictionError("idempotency key payload conflict", 409)
+                settlement = get_settlement_by_position_id(conn, int(existing_position["id"]))
+                position = dict(existing_position)
+                position["settlement_status"] = settlement["status"] if settlement else "pending"
+                insert_audit_event(
+                    conn,
+                    event_type="demo_prediction_replayed",
+                    user_id=user_id,
+                    route="/api/demo/predict",
+                    request_id=request_id,
+                    reference_type="simulated_position",
+                    reference_id=position["id"],
+                    after={"position_id": position["id"], "idempotency_key": idempotency_key},
+                    note="idempotent demo participation replay",
+                )
+                return {"balance": get_balance(conn, user_id), "position": position, "idempotent_replay": True}
+
+        balance = get_balance(conn, user_id)
+        if numeric_stake > balance:
+            raise DemoPredictionError("insufficient demo points")
+        updated_balance = round(balance - numeric_stake, 2)
+        updated = conn.execute(
+            "update demo_users set balance = ? where user_id = ? and balance >= ?",
+            (updated_balance, user_id, numeric_stake),
+        )
+        if updated.rowcount != 1:
+            raise DemoPredictionError("insufficient demo points")
         order_cursor = conn.execute(
             """
             insert into simulated_orders(user_id, market_id, outcome, stake, probability, idempotency_key, request_id)
