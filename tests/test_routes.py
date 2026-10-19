@@ -22,6 +22,7 @@ from app.storage import (
     verify_audit_chain,
     record_market_sync_run,
     revoke_user_session,
+    store_markets,
 )
 from app.storage import replace_markets
 from app.collateral_ledger import POINT_SCALE, allocate_v2_points_to_participant, bootstrap_v2_point_supply, create_collateral_market
@@ -578,6 +579,82 @@ def test_post_demo_predict(client, sample_markets):
     assert response.json()["position"]["outcome"] == "YES"
     assert response.json()["position"]["estimated_return"] > 0
     assert response.json()["position"]["settlement_status"] == "pending"
+
+
+def test_post_demo_predict_idempotency_payload_conflict_is_409_and_has_no_side_effects(client, db_conn, sample_markets):
+    payload = {
+        "market_id": sample_markets[0]["market_id"],
+        "outcome": "YES",
+        "stake": 50,
+        "idempotency_key": "route-payload-conflict",
+    }
+    first = client.post("/api/demo/predict", json=payload)
+    assert first.status_code == 200
+    before = {
+        "balance": get_balance(db_conn),
+        "orders": db_conn.execute("select count(*) from simulated_orders").fetchone()[0],
+        "positions": db_conn.execute("select count(*) from simulated_positions").fetchone()[0],
+        "ledger": db_conn.execute("select count(*) from demo_point_ledger where entry_type = 'prediction'").fetchone()[0],
+        "settlements": db_conn.execute("select count(*) from demo_settlements").fetchone()[0],
+        "audit": verify_audit_chain(db_conn),
+    }
+
+    conflict = client.post("/api/demo/predict", json={**payload, "outcome": "NO"})
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "idempotency key payload conflict"}
+    after = {
+        "balance": get_balance(db_conn),
+        "orders": db_conn.execute("select count(*) from simulated_orders").fetchone()[0],
+        "positions": db_conn.execute("select count(*) from simulated_positions").fetchone()[0],
+        "ledger": db_conn.execute("select count(*) from demo_point_ledger where entry_type = 'prediction'").fetchone()[0],
+        "settlements": db_conn.execute("select count(*) from demo_settlements").fetchone()[0],
+        "audit": verify_audit_chain(db_conn),
+    }
+    assert after == before
+
+
+def test_post_demo_predict_replays_after_close_and_conflicts_remain_409(client, db_conn, sample_markets):
+    payload = {
+        "market_id": sample_markets[0]["market_id"],
+        "outcome": "YES",
+        "stake": 50,
+        "idempotency_key": "route-replay-after-close",
+    }
+    first = client.post("/api/demo/predict", json=payload)
+    assert first.status_code == 200
+    db_conn.execute(
+        "update demo_settlements set status = 'settled_win' where position_id = ?",
+        (first.json()["position"]["id"],),
+    )
+    closed_market = dict(sample_markets[0], closed=True)
+    store_markets(db_conn, [closed_market])
+
+    replay = client.post("/api/demo/predict", json={**payload, "stake": "50.0"})
+    assert replay.status_code == 200
+    assert replay.json()["idempotent_replay"] is True
+    assert replay.json()["position"]["settlement_status"] == "settled_win"
+    after_replay = {
+        "balance": get_balance(db_conn),
+        "orders": db_conn.execute("select count(*) from simulated_orders").fetchone()[0],
+        "positions": db_conn.execute("select count(*) from simulated_positions").fetchone()[0],
+        "ledger": db_conn.execute("select count(*) from demo_point_ledger where entry_type = 'prediction'").fetchone()[0],
+        "settlements": db_conn.execute("select count(*) from demo_settlements").fetchone()[0],
+        "audit": verify_audit_chain(db_conn),
+    }
+
+    conflict = client.post("/api/demo/predict", json={**payload, "outcome": "NO"})
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "idempotency key payload conflict"}
+    assert {
+        "balance": get_balance(db_conn),
+        "orders": db_conn.execute("select count(*) from simulated_orders").fetchone()[0],
+        "positions": db_conn.execute("select count(*) from simulated_positions").fetchone()[0],
+        "ledger": db_conn.execute("select count(*) from demo_point_ledger where entry_type = 'prediction'").fetchone()[0],
+        "settlements": db_conn.execute("select count(*) from demo_settlements").fetchone()[0],
+        "audit": verify_audit_chain(db_conn),
+    } == after_replay
 
 
 def test_post_demo_predict_creates_pending_settlement(client, db_conn, sample_markets):

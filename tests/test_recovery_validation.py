@@ -18,6 +18,7 @@ def test_recovery_validation_restores_and_writes_a_readable_artifact(tmp_path, s
     make_db(source, sample_markets)
     create_backup(source, backup)
     monkeypatch.setattr(recovery, "_runtime", lambda *_args: (True, True))
+    monkeypatch.setattr(recovery, "_port", lambda: 12345)
     result = recovery.validate_recovery(backup, artifact)
     assert result["recovery_validation"] == "PASS"
     assert result["quick_check"] == "ok"
@@ -65,6 +66,7 @@ def test_recovery_validation_rejects_health_and_ready_failures_separately(tmp_pa
     source, backup = tmp_path / "source.db", tmp_path / "backup.sqlite"
     make_db(source, sample_markets); create_backup(source, backup)
     monkeypatch.setattr(recovery, "_runtime", lambda *_args: (False, False))
+    monkeypatch.setattr(recovery, "_port", lambda: 12345)
     health = recovery.validate_recovery(backup, tmp_path / "health.json")
     assert health["recovery_validation"] == "FAIL" and health["error_code"] == "health_failed"
     monkeypatch.setattr(recovery, "_runtime", lambda *_args: (True, False))
