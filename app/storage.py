@@ -163,6 +163,7 @@ def clear_rate_limit_bucket(
 
 LEGACY_SCHEMA_VERSION = 0
 CURRENT_SCHEMA_VERSION = 1
+CLOB_SCHEMA_VERSION = 2
 
 
 V1_SCHEMA_SQL = """

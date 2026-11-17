@@ -45,6 +45,8 @@ Only `open` admits or matches. A freeze transaction first changes market status 
 
 ## 3. Accounting and conservation
 
+The normative [V2 Balance History Contract](v2-balance-history-contract.md) extends this section and the schema, migration, and acceptance requirements in sections 5, 7 and 9 with checkpointed bucket history, ordered mutation records, and source-role reconciliation. Both contracts apply together; history records do not add a second balance mutation. The extension is design-only and does not authorize production migration or enable features.
+
 For a trade of q shares, BUY limit B and maker price P, all integer micro-points: `1 <= P <= B <= 10000` and P >= SELL limit. Apply simultaneously:
 
 | Ledger role | Bucket | Delta |
@@ -225,7 +227,7 @@ These are required future tests (65 cases including the original 52), not claims
 
 ## 9. Delivery and acceptance gates
 
-- **3B-2:** schema version migration, chosen reservation/event extension, verifier, backup/restore and legacy compatibility fixtures; both feature flags off. No matching. The old external cancel/reject routes must continue to work for unlinked legacy reservations. The migration is strictly offline/isolated until separately authorized.
+- **3B-2:** schema version migration, chosen reservation/event extension, verifier, backup/restore and legacy compatibility fixtures; both feature flags off. No matching. The old external cancel/reject routes must continue to work for unlinked legacy reservations. The migration is strictly offline/isolated until separately authorized. The balance-history checkpoint, guarded writer capture and reconciliation specified in `v2-balance-history-contract.md` are required before revised V2 writes can be enabled; an isolated schema-only stage remains fail-closed.
 - **3B-3:** command idempotency, clean transaction entry, reservation-backed order lifecycle and cancel/expiry/freeze; gates off until matching is ready.
 - **3B-4:** matching, trade/fill/ledger accounting, bounded priority, concurrency and failure injection; isolated flag-controlled testing.
 - **3B-5:** end-to-end lifecycle, versioned GET/API compatibility, migration/restore and load/concurrency validation, independent high-risk review and operational rollout proposal. V2 resolution/void payout remains a separate contract.

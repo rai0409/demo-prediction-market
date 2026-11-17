@@ -87,6 +87,7 @@ def _prepare_v2_buy_reserve(conn, sample_markets, *, participant_id="participant
     }
 
 
+@pytest.mark.usefixtures("allow_v2_writes")
 def test_admin_v2_participant_allocation_route_requires_admin_and_is_idempotent(client, db_conn):
     bootstrap_v2_point_supply(db_conn, amount_micro=2 * POINT_SCALE, idempotency_key="bootstrap")
     payload = {"participant_id": "participant-1", "amount_micro": POINT_SCALE, "idempotency_key": "allocation"}
@@ -108,6 +109,7 @@ def test_admin_v2_participant_allocation_route_requires_admin_and_is_idempotent(
     assert conflict.status_code == 409
 
 
+@pytest.mark.usefixtures("allow_v2_writes")
 def test_admin_v2_participant_allocation_route_rejects_unbootstrapped_and_unknown_participant(client, db_conn):
     headers = {"x-demo-admin-token": "test-admin"}
     payload = {"participant_id": "participant-1", "amount_micro": POINT_SCALE, "idempotency_key": "allocation"}
@@ -125,6 +127,7 @@ def test_admin_v2_participant_allocation_route_rejects_unbootstrapped_and_unknow
     assert db_conn.execute("select count(*) from demo_audit_events where event_type = 'v2_participant_points_allocated'").fetchone()[0] == 0
 
 
+@pytest.mark.usefixtures("allow_v2_writes")
 def test_admin_v2_participant_allocation_route_response_is_exact_public_boundary(client, db_conn):
     bootstrap_v2_point_supply(db_conn, amount_micro=POINT_SCALE, idempotency_key="bootstrap")
     response = client.post(
@@ -144,6 +147,7 @@ def test_admin_v2_participant_allocation_route_response_is_exact_public_boundary
         assert not any(value in serialized for value in ("treasury", "password", "token", "session", "cookie", "admin", "email", "header"))
 
 
+@pytest.mark.usefixtures("allow_v2_writes")
 def test_v2_order_collateral_routes_require_formal_auth_and_preserve_response_boundary(client, db_conn, sample_markets):
     _authenticate_formal_participant(client, db_conn, "participant-1")
     payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
@@ -210,6 +214,7 @@ def test_v2_reserve_rejects_invalid_formal_sessions(client, db_conn, sample_mark
     assert db_conn.execute("select count(*) from order_collateral_reservations").fetchone()[0] == 0
 
 
+@pytest.mark.usefixtures("allow_v2_writes")
 def test_v2_reserve_uses_formal_participant_over_conflicting_demo_identity(client, db_conn, sample_markets):
     _authenticate_formal_participant(client, db_conn, "participant-1")
     payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
@@ -220,6 +225,7 @@ def test_v2_reserve_uses_formal_participant_over_conflicting_demo_identity(clien
     assert db_conn.execute("select participant_id from order_collateral_reservations where id = ?", (reservation_id,)).fetchone()[0] == "participant-1"
 
 
+@pytest.mark.usefixtures("allow_v2_writes")
 def test_v2_cancel_requires_formal_auth_and_enforces_formal_owner(client, db_conn, sample_markets):
     import app.main as main
 
@@ -1276,3 +1282,110 @@ def test_market_cards_hide_internal_transport_status(client):
         "リアルタイム状態",
     ]:
         assert phrase not in text
+
+
+@pytest.mark.parametrize("mode", ["default", "production", "live"])
+def test_v2_write_boundary_denies_all_routes_without_business_changes(client, db_conn, sample_markets, monkeypatch, mode):
+    import app.main as main
+
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    if mode != "default":
+        monkeypatch.setattr(main, "settings", replace(main.settings, v2_clob_admission_enabled=True, **{mode: True}))
+    tables = ["point_supply_state", "point_supply_events", "point_accounts", "point_allocation_events",
+              "collateral_markets", "market_reserves", "outcome_positions", "collateral_ledger_entries",
+              "order_collateral_reservations", "order_collateral_events", "order_collateral_ledger_entries",
+              "demo_audit_events"]
+    tables += [row[0] for row in db_conn.execute("select name from sqlite_master where type='table' and name like '%balance_history%'")]
+    def snapshot():
+        return {table: [tuple(row) for row in db_conn.execute(f'SELECT * FROM "{table}"')] for table in tables}
+    before = snapshot()
+    cases = [
+        ("/api/admin/v2/point-allocations", {"participant_id": "participant-1", "amount_micro": 1, "idempotency_key": "denied"}, {"x-demo-admin-token": "test-admin"}),
+        ("/api/v2/order-collateral/reservations", payload, {}),
+        ("/api/v2/order-collateral/reservations/1/cancel", {"idempotency_key": "denied-cancel"}, {}),
+        ("/api/admin/v2/order-collateral/reservations/1/reject", {"idempotency_key": "denied-reject"}, {"x-demo-admin-token": "test-admin"}),
+    ]
+    for path, body, headers in cases:
+        response = client.post(path, json=body, headers=headers)
+        assert response.status_code == 503
+        assert response.json() == {"detail": "v2_unavailable"}
+    assert snapshot() == before
+
+
+def test_v2_write_boundary_preserves_security_before_denial(client, db_conn, sample_markets):
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    assert client.post("/api/v2/order-collateral/reservations", json=payload).status_code == 401
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    assert client.post("/api/v2/order-collateral/reservations", json=payload, auto_security=False).status_code == 403
+    allocation = {"participant_id": "participant-1", "amount_micro": 1, "idempotency_key": "denied"}
+    assert client.post("/api/admin/v2/point-allocations", json=allocation, auto_security=False).status_code == 403
+    assert client.post("/api/admin/v2/point-allocations", json=allocation, headers={"x-demo-admin-token": "wrong"}).status_code == 403
+    assert client.post("/api/admin/v2/order-collateral/reservations/1/reject", json={"idempotency_key": "denied"}, headers={"x-demo-admin-token": "wrong"}).status_code == 403
+
+
+def test_all_v2_post_routes_have_admission_boundary():
+    import inspect
+    import app.main as main
+
+    routes = [route for route in main.app.routes if "POST" in getattr(route, "methods", set()) and (route.path.startswith("/api/v2/") or route.path.startswith("/api/admin/v2/"))]
+    assert len(routes) == 4
+    for route in routes:
+        assert "_v2_write_unavailable" in inspect.getsource(route.endpoint)
+
+
+@pytest.mark.usefixtures("allow_v2_writes")
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_v2_reservation_replay_conflict_and_request_id(client, db_conn, sample_markets, side):
+    from app.collateral_ledger import split_complete_sets
+
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    if side == "SELL":
+        account_id = db_conn.execute("select account_id from point_accounts where owner_type='participant' and owner_id='participant-1'").fetchone()[0]
+        split_complete_sets(db_conn, account_id=account_id, market_id=payload["market_id"], quantity=1, idempotency_key="split")
+    payload["side"] = side
+    headers = {"X-Request-ID": "v2-reserve-request"}
+    first = client.post("/api/v2/order-collateral/reservations", json=payload, headers=headers)
+    replay = client.post("/api/v2/order-collateral/reservations", json=payload)
+    conflict = client.post("/api/v2/order-collateral/reservations", json={**payload, "limit_price_micro": 2000})
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["idempotent_replay"] is False
+    assert replay.json()["idempotent_replay"] is True
+    assert conflict.status_code == 409
+    reservation_id = first.json()["reservation_id"]
+    assert db_conn.execute("select request_id from order_collateral_events where reservation_id=? and event_type='reserve'", (reservation_id,)).fetchone()[0] == headers["X-Request-ID"]
+    assert db_conn.execute("select request_id from order_collateral_ledger_entries where reservation_id=? limit 1", (reservation_id,)).fetchone()[0] == headers["X-Request-ID"]
+    assert db_conn.execute("select request_id from demo_audit_events where event_type='v2_order_collateral_reserved' and reference_id=?", (str(reservation_id),)).fetchone()[0] == headers["X-Request-ID"]
+
+
+def test_v2_denial_preserves_installed_balance_history(client, db_conn, sample_markets):
+    import app.main as main
+    from app.v2_balance_history import install_checkpoint
+    from app.v2_clob_migration import IsolatedMigrationFixture, migrate_fixture
+
+    _authenticate_formal_participant(client, db_conn, "participant-1")
+    payload = _prepare_v2_buy_reserve(db_conn, sample_markets)
+    with IsolatedMigrationFixture() as fixture:
+        db_conn.backup(fixture.conn)
+        migrate_fixture(fixture)
+        conn = fixture.conn
+        conn.execute("BEGIN")
+        install_checkpoint(conn)
+        conn.commit()
+        async def override_conn():
+            return conn
+        main.app.dependency_overrides[main.get_conn] = override_conn
+        tables = [row[0] for row in conn.execute("select name from sqlite_master where type='table' and name like 'balance_history_%'")]
+        assert tables
+        before = {table: [tuple(row) for row in conn.execute(f'SELECT * FROM "{table}"')] for table in tables}
+        paths = [
+            ("/api/admin/v2/point-allocations", {"participant_id": "participant-1", "amount_micro": 1, "idempotency_key": "history-denied"}, {"x-demo-admin-token": "test-admin"}),
+            ("/api/v2/order-collateral/reservations", payload, {}),
+            ("/api/v2/order-collateral/reservations/1/cancel", {"idempotency_key": "history-cancel"}, {}),
+            ("/api/admin/v2/order-collateral/reservations/1/reject", {"idempotency_key": "history-reject"}, {"x-demo-admin-token": "test-admin"}),
+        ]
+        for path, body, headers in paths:
+            response = client.post(path, json=body, headers=headers)
+            assert response.status_code == 503 and response.json() == {"detail": "v2_unavailable"}
+        assert before == {table: [tuple(row) for row in conn.execute(f'SELECT * FROM "{table}"')] for table in tables}

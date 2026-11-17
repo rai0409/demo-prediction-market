@@ -453,6 +453,28 @@ def test_order_collateral_buy_reserve_cancel_and_reject_preserve_invariants(db_c
     assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
 
 
+def test_legacy_order_writer_updates_v2_accounting_columns_on_scaffold(db_conn, sample_markets):
+    from app.v2_clob_migration import IsolatedMigrationFixture, migrate_fixture
+    db_conn.commit()
+    fixture = IsolatedMigrationFixture()
+    db_conn.backup(fixture.conn)
+    migrate_fixture(fixture)
+    db_conn = fixture.conn
+    bootstrap_v2_point_supply(db_conn, amount_micro=4 * POINT_SCALE, idempotency_key="bootstrap")
+    allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="fund")
+    market_id = _market_id(sample_markets)
+    create_collateral_market(db_conn, market_id=market_id)
+    order = reserve_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, market_id=market_id, side="BUY", outcome="YES", quantity=2, limit_price_micro=1000, idempotency_key="reserve")
+    reservation_id = order["reservation_id"]
+    query = "select contract_version, remaining_collateral, consumed_collateral, released_collateral from order_collateral_reservations where id = ?"
+    assert tuple(db_conn.execute(query, (reservation_id,)).fetchone()) == (1, 2000, 0, 0)
+    cancel_v2_order_collateral(db_conn, participant_id=DEMO_USER_ID, reservation_id=reservation_id, idempotency_key="cancel")
+    assert tuple(db_conn.execute(query, (reservation_id,)).fetchone()) == (1, 0, 0, 2000)
+    assert verify_collateral_invariants(db_conn)["integrity_status"] == "verified"
+    assert verify_audit_chain(db_conn)["integrity_status"] == "verified"
+    fixture.close()
+
+
 def test_order_collateral_sell_reserve_and_cancel(db_conn, sample_markets):
     bootstrap_v2_point_supply(db_conn, amount_micro=3 * POINT_SCALE, idempotency_key="bootstrap")
     allocation = allocate_v2_points_to_participant(db_conn, participant_id=DEMO_USER_ID, amount_micro=2 * POINT_SCALE, idempotency_key="fund")

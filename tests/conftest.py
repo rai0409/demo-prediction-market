@@ -113,3 +113,11 @@ def client(db_conn, monkeypatch):
 
     yield ASGITestClient()
     main.app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def allow_v2_writes(client, monkeypatch):
+    from dataclasses import replace
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", replace(main.settings, v2_clob_admission_enabled=True))

@@ -3,6 +3,12 @@ from pathlib import Path
 from app.config import get_settings
 
 
+def test_v2_clob_feature_flags_default_to_disabled():
+    settings = get_settings()
+    assert settings.v2_clob_admission_enabled is False
+    assert settings.v2_clob_matching_enabled is False
+
+
 def test_env_example_lists_limited_operation_controls():
     text = Path(".env.example").read_text()
 
