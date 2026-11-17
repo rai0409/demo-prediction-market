@@ -74,7 +74,7 @@ def test_request_id_headers_cover_http_errors(client):
     assert unauthenticated.headers["X-Request-ID"] == "unauthenticated-request"
 
 
-def test_request_id_headers_cover_existing_400_409_429_and_503_responses(client, db_conn, sample_markets):
+def test_request_id_headers_cover_existing_400_409_429_and_503_responses(allow_v2_writes, client, db_conn, sample_markets):
     invalid = client.post(
         "/api/demo/predict",
         json={"market_id": sample_markets[0]["market_id"], "outcome": "MAYBE", "stake": 1},
@@ -189,7 +189,7 @@ def test_request_id_propagates_to_prediction_and_auth_audit(client, db_conn, sam
     assert db_conn.execute("select request_id from demo_audit_events where event_type = 'login_failed' order by id desc limit 1").fetchone()[0] == auth_id
 
 
-def test_request_id_propagates_to_v2_allocation(client, db_conn):
+def test_request_id_propagates_to_v2_allocation(allow_v2_writes, client, db_conn):
     bootstrap_v2_point_supply(db_conn, amount_micro=POINT_SCALE, idempotency_key="observability-bootstrap")
     request_id = "v2-request-123"
     response = client.post(
