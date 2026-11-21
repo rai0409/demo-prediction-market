@@ -39,6 +39,9 @@ class Settings:
     paid_features_enabled: bool = False
     prizes_enabled: bool = False
     external_trading_enabled: bool = False
+    # Admission controls legacy V2 writes; matching remains reserved and disabled.
+    v2_clob_admission_enabled: bool = False
+    v2_clob_matching_enabled: bool = False
     translation_enabled: bool = False
     translation_provider: str = "noop"
     translation_target_language: str = "ja"

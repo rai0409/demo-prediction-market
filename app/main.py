@@ -1523,6 +1523,12 @@ async def api_demo_wallet(request: Request, conn: sqlite3.Connection = Depends(g
     return wallet_snapshot(conn, user_id)
 
 
+def _v2_write_unavailable() -> JSONResponse | None:
+    if not (settings.v2_clob_admission_enabled is True and settings.production is False and settings.live is False):
+        return JSONResponse(status_code=503, content={"detail": "v2_unavailable"})
+    return None
+
+
 @app.post("/api/admin/v2/point-allocations", include_in_schema=False)
 async def api_admin_v2_point_allocations(
     request: Request,
@@ -1538,6 +1544,9 @@ async def api_admin_v2_point_allocations(
     rate_error = rate_limit_post(conn, "admin", "v2-participant-point-allocation", current_request_id(request))
     if rate_error:
         return rate_error
+    admission_error = _v2_write_unavailable()
+    if admission_error:
+        return admission_error
     try:
         result = allocate_v2_points_to_participant(
             conn,
@@ -1581,6 +1590,9 @@ async def api_v2_order_collateral_reserve(request: Request, payload: V2OrderColl
     rate_error = rate_limit_post(conn, participant, "v2-order-collateral-reserve", current_request_id(request))
     if rate_error:
         return rate_error
+    admission_error = _v2_write_unavailable()
+    if admission_error:
+        return admission_error
     try:
         return reserve_v2_order_collateral(conn, participant_id=participant, market_id=payload.market_id, side=payload.side, outcome=payload.outcome, quantity=payload.quantity, limit_price_micro=payload.limit_price_micro, idempotency_key=payload.idempotency_key, request_id=current_request_id(request))
     except CollateralLedgerError as exc:
@@ -1596,6 +1608,9 @@ async def api_v2_order_collateral_cancel(reservation_id: int, request: Request, 
     rate_error = rate_limit_post(conn, participant, "v2-order-collateral-cancel", current_request_id(request))
     if rate_error:
         return rate_error
+    admission_error = _v2_write_unavailable()
+    if admission_error:
+        return admission_error
     try:
         return cancel_v2_order_collateral(conn, participant_id=participant, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=current_request_id(request))
     except CollateralLedgerError as exc:
@@ -1613,6 +1628,9 @@ async def api_admin_v2_order_collateral_reject(reservation_id: int, request: Req
     rate_error = rate_limit_post(conn, "admin", "v2-order-collateral-reject", current_request_id(request))
     if rate_error:
         return rate_error
+    admission_error = _v2_write_unavailable()
+    if admission_error:
+        return admission_error
     try:
         return reject_v2_order_collateral(conn, reservation_id=reservation_id, idempotency_key=payload.idempotency_key, request_id=current_request_id(request))
     except CollateralLedgerError as exc:

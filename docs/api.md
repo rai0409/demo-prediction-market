@@ -299,3 +299,7 @@ Safety notes:
 - Optional idempotency key prevents duplicate local deduction for replayed requests.
 - Never places a real order.
 - Never calls external trading APIs.
+
+## V2 write availability
+
+The V2 point allocation and collateral reservation, cancellation, and rejection APIs are unavailable during normal startup and return HTTP 503 (`v2_unavailable`) after existing security checks. Only explicitly isolated local validation may enable these writes; production and live modes always reject them. V2 trade and matching are not available. V2_RUNTIME_WRITE_READY=NO.
