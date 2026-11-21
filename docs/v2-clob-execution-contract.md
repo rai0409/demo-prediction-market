@@ -5,6 +5,8 @@ PRODUCTION_MIGRATION = NOT_EXECUTED
 MATCHING_ENGINE = NOT_IMPLEMENTED
 PUBLIC_RELEASE_READY = false
 
+**NORMAL/MINT/MERGE design extension:** [V2 Complementary Matching Contract](v2-complementary-matching-contract.md) defines future complementary matching, its financial roles and required schema/verifier changes. This remains design-only: current schema and runtime are NORMAL-only; MINT/MERGE are not enabled.
+
 ## 1. Scope and authority
 
 This document specifies a future **local, simulated, fully collateralized** YES/NO central limit order book (CLOB). It is a design contract, not evidence that any functionality exists or is approved for production. Baseline: GitHub main `73771b6bfb1fe85c615378b407ed0f0587eafead`. Phase 3B-0's analysis is an input; decisions below supersede its provisional recommendations. `POINT_SCALE = 10000` micro-points per point, and shares are whole integers. There is no real money, redemption, exchange, wallet, external execution or Polymarket order submission. Polymarket access remains read-only. V1 fixed-odds APIs, records, balances, IDs and audit history remain unchanged; no transfers between V1 and V2 are permitted.
