@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "repository": "rai0409/demo-prediction-market",
+  "pr_number": 26,
+  "base_sha": "aaea5800d6a73e6e53bb6ab8b0d9d46b7678b51f",
+  "head_sha": "108ed022e7e19772251ac97c1b85bb33997e77e7",
+  "recorded_at_utc": "2026-11-17T16:53:37+00:00",
+  "git_diff_changed_files": [
+    "app/collateral_ledger.py",
+    "app/config.py",
+    "app/main.py",
+    "app/storage.py",
+    "app/v2_balance_history.py",
+    "app/v2_clob_invariants.py",
+    "app/v2_clob_migration.py",
+    "app/v2_clob_schema.py",
+    "docs/api.md",
+    "docs/v2-balance-history-contract.md",
+    "docs/v2-clob-execution-contract.md",
+    "tests/conftest.py",
+    "tests/test_collateral_ledger.py",
+    "tests/test_config.py",
+    "tests/test_request_observability.py",
+    "tests/test_routes.py",
+    "tests/test_v2_balance_history.py",
+    "tests/test_v2_clob_invariants.py",
+    "tests/test_v2_clob_migration.py",
+    "tests/test_v2_clob_schema.py"
+  ],
+  "ci_checks": [
+    {
+      "bucket": "pass",
+      "name": "full-pytest",
+      "state": "SUCCESS"
+    },
+    {
+      "bucket": "pass",
+      "name": "focused-collateral-ledger",
+      "state": "SUCCESS"
+    },
+    {
+      "bucket": "pass",
+      "name": "compileall",
+      "state": "SUCCESS"
+    },
+    {
+      "bucket": "pass",
+      "name": "git-diff-check",
+      "state": "SUCCESS"
+    }
+  ],
+  "local_private_evidence": [
+    {
+      "name": "baseline/preflight.json",
+      "sha256": "3c50e8e7b36b6a8f9c46a16038f3641388256b35608090df17df41e813f7d0f7",
+      "size_bytes": 1364,
+      "pytest_summary": null
+    },
+    {
+      "name": "resume/targeted-tests-with-venv.log",
+      "sha256": "c1f34ca17f7d537c7744a0f76453596a0fc385940978581cb378df06093ea771",
+      "size_bytes": 581,
+      "pytest_summary": "472 passed in 36.29s"
+    },
+    {
+      "name": "resume/post-commit-tests-with-venv.log",
+      "sha256": "527eef96bde7f713569ac87629d6cb3a1571d6c449a1c75e14ee08531f4161de",
+      "size_bytes": 591,
+      "pytest_summary": "472 passed in 62.66s (0:01:02)"
+    },
+    {
+      "name": "resume/full-suite-with-venv.log",
+      "sha256": "9596e47bcb1d559584c1f2195a326fa543ed8c0fa487e3d0c7831a52fda76b59",
+      "size_bytes": 4225,
+      "pytest_summary": "2 failed, 1008 passed in 52.95s"
+    },
+    {
+      "name": "fix/targeted-tests.log",
+      "sha256": "c1477d85ff03b75a2489a23fcca0da0d435e48d7a6f7bd442b0ae35a12578092",
+      "size_bytes": 180,
+      "pytest_summary": "107 passed in 3.12s"
+    },
+    {
+      "name": "fix/post-commit-targeted-tests.log",
+      "sha256": "ccf84eb06601a57e3293bef4446ff55073f768670aa68795c7b666ecdcd351c7",
+      "size_bytes": 180,
+      "pytest_summary": "107 passed in 2.90s"
+    },
+    {
+      "name": "fix/post-commit-full-suite.log",
+      "sha256": "65f31771750ab3f755990754a108f472934c205f05206587f6b463839600ddf8",
+      "size_bytes": 1232,
+      "pytest_summary": "1010 passed in 70.11s (0:01:10)"
+    }
+  ],
+  "optional_missing": [
+    "baseline/selected-paths.json",
+    "baseline/excluded-changes.json"
+  ],
+  "backup_present_in_home_not_imported": true,
+  "raw_evidence_published": false,
+  "production_migration_executed": false
+}
